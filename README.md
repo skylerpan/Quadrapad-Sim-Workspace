@@ -34,7 +34,7 @@ QUADSIM_GUI=1 scripts/run_sim.sh --viewer                # MuJoCo viewer (camera
 QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_time:=true"
 ```
 The GUI uses Mesa software rendering by default (`LIBGL_ALWAYS_SOFTWARE=1`). Without it the container falls back to GL 2.1, and RViz draws no point clouds or grid: the whole view is black. On a machine with a GPU, set `QUADSIM_GL=hw` to pass `/dev/dri` into the container. In the MuJoCo viewer, press `3` to show the active collision proxy boxes (red).
-The container uses `--net=host`, so a navigation stack on the host or in another container connects directly as long as `ROS_DOMAIN_ID` matches. **Every other node must set `use_sim_time:=true`**.
+The container uses `--net=host` and the same DDS settings as WebRvizLite: CycloneDDS (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`), `ROS_DOMAIN_ID=1`, and `conf/cyclonedds.xml` (unicast on loopback, multicast off), so the WebRvizLite viewer connects without extra setup. A navigation stack on the host or in another container connects directly as long as it uses the same RMW and domain (override with `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<file under conf/>` when running `docker/run.sh`). **Every other node must set `use_sim_time:=true`**.
 
 ## ROS 2 interface
 | Direction | Topic | Type | Rate |

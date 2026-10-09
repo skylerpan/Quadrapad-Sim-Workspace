@@ -3,6 +3,8 @@
 # Set QUADSIM_GUI=1 to forward X11 for rviz2 / the MuJoCo viewer.
 # GUI uses Mesa llvmpipe by default (LIBGL_ALWAYS_SOFTWARE=1): without it the container falls back to
 # a GL 2.1 path on which rviz2 point clouds and grids render nothing. Set QUADSIM_GL=hw to pass /dev/dri.
+# DDS matches ../WebRvizLite: CycloneDDS, ROS_DOMAIN_ID=1, conf/cyclonedds.xml (override the file with
+# CYCLONEDDS_CONFIG=<name under conf/>).
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${QUADSIM_IMAGE:-quadsim:latest}"
@@ -22,6 +24,9 @@ elif [[ "${QUADSIM_GUI:-0}" == "1" ]]; then
 fi
 TTY_ARGS=(-i); [[ -t 0 ]] && TTY_ARGS=(-it)
 exec docker run --rm --init "${TTY_ARGS[@]}" --net=host --ipc=host \
-  -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" "${GUI_ARGS[@]}" \
+  -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+  -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}" \
+  -e CYCLONEDDS_URI="file:///ws/conf/${CYCLONEDDS_CONFIG:-cyclonedds.xml}" \
+  "${GUI_ARGS[@]}" \
   -v "$REPO":/ws -w /ws "$IMAGE" \
   bash -c "source /opt/ros/humble/setup.bash; source /opt/livox_ws/install/setup.bash 2>/dev/null; ${*:-exec bash}"

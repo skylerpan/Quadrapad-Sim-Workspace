@@ -14,6 +14,8 @@ RUN bash -c "source /opt/ros/humble/setup.bash && cd /opt/livox_ws && \
 
 # The base image user (uid 1000) matches the host user, so /ws stays writable.
 USER syncrobotic
+# Same middleware as ../WebRvizLite (Cyclone is already in the base image).
 ENV PYTHONUNBUFFERED=1 \
-    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 WORKDIR /ws

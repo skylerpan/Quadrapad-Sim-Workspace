@@ -34,7 +34,7 @@ QUADSIM_GUI=1 scripts/run_sim.sh --viewer                # MuJoCo viewer（相�
 QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_time:=true"
 ```
 GUI 預設使用 Mesa 軟體算繪（`LIBGL_ALWAYS_SOFTWARE=1`）。不加的話，容器會退回 GL 2.1，RViz 的點雲和格線都畫不出來，整個畫面是黑的。有 GPU 的機器可以設 `QUADSIM_GL=hw`，把 `/dev/dri` 傳進容器。MuJoCo viewer 裡，按 `3` 可以顯示目前生效的碰撞代理 box（紅色）。
-容器使用 `--net=host`，所以主機或其他容器裡的導航堆疊，只要 `ROS_DOMAIN_ID` 相同就能直接連上。**其他所有節點都要設 `use_sim_time:=true`**。
+容器使用 `--net=host`，DDS 設定與 WebRvizLite 相同：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、`ROS_DOMAIN_ID=1`、`conf/cyclonedds.xml`（loopback 單播、關閉 multicast），所以 WebRvizLite 檢視器不需額外設定即可連上。主機或其他容器裡的導航堆疊，只要使用相同的 RMW 與 domain 就能直接連上（執行 `docker/run.sh` 時可用 `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<conf/ 下的檔名>` 覆寫）。**其他所有節點都要設 `use_sim_time:=true`**。
 
 ## ROS 2 介面
 | 方向 | Topic | 型別 | 頻率 |
