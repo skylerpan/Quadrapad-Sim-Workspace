@@ -1,0 +1,68 @@
+# Quadruped navigation sim (MuJoCo, ideal base). All units SI unless noted.
+scene: scenes/dp2f            # directory produced by pcd2sim.build_scene
+spawn: null                   # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0
+
+physics:
+  timestep: 0.0025            # s (400 Hz; IMU/clock 200 Hz and control 50 Hz divide evenly)
+  control_hz: 50              # ideal-base update + collision proxy refresh
+  rtf: 1.0                    # real-time factor; 0 = run as fast as possible
+
+robot:                        # Go2-like ideal base (legs are not simulated)
+  body_size: [0.70, 0.31, 0.16]   # collision box full extents (x, y, z)
+  mass: 15.0
+  stand_height: 0.30          # floor -> body centre
+  foot_offsets: [[0.19, 0.13], [0.19, -0.13], [-0.19, 0.13], [-0.19, -0.13]]
+  foot_patch: 0.08            # spacing of the 3x3 ray patch under each foot
+  attitude_tau: 0.15          # low-pass of height/roll/pitch (s); SLAM floors are noisy
+  max_step_up: 0.18           # largest per-foot height change accepted per control tick
+  max_step_down: 0.25
+  max_slope_deg: 30.0
+  vel_limits: [1.5, 0.8, 2.0]     # |vx|, |vy|, |wz|
+  acc_limits: [2.0, 2.0, 4.0]
+  cmd_tau: 0.15               # first-order lag of the gait controller (s)
+  cmd_timeout: 0.5            # zero the command if no /cmd_vel for this long (s)
+  weld_solref: [0.02, 1.0]    # softness of the base <- target weld
+  collision_margin: 1.0       # proxy window beyond the body footprint (m)
+  collision_pool: 128         # number of mocap proxy boxes
+
+lidar:                        # Livox Mid-360-like, rolling (per-point time)
+  mount_xyz: [0.25, 0.0, 0.10]    # in base_link
+  rate_hz: 10
+  points_per_sec: 200000
+  fov_deg: [-7.0, 52.0]
+  lines: 4
+  min_range: 0.1
+  max_range: 40.0
+  range_noise: 0.02           # sigma (m)
+  dropout: 0.0                # random drop probability
+  grazing_cos: 0.08           # drop returns with |cos(incidence)| below this
+  pattern: synthetic          # "synthetic" or a CSV path with columns t,azimuth_deg,elevation_deg[,line]
+  seed: 0
+
+imu:                          # co-located with the LiDAR (Mid-360 internal IMU)
+  rate_hz: 200
+  acc_unit: g                 # "g" (livox_ros_driver2) or "mps2"
+  acc_noise: 0.02             # m/s^2 white noise sigma
+  gyro_noise: 0.002           # rad/s
+  acc_bias_rw: 0.0005         # m/s^2/sqrt(s)
+  gyro_bias_rw: 0.00005       # rad/s/sqrt(s)
+
+ros:
+  frames: {map: map, odom: odom, base: base_link, lidar: livox_frame}
+  publish_gt_tf: true         # map->odom (identity) + odom->base_link ground truth; false = leave to Point-LIO/localization
+  publish_custom_msg: true    # /livox/lidar as livox_ros_driver2/CustomMsg (if the msg package is installed)
+  publish_pointcloud2: true
+  pointcloud2_format: livox   # livox: x y z intensity tag line timestamp | velodyne: x y z intensity ring time
+  publish_map_cloud: true
+  clock_hz: 200
+  odom_hz: 50
+  topics:
+    clock: /clock
+    lidar_custom: /livox/lidar
+    lidar_points: /livox/points
+    imu: /livox/imu
+    gt_odom: /sim/ground_truth/odom
+    events: /sim/events
+    map_cloud: /sim/map_cloud
+    cmd_vel: /cmd_vel
+    set_pose: /sim/set_pose
