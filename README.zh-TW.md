@@ -44,7 +44,7 @@ GUI 預設使用 Mesa 軟體算繪（`LIBGL_ALWAYS_SOFTWARE=1`）。不加的話
 | 發布 | `/livox/points` | PointCloud2（livox 格式：x y z intensity tag line timestamp；可切換成 velodyne 格式：ring、time） | 10 Hz |
 | 發布 | `/livox/imu` | sensor_msgs/Imu（加速度單位 **g**，和 livox_ros_driver2 相同；沒有 orientation） | 200 Hz |
 | 發布 | `/sim/ground_truth/odom` | nav_msgs/Odometry（map 座標系，**只用於評估**） | 50 Hz |
-| 發布 | `/sim/events` | std_msgs/String（JSON：`collision` / `stuck` / `set_pose`） | 事件發生時 |
+| 發布 | `/sim/events` | std_msgs/String（JSON：`spawn` / `set_pose` / `collision` / `stuck`；transient_local，晚訂閱也能收到啟動時的 `spawn` 事件） | 事件發生時 |
 | 發布 | `/sim/map_cloud` | PointCloud2（latched，體素化後的地圖） | 一次 |
 | 訂閱 | `/cmd_vel` | geometry_msgs/Twist（vx、vy、wz） | — |
 | 訂閱 | `/sim/set_pose` | geometry_msgs/PoseStamped（x、y、yaw；**z 是地板高度的提示值**） | — |
@@ -71,7 +71,8 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
     - 地板旁邊的雜訊突起、小破洞、浮在地面上的小團塊都會清掉
     - 平面上方第一層、只有 1–2 個點、上面也沒有東西的體素（地板雜訊的上緣）也會清掉
   - 用 `build_scene --no-flatten` 可以關掉，保留原始的體素地板
-- **出生點和 `/sim/set_pose` 會檢查機身有沒有和地圖重疊**：重疊時，會在 1 m 內找最近的空位，並發出警告
+- **出生點和 `/sim/set_pose` 會檢查機身有沒有和地圖重疊**：重疊時，會在 1 m 內找最近的空位（最多轉 90°），TF/odom 跟著*移動後*的位姿走。啟動 log 會印 `spawn requested [x, y, yaw, z_floor] -> base at [...]`，有被移動時另外印一行 ROS warning，並在 `/sim/events` 發一筆 `spawn` 事件（`requested`、`pose`、`floor_z`、`moved`）；`set_pose` 事件也帶同樣欄位
+- **出生點在 `config/sim.yaml` 設定**（`spawn: [x, y, yaw, z_floor]`）；`null` 則用 `build_scene` 寫進 `scenes/<name>/meta.json` 的點。不要手改 `meta.json`：它是 build cache，下次 build 會被蓋掉。`z_floor` 必須是你要的那一層的地板高度（會從它上方 0.5 m 往下找到下方 1 m）：給一個夾在兩層之間的 z，機身會站在雜物或牆緣上，接著就觸發上面的移位
 - **滾動式 LiDAR**：每條射線用最接近它發射時刻的感測器位姿來投射（誤差不超過半個物理步），會自然產生運動畸變。座標是發射當下的感測器座標系，和實機驅動一致
 - 掃描樣式：預設是合成的類 Mid-360 非重複樣式（每幀方位角掃一圈，仰角 −7°~52° 用低差異序列）。用 `lidar.pattern: <csv>` 可以改成實測樣式表（欄位 `t,azimuth_deg,elevation_deg[,line]`）
 - 反射率來自原始 PCD 每個體素的平均 intensity

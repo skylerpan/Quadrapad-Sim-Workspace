@@ -44,7 +44,7 @@ The container uses `--net=host` and the same DDS settings as WebRvizLite: Cyclon
 | Pub | `/livox/points` | PointCloud2 (livox layout: x y z intensity tag line timestamp; switchable to velodyne layout: ring, time) | 10 Hz |
 | Pub | `/livox/imu` | sensor_msgs/Imu (acceleration in **g**, like livox_ros_driver2; no orientation) | 200 Hz |
 | Pub | `/sim/ground_truth/odom` | nav_msgs/Odometry (map frame, **for evaluation only**) | 50 Hz |
-| Pub | `/sim/events` | std_msgs/String (JSON: `collision` / `stuck` / `set_pose`) | on event |
+| Pub | `/sim/events` | std_msgs/String (JSON: `spawn` / `set_pose` / `collision` / `stuck`; transient_local, so a late subscriber can still read the start-up `spawn` event) | on event |
 | Pub | `/sim/map_cloud` | PointCloud2 (latched, voxelized map) | once |
 | Sub | `/cmd_vel` | geometry_msgs/Twist (vx, vy, wz) | — |
 | Sub | `/sim/set_pose` | geometry_msgs/PoseStamped (x, y, yaw; **z is a floor-height hint**) | — |
@@ -71,7 +71,8 @@ MuJoCo: free-body base ← soft weld ← mocap target (integrated cmd_vel + terr
     - noise spikes next to the floor, small holes, and small clusters floating above the floor are removed
     - voxels in the first layer above the plane with only 1–2 points and nothing on top (the upper tail of the floor noise) are removed too
   - Turn it off with `build_scene --no-flatten` to keep the raw voxel floor
-- **Spawn and `/sim/set_pose` check whether the body overlaps the map**: if it does, the base moves to the nearest free pose within 1 m and a warning is issued
+- **Spawn and `/sim/set_pose` check whether the body overlaps the map**: if it does, the base moves to the nearest free pose within 1 m (up to 90° turned) and the TF/odom follow the *moved* pose. The start-up log prints `spawn requested [x, y, yaw, z_floor] -> base at [...]`, a ROS warning is logged when the base was moved, and a `spawn` event (`requested`, `pose`, `floor_z`, `moved`) goes out on `/sim/events`; `set_pose` events carry the same fields
+- **Spawn is set in `config/sim.yaml`** (`spawn: [x, y, yaw, z_floor]`); `null` takes the point `build_scene` wrote to `scenes/<name>/meta.json`. Do not edit `meta.json` by hand: it is a build cache that the next build overwrites. `z_floor` must be the floor height of the storey you want (the ground is searched from 0.5 m above it down to 1 m below it): a z between floors stands the base on clutter or a wall edge, which then triggers the relocation above
 - **Rolling LiDAR**: every ray is cast from the sensor pose nearest its emission time (at most half a physics step off), so motion distortion appears naturally. Points are in the sensor frame at emission time, like the real driver
 - Scan pattern: by default a synthetic Mid-360-like non-repetitive pattern (one azimuth revolution per frame, elevation −7°…52° from a low-discrepancy sequence). `lidar.pattern: <csv>` loads a measured pattern table instead (columns `t,azimuth_deg,elevation_deg[,line]`)
 - Reflectivity comes from the mean intensity of the original PCD points in each voxel

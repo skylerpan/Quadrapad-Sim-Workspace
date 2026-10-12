@@ -1,6 +1,6 @@
 # Quadruped navigation sim (MuJoCo, ideal base). All units SI unless noted.
-scene: scenes/dp2f            # directory produced by pcd2sim.build_scene
-spawn: null                   # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0
+scene: scenes/dp_1008            # directory produced by pcd2sim.build_scene
+spawn: [0.0, 0.0, 0.0, 0.0]   # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0. z_floor = floor height of that storey
 
 physics:
   timestep: 0.0025            # s (400 Hz; IMU/clock 200 Hz and control 50 Hz divide evenly)
@@ -58,11 +58,11 @@ ros:
   odom_hz: 50
   topics:
     clock: /clock
-    lidar_custom: /livox/lidar
-    lidar_points: /livox/points
-    imu: /livox/imu
+    lidar_custom: /robot01/livox/lidar
+    lidar_points: /robot01/livox/points
+    imu: /robot/livox/imu
     gt_odom: /sim/ground_truth/odom
     events: /sim/events
     map_cloud: /sim/map_cloud
-    cmd_vel: /cmd_vel
-    set_pose: /sim/set_pose
+    cmd_vel: /robot01/cmd_vel
+    set_pose: /robot01/set_pose

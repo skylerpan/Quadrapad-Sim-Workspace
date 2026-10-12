@@ -70,7 +70,11 @@ class Simulator:
         self.half = np.asarray(r["body_size"]) / 2.0
         spawn = self._spawn_pose()
         self.base = IdealBase(r, self.rays, self.voxels, blocked=self._blocked)
-        self._reset_clear(*spawn)
+        # Kept for the ROS front-end: the requested spawn can differ from where the base ends up
+        # (no ground near z_floor, or the body overlapped the map and was moved to a free pose).
+        self.spawn_requested = spawn
+        self.spawn_ok, self.spawn_moved = self._reset_clear(*spawn)
+        self.spawn_floor_z = self.base.ground.z0
         pos, quat = self.base.target_pose()
 
         xml = build_mjcf(cfg, self.meta["gravity"], pos, r["collision_pool"])
@@ -136,20 +140,22 @@ class Simulator:
         self.lidar.reset(self.d.time)
         self.lidar.record_pose(self.d.time, self.d.site_xpos[self.lidar_site], self.d.site_xmat[self.lidar_site].reshape(3, 3))
 
-    def set_pose(self, x: float, y: float, yaw: float, z_floor_hint: float | None = None) -> bool:
+    def set_pose(self, x: float, y: float, yaw: float, z_floor_hint: float | None = None) -> tuple[bool, bool]:
+        """Teleport the base. Returns (ground found, moved to a free pose instead of (x, y, yaw))."""
         z = self.base.ground.z0 if z_floor_hint is None else z_floor_hint
-        ok = self._reset_clear(x, y, yaw, z)
+        ok, moved = self._reset_clear(x, y, yaw, z)
         pos, quat = self.base.target_pose()
         self._place(pos, quat)
-        return ok
+        return ok, moved
 
-    def _reset_clear(self, x: float, y: float, yaw: float, z_floor_hint: float) -> bool:
+    def _reset_clear(self, x: float, y: float, yaw: float, z_floor_hint: float) -> tuple[bool, bool]:
         """base.reset, moved to the nearest free pose (spiral <= 1 m, 4 yaws) if the body would overlap
-        the map there; warns when it moves the base or finds no free pose."""
+        the map there; warns when it moves the base or finds no free pose.
+        Returns (ground found, base moved away from the requested pose)."""
         ok = self.base.reset(x, y, yaw, z_floor_hint)
         stand = self.cfg["robot"]["stand_height"]
         if not self._blocked(x, y, yaw, self.base.ground.z0 + stand):
-            return ok
+            return ok, False
         for r in np.arange(0.1, 1.01, 0.1):
             n = max(8, int(2 * np.pi * r / 0.1))
             for a in np.arange(n) * 2 * np.pi / n:
@@ -159,10 +165,10 @@ class Simulator:
                             not self._blocked(cx, cy, yaw + dyaw, self.base.ground.z0 + stand):
                         warnings.warn(f"pose ({x:.2f}, {y:.2f}, yaw {yaw:.2f}) overlaps the map; moved to "
                                       f"({cx:.2f}, {cy:.2f}, yaw {yaw + dyaw:.2f})", stacklevel=3)
-                        return True
+                        return True, True
         self.base.reset(x, y, yaw, z_floor_hint)
         warnings.warn(f"pose ({x:.2f}, {y:.2f}) overlaps the map and no free pose within 1 m", stacklevel=3)
-        return ok
+        return ok, False
 
     def set_cmd(self, vx: float, vy: float, wz: float):
         self.cmd = np.array([vx, vy, wz], dtype=np.float64)

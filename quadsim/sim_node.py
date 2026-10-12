@@ -58,7 +58,9 @@ class SimNode(Node):
         self.pub_clock = self.create_publisher(Clock, tp["clock"], 10)
         self.pub_imu = self.create_publisher(Imu, tp["imu"], sensor_qos)
         self.pub_odom = self.create_publisher(Odometry, tp["gt_odom"], 10)
-        self.pub_events = self.create_publisher(String, tp["events"], 10)
+        # transient_local: a late subscriber asking for it still gets the start-up `spawn` event
+        self.pub_events = self.create_publisher(String, tp["events"], QoSProfile(
+            depth=20, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.pub_points = (self.create_publisher(PointCloud2, tp["lidar_points"], sensor_qos)
                            if ros["publish_pointcloud2"] else None)
         self.pub_custom = None
@@ -83,6 +85,33 @@ class SimNode(Node):
         self.create_subscription(PoseStamped, tp["set_pose"], self._on_set_pose, 10)
         self.odom_every = max(1, int(round(cfg["physics"]["control_hz"] / ros["odom_hz"])))
         self.tick = 0
+        self._report_spawn()
+
+    def _pose_event(self, kind: str, requested, ok: bool, moved: bool) -> dict:
+        """Event describing where the base actually is after a spawn / set_pose request."""
+        b = self.sim.base
+        return {"type": kind, "requested": [float(v) for v in requested], "ok": ok, "moved": moved,
+                "pose": [b.x, b.y, b.yaw], "z": float(self.sim.d.qpos[2]), "floor_z": float(b.ground.z0),
+                "t": self.sim.d.time}
+
+    def _report_spawn(self):
+        """Log + publish the real spawn pose. The requested one is not always where the base ends up:
+        no ground near z_floor, or the body overlapped the map and was moved to the nearest free pose
+        (the UserWarning for that is printed before ROS logging exists and is easy to miss)."""
+        sim = self.sim
+        e = self._pose_event("spawn", sim.spawn_requested, sim.spawn_ok, sim.spawn_moved)
+        self._event(e)
+        req = e["requested"]
+        if sim.spawn_moved:
+            self.get_logger().warn(
+                f"spawn ({req[0]:.2f}, {req[1]:.2f}, yaw {req[2]:.2f}) overlaps the map: base moved to "
+                f"({e['pose'][0]:.2f}, {e['pose'][1]:.2f}, yaw {e['pose'][2]:.2f}); TF/odom follow the moved "
+                f"pose. Set `spawn: [x, y, yaw, z_floor]` in the config to a free spot")
+        if not sim.spawn_ok:
+            self.get_logger().warn(
+                f"spawn: no ground within -1.0..+0.5 m of z_floor={req[3]:.2f} at "
+                f"({req[0]:.2f}, {req[1]:.2f}); using z_floor as the floor. z_floor should be the floor "
+                f"height of that storey (see scenes/<name>/meta.json spawn or map_ds.pcd)")
 
     # -- callbacks (executor thread) ------------------------------------------
     def _on_cmd(self, msg: Twist):
@@ -100,8 +129,8 @@ class SimNode(Node):
             cmd, pose = self.pending_cmd, self.pending_pose
             self.pending_cmd = self.pending_pose = None
         if pose is not None:
-            ok = self.sim.set_pose(*pose)
-            self._event({"type": "set_pose", "ok": ok, "pose": list(pose), "t": self.sim.d.time})
+            ok, moved = self.sim.set_pose(*pose)
+            self._event(self._pose_event("set_pose", pose, ok, moved))
         if cmd is not None:
             self.sim.set_cmd(*cmd)
         out = self.sim.control_tick()
@@ -224,7 +253,9 @@ def main(argv=None):
     rclpy.init(args=ros_args, signal_handler_options=SignalHandlerOptions.NO)
     node = SimNode(cfg, sim)
     node.get_logger().info(
-        f"scene {cfg['scene']} ({sim.meta['boxes']} boxes), spawn {np.round(sim.d.qpos[:3], 2).tolist()}, "
+        f"scene {cfg['scene']} ({sim.meta['boxes']} boxes), spawn requested [x, y, yaw, z_floor] "
+        f"{np.round(sim.spawn_requested, 2).tolist()} -> base at {np.round(sim.d.qpos[:3], 2).tolist()} "
+        f"yaw {sim.base.yaw:.2f} (floor z {sim.spawn_floor_z:.2f}, moved {sim.spawn_moved}), "
         f"rtf {cfg['physics']['rtf']}, gt_tf {cfg['ros']['publish_gt_tf']}, "
         f"custom_msg {node.pub_custom is not None}")
     spin = threading.Thread(target=_spin, args=(node, stop, failed), daemon=True)
