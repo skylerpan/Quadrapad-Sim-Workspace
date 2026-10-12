@@ -33,7 +33,14 @@ scripts/smoke_test.sh scenes/dp2f                       # ROS 2 端到端測試�
 QUADSIM_GUI=1 scripts/run_sim.sh --viewer                # MuJoCo viewer（相機跟隨機身，地圖只用於顯示）
 QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_time:=true"
 ```
-GUI 預設使用 Mesa 軟體算繪（`LIBGL_ALWAYS_SOFTWARE=1`）。不加的話，容器會退回 GL 2.1，RViz 的點雲和格線都畫不出來，整個畫面是黑的。有 GPU 的機器可以設 `QUADSIM_GL=hw`，把 `/dev/dri` 傳進容器。MuJoCo viewer 裡，按 `3` 可以顯示目前生效的碰撞代理 box（紅色）。
+`QUADSIM_GL` 決定 GUI 走哪條 GL 路徑：`nvidia`（透過 nvidia container runtime 用 NVIDIA GPU；主機有 `nvidia-smi` 或 docker `nvidia` runtime 時的預設，例如 Jetson）、`hw`（Mesa 加 `/dev/dri`，Intel/AMD）或 `sw`（Mesa llvmpipe，`LIBGL_ALWAYS_SOFTWARE=1`；其他情況的預設，因為退回 GL 2.1 時 RViz 的點雲和格線都畫不出來）。MuJoCo viewer 會把整張地圖當成一個 mesh 畫（dp_1008：310 萬個三角形），所以 GL 路徑決定它能不能用；在 Jetson Thor 上以 1280x720 實測：
+
+| GL 路徑 | 有陰影 | 無陰影（預設） |
+|---|---|---|
+| `sw`（llvmpipe） | 815 ms/幀 | 391 ms/幀 |
+| `nvidia`（Thor GPU） | 43 ms/幀 | 16 ms/幀 |
+
+設定檔的 `viewer:` 區塊可以設 `shadows`（地圖對自己投影要多畫一遍整個 mesh）和 `sync_hz`（sim 把狀態推給視窗的最高 wall-clock 頻率；每次推送都會取算繪鎖）。sim 啟動時會記錄 `viewer: gl=... map mesh ... faces`，一眼就能看出用的是哪條路徑。MuJoCo viewer 裡，按 `3` 可以顯示目前生效的碰撞代理 box（紅色）。
 容器使用 `--net=host`，DDS 設定與 WebRvizLite 相同：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、`ROS_DOMAIN_ID=1`、`conf/cyclonedds.xml`（loopback 單播、關閉 multicast），所以 WebRvizLite 檢視器不需額外設定即可連上。主機或其他容器裡的導航堆疊，只要使用相同的 RMW 與 domain 就能直接連上（執行 `docker/run.sh` 時可用 `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<conf/ 下的檔名>` 覆寫）。**其他所有節點都要設 `use_sim_time:=true`**。
 
 ## ROS 2 介面

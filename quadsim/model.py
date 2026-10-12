@@ -9,6 +9,8 @@ def _f(v) -> str:
 def build_mjcf(cfg: dict, gravity, spawn_pos, n_proxies: int) -> str:
     r, li, ph = cfg["robot"], cfg["lidar"], cfg["physics"]
     half = [s / 2 for s in r["body_size"]]
+    # Shadows mean a second render pass over the whole map mesh (about 2x per frame); off by default.
+    shadows = "true" if cfg.get("viewer", {}).get("shadows", False) else "false"
     proxies = "\n".join(
         f'    <body name="proxy_{i}" mocap="true" pos="0 0 {-1000 - 10 * i}">'
         f'<geom name="proxy_{i}" type="box" size="0.05 0.05 0.05" contype="2" conaffinity="1" '
@@ -23,7 +25,7 @@ def build_mjcf(cfg: dict, gravity, spawn_pos, n_proxies: int) -> str:
   </visual>
   <statistic center="{_f(spawn_pos)}" extent="10"/>
   <worldbody>
-    <light pos="0 0 50" dir="0 0 -1" directional="true"/>
+    <light pos="0 0 50" dir="0 0 -1" directional="true" castshadow="{shadows}"/>
     <body name="target" mocap="true" pos="{_f(spawn_pos)}">
       <geom type="box" size="{_f(half)}" contype="0" conaffinity="0" group="2" rgba="0.2 0.9 0.2 0.15"/>
     </body>

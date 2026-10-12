@@ -33,7 +33,14 @@ scripts/smoke_test.sh scenes/dp2f                       # ROS 2 end-to-end test 
 QUADSIM_GUI=1 scripts/run_sim.sh --viewer                # MuJoCo viewer (camera follows the body; the map is visual only)
 QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_time:=true"
 ```
-The GUI uses Mesa software rendering by default (`LIBGL_ALWAYS_SOFTWARE=1`). Without it the container falls back to GL 2.1, and RViz draws no point clouds or grid: the whole view is black. On a machine with a GPU, set `QUADSIM_GL=hw` to pass `/dev/dri` into the container. In the MuJoCo viewer, press `3` to show the active collision proxy boxes (red).
+`QUADSIM_GL` picks the GL path for the GUI: `nvidia` (NVIDIA GPU through the nvidia container runtime; the default when the host has `nvidia-smi` or a docker `nvidia` runtime, e.g. a Jetson), `hw` (Mesa with `/dev/dri`, Intel/AMD) or `sw` (Mesa llvmpipe, `LIBGL_ALWAYS_SOFTWARE=1`; the default otherwise, since the plain GL 2.1 fallback draws no RViz point clouds or grid). The MuJoCo viewer draws the whole map as one mesh (dp_1008: 3.1 M triangles), so the GL path decides whether it is usable; measured at 1280x720 on a Jetson Thor:
+
+| GL path | shadows on | shadows off (default) |
+|---|---|---|
+| `sw` (llvmpipe) | 815 ms/frame | 391 ms/frame |
+| `nvidia` (Thor GPU) | 43 ms/frame | 16 ms/frame |
+
+The `viewer:` section of the config sets `shadows` (the map casting shadows on itself costs a second pass over the mesh) and `sync_hz` (the maximum wall-clock rate at which the sim pushes its state to the window; each push takes the render lock). The sim logs `viewer: gl=... map mesh ... faces` at start-up so the path in use is visible. In the MuJoCo viewer, press `3` to show the active collision proxy boxes (red).
 The container uses `--net=host` and the same DDS settings as WebRvizLite: CycloneDDS (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`), `ROS_DOMAIN_ID=1`, and `conf/cyclonedds.xml` (unicast on loopback, multicast off), so the WebRvizLite viewer connects without extra setup. A navigation stack on the host or in another container connects directly as long as it uses the same RMW and domain (override with `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<file under conf/>` when running `docker/run.sh`). **Every other node must set `use_sim_time:=true`**.
 
 ## ROS 2 interface

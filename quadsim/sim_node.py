@@ -262,6 +262,10 @@ def main(argv=None):
     spin.start()
 
     viewer = None
+    viewer_cfg = cfg.get("viewer", {})
+    sync_period = 1.0 / max(1.0, float(viewer_cfg.get("sync_hz", 30)))
+    next_sync = 0.0
+    sync_wall = 0.0                              # wall time spent inside viewer.sync() since the last report
     if a.viewer:
         import mujoco.viewer
         viewer = mujoco.viewer.launch_passive(sim.m, sim.d)
@@ -269,6 +273,10 @@ def main(argv=None):
             viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
             viewer.cam.trackbodyid = sim.base_body
             viewer.cam.distance, viewer.cam.elevation, viewer.cam.azimuth = 6.0, -35.0, 180.0
+        node.get_logger().info(
+            f"viewer: gl={os.environ.get('QUADSIM_GL', 'unknown')} (docker/run.sh QUADSIM_GL), map mesh "
+            f"{sim.m.nmeshface} faces, shadows {bool(viewer_cfg.get('shadows', False))}, "
+            f"sync <= {1.0 / sync_period:.0f} Hz")
 
     rtf = cfg["physics"]["rtf"]
     wall0, sim0 = time.perf_counter(), sim.d.time
@@ -277,11 +285,16 @@ def main(argv=None):
     try:
         while not stop.is_set() and rclpy.ok() and (a.duration <= 0 or sim.d.time < a.duration):
             node.step()
+            now = time.perf_counter()
             if viewer is not None:
                 if not viewer.is_running():          # viewer window closed: stop the sim too
                     break
-                viewer.sync()
-            now = time.perf_counter()
+                if now >= next_sync:                 # sync() takes the render lock: no more often than the display needs
+                    viewer.sync()
+                    t_after = time.perf_counter()
+                    sync_wall += t_after - now
+                    now = t_after
+                    next_sync = now + sync_period
             if rtf > 0:
                 ahead = (sim.d.time - sim0) / rtf - (now - wall0)
                 if ahead > 0:
@@ -289,7 +302,11 @@ def main(argv=None):
                 elif ahead < -1.0:                       # fell behind: don't try to catch up
                     wall0, sim0 = now, sim.d.time
             if now - last_report > 10.0:
-                node.get_logger().info(f"sim t={sim.d.time:.1f}s pose={np.round(sim.d.qpos[:3], 2).tolist()}")
+                msg = f"sim t={sim.d.time:.1f}s pose={np.round(sim.d.qpos[:3], 2).tolist()}"
+                if viewer is not None:
+                    msg += f", viewer.sync {100.0 * sync_wall / (now - last_report):.0f}% of wall"
+                    sync_wall = 0.0
+                node.get_logger().info(msg)
                 last_report = now
     except Exception:  # noqa: BLE001
         traceback.print_exc()
