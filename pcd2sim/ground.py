@@ -63,7 +63,7 @@ def _fit_plane(x, y, z, iters: int = 3):
 def extract_ground(grid: VoxelGrid, stand: np.ndarray, tol: float = 0.06, max_rms: float = 0.035,
                    tile: float = 4.0, min_cells: int = 30, band_below: float = 0.2, band_above: float = 0.1,
                    thickness: float = 0.2, layers: int = 2, grow: int = 3, clearance: float = 0.8,
-                   max_above: int = 2, spike_pts: int = 3, floor_tol: float = 0.15, fill: int = 3, fill_nb: int = 5,
+                   max_above: int = 2, spike_pts: int = 3, floor_tol: float = 0.15, fill: int = 12, fill_nb: int = 3,
                    float_height: float = 0.5, float_max_voxels: int = 4, sheet_pts: int = 2) -> Ground:
     """Flatten the walkable surface of `grid` (raw per-voxel zmean, before smoothing).
 
@@ -71,7 +71,8 @@ def extract_ground(grid: VoxelGrid, stand: np.ndarray, tol: float = 0.06, max_rm
     Columns next to the flattened floor that only failed the standable test because of a few
     noise voxels above it are grown into the floor (`grow` rings); their sparse noise voxels
     (<= spike_pts points, <= max_above per column) are removed. Interior holes are filled (`fill`
-    rounds), and clusters of <= float_max_voxels voxels floating within float_height above the
+    rounds; a column with >= fill_nb floor neighbours and nothing standing on it becomes floor, so
+    gaps left by sparse returns or flattening seams close instead of swallowing a foot), and clusters of <= float_max_voxels voxels floating within float_height above the
     floor without touching anything else are dropped as noise, as are sparse (<= sheet_pts points)
     voxels in the first layer above the band with nothing on top (the upper tail of the floor noise).
     """

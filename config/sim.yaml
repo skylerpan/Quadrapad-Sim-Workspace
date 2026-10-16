@@ -16,6 +16,7 @@ robot:                        # Go2-like ideal base (legs are not simulated)
   attitude_tau: 0.15          # low-pass of height/roll/pitch (s); SLAM floors are noisy
   max_step_up: 0.18           # largest per-foot height change accepted per control tick
   max_step_down: 0.25
+  max_feet_over_gap: 1        # feet allowed over a gap in the floor (height taken from the other feet's plane)
   max_slope_deg: 30.0
   vel_limits: [1.5, 0.8, 2.0]     # |vx|, |vy|, |wz|
   acc_limits: [2.0, 2.0, 4.0]
@@ -52,10 +53,10 @@ viewer:                       # MuJoCo viewer (--viewer) only; the map mesh has 
   sync_hz: 30                 # max rate (wall clock) at which the sim pushes its state to the viewer window
 
 ros:
-  frames: {map: map, odom: odom, base: base_link, lidar: livox_frame}
-  publish_gt_tf: true         # map->odom (identity) + odom->base_link ground truth; false = leave to Point-LIO/localization
+  frames: {map: map, odom: robot01/odom, base: robot01/base_link, lidar: robot01/laser}
+  publish_gt_tf: false        # map->odom (identity) + odom->base_link ground truth; false = leave to Point-LIO/localization
   publish_custom_msg: true    # /livox/lidar as livox_ros_driver2/CustomMsg (if the msg package is installed)
-  publish_pointcloud2: true
+  publish_pointcloud2: false
   pointcloud2_format: livox   # livox: x y z intensity tag line timestamp | velodyne: x y z intensity ring time
   publish_map_cloud: true
   clock_hz: 200
@@ -64,7 +65,7 @@ ros:
     clock: /clock
     lidar_custom: /robot01/livox/lidar
     lidar_points: /robot01/livox/points
-    imu: /robot/livox/imu
+    imu: /robot01/livox/imu
     gt_odom: /sim/ground_truth/odom
     events: /sim/events
     map_cloud: /sim/map_cloud

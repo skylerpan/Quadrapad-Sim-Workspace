@@ -10,7 +10,7 @@
 
 機器狗用**理想底盤**表示（不模擬腿）：底盤跟隨 `/cmd_vel` 移動，並貼合地形。
 
-設計背景見 [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md)（§12–§13）。
+**使用手冊**（依任務分章，所有指令、參數和環境變數）見 [`docs/usage.md`](docs/usage.md)。設計背景見 [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md)（§12–§13）。 dp_1008 導航下點迴圈測試紀錄與失敗分析見 [`docs/nav-goal-loop-test-2026-10-13.md`](docs/nav-goal-loop-test-2026-10-13.md)。
 
 ## 快速開始
 ```bash
@@ -20,14 +20,14 @@ docker build -t quadsim:latest docker/
 # 2. Maps/*.pcd → scenes/<name>/（每份地圖約 2–5 秒）
 scripts/build_scenes.sh
 
-# 3. 啟動模擬（預設使用 scenes/dp2f，即時速度）
+# 3. 啟動模擬（預設使用 scenes/dp_1008，即時速度）
 scripts/run_sim.sh
-scripts/run_sim.sh --scene scenes/dpmap --no-gt-tf      # 不發布真值 TF，交給 Point-LIO 和全域定位
+scripts/run_sim.sh --scene scenes/dp_1008_fillC --no-gt-tf   # 不發布真值 TF，交給 Point-LIO 和全域定位
 
 # 4. 驗證
 docker/run.sh "python3 -m pytest -q"                    # 單元測試
-docker/run.sh "python3 scripts/bench.py --scene scenes/dp2f physics.rtf=0"   # headless 效能測試
-scripts/smoke_test.sh scenes/dp2f                       # ROS 2 端到端測試（頻率、TF、行走、撞擊、set_pose）
+docker/run.sh "python3 scripts/bench.py --scene scenes/dp_1008 physics.rtf=0"   # headless 效能測試
+scripts/smoke_test.sh scenes/dp_1008                    # ROS 2 端到端測試（頻率、TF、行走、撞擊、set_pose）
 
 # 畫面（需要 X display；請在桌面的終端機執行，DISPLAY 和 XAUTHORITY 會自動帶進容器）
 QUADSIM_GUI=1 scripts/run_sim.sh --viewer                # MuJoCo viewer（相機跟隨機身，地圖只用於顯示）
@@ -60,6 +60,25 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 
 所有參數（topic、frame、雜訊、機身尺寸、速度上限等）都在 [`config/sim.yaml`](config/sim.yaml)。也可以在指令列覆寫，例如 `scripts/run_sim.sh lidar.range_noise=0.0 robot.vel_limits=[1.0,0.5,1.5]`。
 
+## 導航下點迴圈測試
+sim 與導航 stack（`robot01` container：Point-LIO 定位、`octo_planner_rviz_node`、`syncai_controller_3d`）都在跑時，`scripts/nav_goal_loop.py` 會把 map frame 的 waypoint 一個接一個下給導航，並用 sim 的真值驗證每一段。它在 sim container 裡執行，才會在同一個 DDS domain：
+```bash
+scripts/nav_goal_loop.sh --dry-run                           # 只規劃不走：看 planner 規得出哪些段（機器人不動）
+scripts/nav_goal_loop.sh --dry-run --dry-run-from matrix --select wp01,wp03,wp05   # 幾個點之間的可達表
+scripts/nav_goal_loop.sh --select wp29,wp30 --loops 1        # 只走指定的幾個點
+scripts/nav_goal_loop.sh --loops 3 --order shuffle --seed 1  # 久跑：3 圈，每圈順序不同
+scripts/nav_goal_loop.sh --help                              # 所有容差、逾時、topic 名
+```
+每一段的流程跟 `syncai_waypoint_sequencer` 一樣：把目前的 `/robot01/tracked_pose` 發到 `/initialpose`（planner 不會自己讀機器人位置）、把 waypoint 發到 `/goal_pose`、只接受發 goal 之後收到、非空、終點在 waypoint 附近的 `/robot01/planned_path`，再送給 `/robot01/follow_path` action 等結果。執行期間 planner 的 `auto_follow_path` 參數會被設成 false（否則 planner 也會自己送一次 path），結束時還原，Ctrl-C 也會還原。
+
+一段算 PASS 的條件：action 回報 SUCCEEDED、真值位置距 path 終點在 `--xy-tol`（0.35 m）內、機身已停、這段期間 `/sim/events` 沒有 `collision` / `stuck`、定位誤差（`tracked_pose` 對真值）沒超過 `--loc-fail`（1 m）。失敗原因：`NO_PATH`、`ACTION_REJECTED`、`ABORTED`、`TIMEOUT`、`COLLISION`、`STUCK`、`STILL_MOVING`、`GT_NOT_AT_GOAL`、`LOC_ERROR`。連續 3 次失敗會停（`--max-consecutive-fail`）。exit code：0 全過、1 有失敗、2 preflight 失敗、130 被中斷。
+
+結果寫在 `results/nav_goal_loop/<timestamp>/`（`report.json`、`legs.csv`、`run.log`），每段一行：
+```
+LEG 1 loop1 robot->wp29  path 7.2 m plan 0.05 s  exec 13.9 s SUCCEEDED  gt-dist 0.18 (wp 0.28) loc 0.05/0.26  PASS
+```
+Waypoint 放在 `config/nav_waypoints_dp_1008.yaml`（欄位 `name, x, y, z, yaw` 跟 sequencer 的 YAML 相同）。`scripts/make_waypoints_from_poses.py Maps/<map>/poses.txt --spacing 10 --z-min -1 --z-max 0.5 -o <yaml>` 會從 SLAM keyframe 軌跡取樣（建圖時真的走過，是最可靠的可達點；用 z 範圍挑樓層），之後跑 `--dry-run` 把 planner 規不到的點拿掉。測試不會瞬移機器人（`/sim/set_pose` 會讓定位壞掉）：每次從機器人當下的位置、離它最近的 waypoint 開始。
+
 ## 架構
 ```
 PCD ──build_scene──► 稀疏體素(10 cm) ─┬─ 地面 ──► 平面化厚板（斜面三角網格）──┬─► Embree（open3d）：LiDAR + 腳下地形射線
@@ -77,6 +96,7 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
   - **清雜訊**：
     - 地板旁邊的雜訊突起、小破洞、浮在地面上的小團塊都會清掉
     - 平面上方第一層、只有 1–2 個點、上面也沒有東西的體素（地板雜訊的上緣）也會清掉
+  - **縫隙**：Mid-360 看不到機器人腳邊的地板，所以 SLAM 地圖的地板本來就有整欄沒點的格子，平面化的接縫又會多出一些。有至少 3 個地板鄰居、上面沒有東西的格子會被補成地板（`--ground-fill 12 --ground-fill-nb 3`；dp_1008 1F 沿建圖路徑的無地面取樣從 0.37% 降到 0.17%）。機身另外允許一隻腳踩在剩下的縫隙上（`robot.max_feet_over_gap: 1`，那隻腳的高度取其他三隻腳的平面），不再發 `stuck/no_ground` 拒絕移動
   - 用 `build_scene --no-flatten` 可以關掉，保留原始的體素地板
 - **出生點和 `/sim/set_pose` 會檢查機身有沒有和地圖重疊**：重疊時，會在 1 m 內找最近的空位（最多轉 90°），TF/odom 跟著*移動後*的位姿走。啟動 log 會印 `spawn requested [x, y, yaw, z_floor] -> base at [...]`，有被移動時另外印一行 ROS warning，並在 `/sim/events` 發一筆 `spawn` 事件（`requested`、`pose`、`floor_z`、`moved`）；`set_pose` 事件也帶同樣欄位
 - **出生點在 `config/sim.yaml` 設定**（`spawn: [x, y, yaw, z_floor]`）；`null` 則用 `build_scene` 寫進 `scenes/<name>/meta.json` 的點。不要手改 `meta.json`：它是 build cache，下次 build 會被蓋掉。`z_floor` 必須是你要的那一層的地板高度（會從它上方 0.5 m 往下找到下方 1 m）：給一個夾在兩層之間的 z，機身會站在雜物或牆緣上，接著就觸發上面的移位
@@ -116,6 +136,8 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
 | `pcd2sim/` | PCD 讀寫、體素化、去雜訊、box 合併、地面平面化（`ground.py`）、地板與出生點、`build_scene` CLI |
 | `quadsim/` | `sim.py` 核心（無 ROS）、`lidar.py`、`base.py`、`proxies.py`、`raycast.py`、`model.py`、`ros_io.py`、`sim_node.py` |
 | `config/sim.yaml` | 所有參數 |
-| `scripts/` | `build_scenes.sh`、`run_sim.sh`、`smoke_test.sh`、`bench.py`、`ros_smoke_test.py` |
+| `config/nav_waypoints_dp_1008.yaml` | dp_1008（1F）導航下點迴圈測試用的 waypoint |
+| `scripts/` | `build_scenes.sh`、`run_sim.sh`、`smoke_test.sh`、`bench.py`、`ros_smoke_test.py`、`nav_goal_loop.sh` / `nav_goal_loop.py`（導航下點迴圈測試）、`make_waypoints_from_poses.py` |
 | `docker/` | Dockerfile、`run.sh`、最小化的 `livox_ros_driver2` 訊息套件 |
+| `docs/` | `usage.md`（依任務分章的使用手冊）、`pcd-to-sim-architecture.md`（設計）、`nav-goal-loop-test-2026-10-13.md`（測試紀錄） |
 | `tests/` | 單元測試（PCD、體素和 box 合併、地面平面化、碰撞代理、感測器時間、碰撞檢查、CustomMsg/PointCloud2 序列化） |

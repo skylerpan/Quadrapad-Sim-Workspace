@@ -78,8 +78,12 @@ class IdealBase:
             z[hit] = self.lookup.surface_z(inside, z[hit])
         per_foot = z.reshape(4, -1)
         n_ok = np.isfinite(per_foot).sum(axis=1)
-        feet_h = np.where(n_ok >= 3, np.nanmedian(np.where(n_ok[:, None] >= 3, per_foot, 0.0), axis=1), np.nan)
-        if not np.isfinite(feet_h).all():
+        supported = n_ok >= 3
+        feet_h = np.where(supported, np.nanmedian(np.where(supported[:, None], per_foot, 0.0), axis=1), np.nan)
+        # SLAM floors have small gaps (sparse returns, flattening seams). A quadruped keeps standing with
+        # one foot over a gap, so up to `max_feet_over_gap` unsupported feet take the height of the plane
+        # through the other feet instead of rejecting the pose.
+        if (~supported).sum() > self.c.get("max_feet_over_gap", 1) or np.isfinite(z).sum() < 6:
             return Ground(feet_h, np.nan, 0.0, 0.0)
         # robust least-squares plane z = a*lx + b*ly + z0 in the body frame:
         # refit after dropping samples > 3 cm off the plane (clutter, map noise)
@@ -92,6 +96,8 @@ class IdealBase:
                 break
             ok = inl
         a, b, z0 = coef
+        if not supported.all():
+            feet_h = np.where(supported, feet_h, a * self.feet[:, 0] + b * self.feet[:, 1] + z0)
         return Ground(feet_h, float(z0), float(np.arctan(b)), float(-np.arctan(a)))
 
     # -- API -------------------------------------------------------------------

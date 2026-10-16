@@ -31,7 +31,8 @@ SCENE_FORMAT = 2          # 2: ground.npz + NaN zmean under slabs; keep in sync 
 
 def build(pcd: str, out: str, voxel: float, min_pts: int, min_neighbors: int, crop_pct: float,
           z_min: float | None, z_max: float | None, flatten: bool = True, ground_tol: float = 0.06,
-          ground_max_rms: float = 0.035, ground_thickness: float = 0.2) -> dict:
+          ground_max_rms: float = 0.035, ground_thickness: float = 0.2, ground_fill: int = 12,
+          ground_fill_nb: int = 3, ground_max_above: int = 2) -> dict:
     os.makedirs(out, exist_ok=True)
     t = {"start": time.time()}
     log = lambda msg: print(f"[{time.time() - t['start']:6.1f}s] {msg}", flush=True)
@@ -60,7 +61,8 @@ def build(pcd: str, out: str, voxel: float, min_pts: int, min_neighbors: int, cr
     spawn = find_spawn(grid, stand)
     log(f"standable voxels: {int(stand.sum())}; spawn={None if spawn is None else np.round(spawn, 3).tolist()}")
     if flatten:                              # uses the raw per-voxel z, so run before smoothing
-        ground = extract_ground(grid, stand, tol=ground_tol, max_rms=ground_max_rms, thickness=ground_thickness)
+        ground = extract_ground(grid, stand, tol=ground_tol, max_rms=ground_max_rms, thickness=ground_thickness,
+                                fill=ground_fill, fill_nb=ground_fill_nb, max_above=ground_max_above)
         log(f"ground: {ground.stats}")
     grid.zmean = smooth_surface_z(grid)
     centers = grid.centers()
@@ -138,9 +140,16 @@ def main(argv=None):
     ap.add_argument("--ground-tol", type=float, default=0.06, help="max height jump inside one floor region (m)")
     ap.add_argument("--ground-max-rms", type=float, default=0.035, help="max plane-fit RMS to snap a region (m)")
     ap.add_argument("--ground-thickness", type=float, default=0.2, help="floor slab thickness (m)")
+    ap.add_argument("--ground-fill", type=int, default=12,
+                    help="rounds of filling floor columns that have no points (holes in sparse SLAM floors)")
+    ap.add_argument("--ground-fill-nb", type=int, default=3,
+                    help="a hole column is filled when at least this many of its 8 neighbours are floor")
+    ap.add_argument("--ground-max-above", type=int, default=2,
+                    help="max voxels above the floor plane (within 0.8 m) for a column to be grown/filled as floor")
     a = ap.parse_args(argv)
     build(a.pcd, a.out, a.voxel, a.min_pts, a.min_neighbors, a.crop_pct, a.z_min, a.z_max,
-          not a.no_flatten, a.ground_tol, a.ground_max_rms, a.ground_thickness)
+          not a.no_flatten, a.ground_tol, a.ground_max_rms, a.ground_thickness, a.ground_fill, a.ground_fill_nb,
+          a.ground_max_above)
 
 
 if __name__ == "__main__":

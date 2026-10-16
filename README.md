@@ -10,7 +10,7 @@ English | [繁體中文](README.zh-TW.md)
 
 The robot is an **ideal base** (no legs are simulated): it follows `/cmd_vel` and hugs the terrain.
 
-Design background: [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md) (Traditional Chinese, §12–§13).
+**Usage guide** with every command, flag and environment variable, organised by task: [`docs/usage.md`](docs/usage.md) (Traditional Chinese). Design background: [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md) (Traditional Chinese, §12–§13). Navigation goal-loop test record on dp_1008 with the failure analysis: [`docs/nav-goal-loop-test-2026-10-13.md`](docs/nav-goal-loop-test-2026-10-13.md) (Traditional Chinese).
 
 ## Quick start
 ```bash
@@ -20,14 +20,14 @@ docker build -t quadsim:latest docker/
 # 2. Maps/*.pcd -> scenes/<name>/ (about 2-5 s per map)
 scripts/build_scenes.sh
 
-# 3. Start the sim (defaults to scenes/dp2f, real time)
+# 3. Start the sim (defaults to scenes/dp_1008, real time)
 scripts/run_sim.sh
-scripts/run_sim.sh --scene scenes/dpmap --no-gt-tf      # no ground-truth TF: leave it to Point-LIO and global localization
+scripts/run_sim.sh --scene scenes/dp_1008_fillC --no-gt-tf   # no ground-truth TF: leave it to Point-LIO and global localization
 
 # 4. Check
 docker/run.sh "python3 -m pytest -q"                    # unit tests
-docker/run.sh "python3 scripts/bench.py --scene scenes/dp2f physics.rtf=0"   # headless benchmark
-scripts/smoke_test.sh scenes/dp2f                       # ROS 2 end-to-end test (rates, TF, driving, collision, set_pose)
+docker/run.sh "python3 scripts/bench.py --scene scenes/dp_1008 physics.rtf=0"   # headless benchmark
+scripts/smoke_test.sh scenes/dp_1008                    # ROS 2 end-to-end test (rates, TF, driving, collision, set_pose)
 
 # GUI (needs an X display; run from a desktop terminal, DISPLAY and XAUTHORITY are passed into the container)
 QUADSIM_GUI=1 scripts/run_sim.sh --viewer                # MuJoCo viewer (camera follows the body; the map is visual only)
@@ -60,6 +60,25 @@ The container uses `--net=host` and the same DDS settings as WebRvizLite: Cyclon
 
 All parameters (topics, frames, noise, body size, velocity limits, …) live in [`config/sim.yaml`](config/sim.yaml). They can be overridden on the command line, e.g. `scripts/run_sim.sh lidar.range_noise=0.0 robot.vel_limits=[1.0,0.5,1.5]`.
 
+## Navigation goal-loop test
+With the sim and a navigation stack running (the `robot01` container: Point-LIO localization, `octo_planner_rviz_node`, `syncai_controller_3d`), `scripts/nav_goal_loop.py` sends map-frame waypoints one after another and verifies every leg against the sim's ground truth. It runs inside the sim container so it joins the same DDS domain:
+```bash
+scripts/nav_goal_loop.sh --dry-run                           # plan only: which legs the planner can solve (robot does not move)
+scripts/nav_goal_loop.sh --dry-run --dry-run-from matrix --select wp01,wp03,wp05   # reachability table between points
+scripts/nav_goal_loop.sh --select wp29,wp30 --loops 1        # drive to a few named points
+scripts/nav_goal_loop.sh --loops 3 --order shuffle --seed 1  # soak: 3 passes in a different order each time
+scripts/nav_goal_loop.sh --help                              # all tolerances, timeouts and topic names
+```
+Per leg it follows the same protocol as `syncai_waypoint_sequencer`: publish the current `/robot01/tracked_pose` to `/initialpose` (the planner does not read the robot pose itself), publish the waypoint to `/goal_pose`, accept the first `/robot01/planned_path` received after the goal that is non-empty and ends near the waypoint, send it to the `/robot01/follow_path` action and wait for the result. The planner's `auto_follow_path` parameter is set to false for the run (otherwise the planner would send the path too) and restored on exit, including on Ctrl-C.
+
+A leg passes when the action reports SUCCEEDED, the ground-truth position is within `--xy-tol` (0.35 m) of the path endpoint, the base has stopped, no `collision`/`stuck` event was reported on `/sim/events` during the leg, and the localization error (`tracked_pose` vs ground truth) stayed below `--loc-fail` (1 m). Failure reasons: `NO_PATH`, `ACTION_REJECTED`, `ABORTED`, `TIMEOUT`, `COLLISION`, `STUCK`, `STILL_MOVING`, `GT_NOT_AT_GOAL`, `LOC_ERROR`. The run stops after 3 consecutive failures (`--max-consecutive-fail`). Exit code 0 = all legs passed, 1 = a leg failed, 2 = preflight failed, 130 = interrupted.
+
+Results go to `results/nav_goal_loop/<timestamp>/` (`report.json`, `legs.csv`, `run.log`), one line per leg:
+```
+LEG 1 loop1 robot->wp29  path 7.2 m plan 0.05 s  exec 13.9 s SUCCEEDED  gt-dist 0.18 (wp 0.28) loc 0.05/0.26  PASS
+```
+Waypoints live in `config/nav_waypoints_dp_1008.yaml` (same `name, x, y, z, yaw` keys as the sequencer's YAML). `scripts/make_waypoints_from_poses.py Maps/<map>/poses.txt --spacing 10 --z-min -1 --z-max 0.5 -o <yaml>` samples them from the SLAM keyframe trajectory, which is the surest source of reachable points (one storey selected by z); run `--dry-run` afterwards and drop the points the planner cannot reach. The test never teleports the robot (`/sim/set_pose` would break localization): each run starts from wherever the robot is, at the nearest waypoint.
+
 ## Architecture
 ```
 PCD ──build_scene──► sparse voxels (10 cm) ─┬─ ground ──► flattened slabs (sloped triangle mesh) ──┬─► Embree (open3d): LiDAR + terrain rays under the feet
@@ -77,6 +96,7 @@ MuJoCo: free-body base ← soft weld ← mocap target (integrated cmd_vel + terr
   - **Noise cleanup**:
     - noise spikes next to the floor, small holes, and small clusters floating above the floor are removed
     - voxels in the first layer above the plane with only 1–2 points and nothing on top (the upper tail of the floor noise) are removed too
+  - **Gaps**: a Mid-360 cannot see the floor right around the robot, so SLAM floors have columns with no points at all, and the flattening seams leave more. Columns with at least 3 floor neighbours and nothing standing on them are filled as floor (`--ground-fill 12 --ground-fill-nb 3`; dp_1008 1F went from 0.37% to 0.17% no-ground samples along the mapping path). The base additionally tolerates one foot over a remaining gap (`robot.max_feet_over_gap: 1`, that foot takes the height of the plane through the other three) instead of refusing to move with a `stuck/no_ground` event
   - Turn it off with `build_scene --no-flatten` to keep the raw voxel floor
 - **Spawn and `/sim/set_pose` check whether the body overlaps the map**: if it does, the base moves to the nearest free pose within 1 m (up to 90° turned) and the TF/odom follow the *moved* pose. The start-up log prints `spawn requested [x, y, yaw, z_floor] -> base at [...]`, a ROS warning is logged when the base was moved, and a `spawn` event (`requested`, `pose`, `floor_z`, `moved`) goes out on `/sim/events`; `set_pose` events carry the same fields
 - **Spawn is set in `config/sim.yaml`** (`spawn: [x, y, yaw, z_floor]`); `null` takes the point `build_scene` wrote to `scenes/<name>/meta.json`. Do not edit `meta.json` by hand: it is a build cache that the next build overwrites. `z_floor` must be the floor height of the storey you want (the ground is searched from 0.5 m above it down to 1 m below it): a z between floors stands the base on clutter or a wall edge, which then triggers the relocation above
@@ -116,6 +136,8 @@ Body roll / pitch standard deviation while walking, before → after ground flat
 | `pcd2sim/` | PCD I/O, voxelization, denoising, box merging, ground flattening (`ground.py`), floor and spawn analysis, `build_scene` CLI |
 | `quadsim/` | `sim.py` core (no ROS), `lidar.py`, `base.py`, `proxies.py`, `raycast.py`, `model.py`, `ros_io.py`, `sim_node.py` |
 | `config/sim.yaml` | all parameters |
-| `scripts/` | `build_scenes.sh`, `run_sim.sh`, `smoke_test.sh`, `bench.py`, `ros_smoke_test.py` |
+| `config/nav_waypoints_dp_1008.yaml` | waypoints for the navigation goal-loop test on dp_1008 (1F) |
+| `scripts/` | `build_scenes.sh`, `run_sim.sh`, `smoke_test.sh`, `bench.py`, `ros_smoke_test.py`, `nav_goal_loop.sh` / `nav_goal_loop.py` (navigation goal-loop test), `make_waypoints_from_poses.py` |
 | `docker/` | Dockerfile, `run.sh`, minimal `livox_ros_driver2` message package |
+| `docs/` | `usage.md` (usage guide by task), `pcd-to-sim-architecture.md` (design), `nav-goal-loop-test-2026-10-13.md` (test record) |
 | `tests/` | unit tests (PCD, voxels and box merging, ground flattening, proxies, sensor timing, collision check, CustomMsg/PointCloud2 serialization) |

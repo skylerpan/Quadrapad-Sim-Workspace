@@ -1,0 +1,6 @@
+# p01 <-> p02 only: the one route of the hand-recorded dp_1008 points that ran clean (8/8 legs) in the
+# 2026-10-13 three-point loop. Planner path ~25.4 m each way. See nav_waypoints_dp_1008_manual.yaml.
+frame_id: map
+waypoints:
+  - {name: p01, x: -4.38, y: 2.07, z: -0.11, yaw: -2.90}
+  - {name: p02, x: -11.09, y: -16.56, z: 0.02, yaw: -0.72}

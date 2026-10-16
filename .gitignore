@@ -8,3 +8,5 @@ Maps/*.pcd
 MJDATA.TXT
 MJMODEL.TXT
 mjmodel.xml
+# nav goal loop test reports
+results/

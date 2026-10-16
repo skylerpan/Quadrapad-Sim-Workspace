@@ -1,0 +1,47 @@
+# Waypoints sampled from Maps/dp_1008/poses.txt: every ~10 m of trajectory, keyframe z in
+# [-1, 0.5] (one storey). 40 of 2004 keyframes kept.
+# Coordinates are in the `map` frame; z is the keyframe (LiDAR) height; yaw in radians.
+# Same per-waypoint keys as syncai_waypoint_sequencer/config/waypoints.yaml.
+frame_id: map
+waypoints:
+  - {name: wp01, x: -0.00, y: 0.00, z: -0.01, yaw: -0.00}
+  - {name: wp02, x: 2.41, y: -8.54, z: 0.13, yaw: -1.67}
+  - {name: wp03, x: 8.02, y: -12.27, z: 0.20, yaw: -0.06}
+  - {name: wp04, x: 17.44, y: -10.90, z: 0.22, yaw: 1.14}
+  - {name: wp05, x: 18.00, y: -0.68, z: 0.13, yaw: 1.54}
+  - {name: wp06, x: 17.54, y: 9.25, z: 0.00, yaw: 1.54}
+  - {name: wp07, x: 19.16, y: 18.58, z: -0.27, yaw: 0.48}
+  - {name: wp08, x: 21.76, y: 24.19, z: -0.35, yaw: 1.27}
+  - {name: wp09, x: 31.57, y: 26.32, z: -0.40, yaw: 0.66}
+  - {name: wp10, x: 26.44, y: 29.76, z: -0.42, yaw: -3.13}
+  - {name: wp11, x: 17.30, y: 31.46, z: -0.40, yaw: 1.83}
+  - {name: wp12, x: 31.44, y: 33.42, z: -0.43, yaw: 0.65}
+  - {name: wp13, x: 25.25, y: 35.93, z: -0.43, yaw: 3.11}
+  - {name: wp14, x: 17.47, y: 38.66, z: -0.45, yaw: 1.61}
+  - {name: wp15, x: 31.27, y: 39.77, z: -0.49, yaw: 0.91}
+  - {name: wp16, x: 24.00, y: 43.70, z: -0.50, yaw: -3.07}
+  - {name: wp17, x: 17.05, y: 48.74, z: -0.56, yaw: 1.60}
+  - {name: wp18, x: 25.92, y: 49.41, z: -0.60, yaw: 0.07}
+  - {name: wp19, x: 17.23, y: 54.84, z: -0.71, yaw: 1.20}
+  - {name: wp20, x: 27.10, y: 55.37, z: -0.70, yaw: 0.46}
+  - {name: wp21, x: 13.89, y: 3.79, z: 0.11, yaw: -2.86}
+  - {name: wp22, x: -5.51, y: 2.92, z: -0.06, yaw: -3.04}
+  - {name: wp23, x: -12.71, y: 5.68, z: 0.06, yaw: 1.91}
+  - {name: wp24, x: -4.77, y: 9.20, z: -0.14, yaw: -0.01}
+  - {name: wp25, x: -15.43, y: 11.19, z: -0.22, yaw: -3.11}
+  - {name: wp26, x: -25.91, y: 10.94, z: -0.28, yaw: -3.09}
+  - {name: wp27, x: -19.55, y: 6.69, z: -0.19, yaw: -1.32}
+  - {name: wp28, x: -17.07, y: -2.97, z: -0.03, yaw: -1.29}
+  - {name: wp29, x: -16.17, y: -13.08, z: 0.12, yaw: -1.40}
+  - {name: wp30, x: -11.74, y: -17.35, z: 0.19, yaw: -0.14}
+  - {name: wp31, x: -11.86, y: -6.47, z: 0.06, yaw: -0.01}
+  - {name: wp32, x: -23.17, y: -3.01, z: -0.06, yaw: 2.98}
+  - {name: wp33, x: -32.18, y: -0.38, z: -0.17, yaw: 3.05}
+  - {name: wp34, x: -37.25, y: -5.01, z: -0.12, yaw: -1.39}
+  - {name: wp35, x: -38.24, y: -14.00, z: -0.05, yaw: -3.02}
+  - {name: wp36, x: -46.44, y: -11.30, z: -0.17, yaw: 1.34}
+  - {name: wp37, x: -46.57, y: -0.95, z: -0.25, yaw: 1.61}
+  - {name: wp38, x: -45.30, y: 8.72, z: -0.35, yaw: 0.65}
+  - {name: wp39, x: -35.32, y: 9.04, z: -0.31, yaw: 0.02}
+# excluded: the planner finds no path to/from it (ramp to 2F area); kept for reference
+#  - {name: wp40, x: 2.14, y: -14.82, z: 0.22, yaw: -1.50}
