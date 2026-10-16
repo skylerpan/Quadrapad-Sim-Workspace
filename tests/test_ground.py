@@ -85,3 +85,103 @@ def test_noise_voxel_that_is_the_ground_cell_itself_is_removed():
     low = np.all(grid.keys == k, axis=1)
     assert low.any() and g.remove[low].all()
     assert _covered(g.slabs, *LOW)
+
+
+# -- stairs ---------------------------------------------------------------------------------------
+RISE, DEPTH, WIDTH, N_TREADS = 0.17, 0.30, 1.2, 6
+FLIGHT_X0, FLIGHT_Y = 2.0, (0.4, 1.6)        # lower landing x < 2, flight along +x, upper landing after
+
+
+def stair_z(x, y):
+    """True surface height of the stair room (landing 0, treads, upper landing)."""
+    i = np.clip(np.floor((x - FLIGHT_X0) / DEPTH) + 1, 0, N_TREADS)
+    on_flight = (x >= FLIGHT_X0) & (x < FLIGHT_X0 + N_TREADS * DEPTH)
+    side = on_flight & ((y < FLIGHT_Y[0]) | (y > FLIGHT_Y[1]))
+    return np.where(side, 0.0, i * RISE)
+
+
+def _stair_room(seed=1):
+    rng = np.random.default_rng(seed)
+    g = np.arange(0.0, 6.0, 0.04)
+    x, y = [a.ravel() for a in np.meshgrid(g, np.arange(0.0, 2.0, 0.04))]
+    floor = np.column_stack([x, y, stair_z(x, y) + rng.normal(0, 0.03, len(x))])
+    ys = np.arange(FLIGHT_Y[0], FLIGHT_Y[1], 0.04)
+    risers = []
+    for i in range(N_TREADS):                     # vertical riser faces at the front of every tread
+        zs = np.arange(i * RISE, (i + 1) * RISE, 0.04)
+        yy, zz = [a.ravel() for a in np.meshgrid(ys, zs)]
+        risers.append(np.column_stack([np.full(len(yy), FLIGHT_X0 + i * DEPTH), yy, zz]))
+    xs, zz = [a.ravel() for a in np.meshgrid(g, np.arange(0.0, 3.0, 0.04))]
+    wall = np.column_stack([xs, np.full(len(xs), 2.02), zz])
+    ceil = np.column_stack([x, y, np.full(len(x), 3.0)])
+    return np.vstack([floor, *risers, wall, ceil])
+
+
+STAIR_KW = dict(min_cells=12, fill_guard=0.3, surface="median", peel=3, small_flat=60)   # the stair recipe
+
+
+def _tread_levels(grid, g):
+    """Median flattened height of the cells inside every tread footprint (interior 0.1 m from the risers)."""
+    xy = grid.origin[:2] + (g.cell_keys[:, :2] + 0.5) * grid.voxel
+    out = []
+    for i in range(1, N_TREADS + 1):
+        x0 = FLIGHT_X0 + (i - 1) * DEPTH
+        m = (xy[:, 0] > x0 + 0.1) & (xy[:, 0] < x0 + DEPTH - 0.1) & (xy[:, 1] > 0.6) & (xy[:, 1] < 1.4)
+        out.append(g.cell_h[m])
+    return out
+
+
+def test_stair_treads_are_separate_levels():
+    grid = voxelize(_stair_room(), None, 0.1)
+    g = extract_ground(grid, standable_mask(grid), **STAIR_KW)
+    levels = _tread_levels(grid, g)
+    for i, h in enumerate(levels, start=1):
+        assert len(h) >= 6, f"tread {i} has only {len(h)} cells"
+        assert abs(np.median(h) - i * RISE) < 0.03, f"tread {i} at {np.median(h):.3f}, expected {i * RISE:.2f}"
+    rises = np.diff([np.median(h) for h in levels])
+    assert np.all(np.abs(rises - RISE) < 0.04)
+
+
+def test_stair_tread_not_swallowed_by_fill():
+    grid = voxelize(_stair_room(), None, 0.1)
+    g = extract_ground(grid, standable_mask(grid), **STAIR_KW)
+    xy = grid.origin[:2] + (g.cell_keys[:, :2] + 0.5) * grid.voxel
+    on = (xy[:, 0] >= FLIGHT_X0 + 0.05) & (xy[:, 0] < FLIGHT_X0 + N_TREADS * DEPTH) & \
+         (xy[:, 1] > 0.6) & (xy[:, 1] < 1.4)
+    truth = stair_z(xy[on, 0], xy[on, 1])
+    assert (g.cell_h[on] - truth).min() > -0.08      # nothing flattened below its own tread (riser cells excepted)
+
+
+def test_stairs_merge_into_the_landing_with_defaults():
+    """Documents why the stair recipe exists: with the defaults tread 1 chains to the landing."""
+    grid = voxelize(_stair_room(), None, 0.1)
+    g = extract_ground(grid, standable_mask(grid))
+    assert abs(np.median(_tread_levels(grid, g)[0])) < 0.03
+
+
+def test_fill_guard_blocks_fill_under_solid_voxel():
+    pts = _room()
+    solid = np.array([[HOLE[0] + dx, HOLE[1] + dy, floor_z(HOLE[0]) + 0.17]
+                      for dx in (-0.02, 0.0, 0.02) for dy in (-0.02, 0.0, 0.02)] * 2)   # 18-point voxel
+    grid = voxelize(np.vstack([pts, solid]), None, 0.1)
+    stand = standable_mask(grid)
+    g0 = extract_ground(grid, stand, min_cells=20)
+    g1 = extract_ground(grid, stand, min_cells=20, fill_guard=0.3)
+    assert _covered(g0.slabs, *HOLE) and not _covered(g1.slabs, *HOLE)
+    assert g1.stats["cells_guarded"] >= 1 and g0.stats["cells_guarded"] == 0
+
+
+def test_fill_guard_off_matches_previous_behaviour():
+    grid, g = _ground()
+    g_explicit = extract_ground(grid, standable_mask(grid), min_cells=20, fill_guard=0.0)
+    assert g.stats == g_explicit.stats
+    assert np.array_equal(g.cell_h, g_explicit.cell_h)
+
+
+def test_small_flat_makes_treads_horizontal():
+    grid = voxelize(_stair_room(), None, 0.1)
+    g = extract_ground(grid, standable_mask(grid), **STAIR_KW)
+    for i, h in enumerate(_tread_levels(grid, g), start=1):
+        # a tread may be split into a few small regions, each snapped flat: no ramp, few distinct heights
+        assert len(np.unique(np.round(h, 3))) <= 4, f"tread {i} is not piecewise flat"
+        assert h.max() - h.min() < 0.07, f"tread {i} spread {h.max() - h.min():.3f}"

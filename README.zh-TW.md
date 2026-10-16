@@ -97,6 +97,8 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
     - 地板旁邊的雜訊突起、小破洞、浮在地面上的小團塊都會清掉
     - 平面上方第一層、只有 1–2 個點、上面也沒有東西的體素（地板雜訊的上緣）也會清掉
   - **縫隙**：Mid-360 看不到機器人腳邊的地板，所以 SLAM 地圖的地板本來就有整欄沒點的格子，平面化的接縫又會多出一些。有至少 3 個地板鄰居、上面沒有東西的格子會被補成地板（`--ground-fill 12 --ground-fill-nb 3`；dp_1008 1F 沿建圖路徑的無地面取樣從 0.37% 降到 0.17%）。機身另外允許一隻腳踩在剩下的縫隙上（`robot.max_feet_over_gap: 1`，那隻腳的高度取其他三隻腳的平面），不再發 `stuck/no_ground` 拒絕移動
+  - **樓梯**：一片踏板只有 24–36 格，預設的 `--ground-min-cells 30` 會把它丟掉，平台的長 / 補又把它埋起來；豎板的點和頂上的雜訊體素也會讓踏板格子的高度變成一道斜坡、沿著豎板的欄位和平台連成一區。樓梯配方 `--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100`：保留小區、上方 0.1–0.3 m 有實心體素的欄位不補、格高用加權中位數而不是平均、不是單一平面的區先剝出主平面再分剩下的、100 格以下的區直接壓成水平面（自由擬合會把 2–3 格深的踏板變成斜坡）。全部預設關閉（舊場景重建結果不變）；`scripts/eval_scene.py --stairs-box` 量結果（層數、階高、覆蓋率、ASCII 側面圖），`scripts/sweep_scene.py` 比較參數組合。見 [`docs/scene-tuning-dp_1012-2026-10-16.md`](docs/scene-tuning-dp_1012-2026-10-16.md)
+  - **合成地面層**：匯出的 PCD 可能帶一層產生出來、完全平的地面在真地板下面（dp_1012：z = −0.95，佔 25% 的點），真地板的每個掃描破洞都會變成坑。`scripts/fix_pcd_plane.py` 只在真地板沒點的地方保留那層、抬到旁邊地板的高度，其他全部丟掉
   - 用 `build_scene --no-flatten` 可以關掉，保留原始的體素地板
 - **出生點和 `/sim/set_pose` 會檢查機身有沒有和地圖重疊**：重疊時，會在 1 m 內找最近的空位（最多轉 90°），TF/odom 跟著*移動後*的位姿走。啟動 log 會印 `spawn requested [x, y, yaw, z_floor] -> base at [...]`，有被移動時另外印一行 ROS warning，並在 `/sim/events` 發一筆 `spawn` 事件（`requested`、`pose`、`floor_z`、`moved`）；`set_pose` 事件也帶同樣欄位
 - **出生點在 `config/sim.yaml` 設定**（`spawn: [x, y, yaw, z_floor]`）；`null` 則用 `build_scene` 寫進 `scenes/<name>/meta.json` 的點。不要手改 `meta.json`：它是 build cache，下次 build 會被蓋掉。`z_floor` 必須是你要的那一層的地板高度（會從它上方 0.5 m 往下找到下方 1 m）：給一個夾在兩層之間的 z，機身會站在雜物或牆緣上，接著就觸發上面的移位
@@ -137,7 +139,7 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
 | `quadsim/` | `sim.py` 核心（無 ROS）、`lidar.py`、`base.py`、`proxies.py`、`raycast.py`、`model.py`、`ros_io.py`、`sim_node.py` |
 | `config/sim.yaml` | 所有參數 |
 | `config/nav_waypoints_dp_1008.yaml` | dp_1008（1F）導航下點迴圈測試用的 waypoint |
-| `scripts/` | `build_scenes.sh`、`run_sim.sh`、`smoke_test.sh`、`bench.py`、`ros_smoke_test.py`、`nav_goal_loop.sh` / `nav_goal_loop.py`（導航下點迴圈測試）、`make_waypoints_from_poses.py` |
+| `scripts/` | `build_scenes.sh`、`run_sim.sh`、`smoke_test.sh`、`bench.py`、`ros_smoke_test.py`、`nav_goal_loop.sh` / `nav_goal_loop.py`（導航下點迴圈測試）、`make_waypoints_from_poses.py`、`fix_pcd_plane.py`（合成地面層）、`eval_scene.py` / `sweep_scene.py`（場景品質、參數掃描） |
 | `docker/` | Dockerfile、`run.sh`、最小化的 `livox_ros_driver2` 訊息套件 |
-| `docs/` | `usage.md`（依任務分章的使用手冊）、`pcd-to-sim-architecture.md`（設計）、`nav-goal-loop-test-2026-10-13.md`（測試紀錄） |
+| `docs/` | `usage.md`（依任務分章的使用手冊）、`pcd-to-sim-architecture.md`（設計）、`nav-goal-loop-test-2026-10-13.md` / `nav-goal-loop-test-dp_1012-2026-10-14.md`（測試紀錄）、`scene-tuning-dp_1012-2026-10-16.md`（建場景參數掃描、樓梯） |
 | `tests/` | 單元測試（PCD、體素和 box 合併、地面平面化、碰撞代理、感測器時間、碰撞檢查、CustomMsg/PointCloud2 序列化） |

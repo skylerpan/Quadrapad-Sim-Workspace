@@ -72,6 +72,16 @@ docker/run.sh "python3 -m pcd2sim.build_scene --help"
 | `--ground-fill` | 12 | 補地板破洞的輪數（SLAM 地板沒點的格子） |
 | `--ground-fill-nb` | 3 | 8 個鄰居至少幾個是地板才補 |
 | `--ground-max-above` | 2 | 一欄要被當成地板補起來，上方 0.8 m 內最多幾個體素 |
+| `--ground-min-cells` | 30 | 小於這個格數的地面區不壓平（當成雜物頂面）。樓梯踏板很小，有樓梯的地圖用 8–12 |
+| `--ground-layers` | 2 | 每格的表面高度取最上層體素往下幾層一起算 |
+| `--ground-grow` | 3 | 地板往旁邊只因雜訊沒被判成可站立的欄位長幾圈 |
+| `--ground-floor-tol` | 0.15 | 長過去的欄位要在平面高度 ± 這個範圍內有體素（m） |
+| `--ground-fill-guard` | 0 | 欄位上方 0.1 m 到這個高度之間有實心體素（> 3 點）就不補、不長（m；0 = 關）。防止平台把旁邊的踏板埋掉 |
+| `--ground-surface` | mean | 每格表面高度用點數加權平均（`mean`）或加權中位數（`median`，不受頂上一顆雜訊體素和踏板下方豎板點的影響） |
+| `--ground-peel` | 0 | 不是單一平面的地面區先「剝」出主平面，剩下的格子再分成連通塊，最多剝幾層（0 = 關）。把平台和沿豎板欄位連上來的踏板分開 |
+| `--ground-small-flat` | 0 | 格數不超過這個數的區直接壓成水平面（高度取中位數），不做斜面擬合（0 = 關）。踏板只有 2–3 格深、原始表面本來就斜幾公分，自由擬合會變成小斜坡；60（0.6 m²）不會影響真正的坡道 |
+
+**樓梯配方**（dp_1012 掃描出來的最佳組合，見 [scene-tuning-dp_1012-2026-10-16.md](scene-tuning-dp_1012-2026-10-16.md)）：`--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100`。預設值完全不動，所以舊場景重建結果不變。
 
 輸出（都在 `--out`）：
 
@@ -83,7 +93,46 @@ docker/run.sh "python3 -m pcd2sim.build_scene --help"
 | `map_ds.pcd` | 體素中心 + intensity（RViz、定位測試用） |
 | `meta.json` | 統計、地板傾角、重力向量、出生點。**是 build cache，不要手改**，下次建置會蓋掉 |
 
-dp_1008（1,420 萬點）在 Jetson 上約 22 s、峰值記憶體 1.5 GB。
+dp_1008（1,420 萬點）在 Jetson 上約 22 s、峰值記憶體 1.5 GB。`meta.json` 的 `build_args` 記著這個場景用了哪些參數。
+
+### 2.1 PCD 裡的合成地面（`scripts/fix_pcd_plane.py`）
+
+有些匯出的 PCD 帶一層產生出來的地面（整張圖、完全平、密度極高的一層，`Maps/dp_1012.pcd` 在 z = −0.95，佔 25% 的點），比真正掃到的地板低 0.4–0.6 m。直接建場景的話，真地板每個掃描破洞都會變成掉到那層的坑（`step_down`）。這個 script 只在真地板沒點的欄位保留那層的點、並把它們抬到附近真地板的高度（補洞），其他地方的合成點全部丟掉：
+
+```bash
+python3 scripts/fix_pcd_plane.py Maps/dp_1012.pcd --dry-run                    # 只報告：平面在哪、多少點會抬 / 丟
+python3 scripts/fix_pcd_plane.py Maps/dp_1012.pcd -o Maps/dp_1012_fixed.pcd    # 寫新檔（原檔不動，planner 的 octomap 還是用原檔）
+docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1012_fixed.pcd --out scenes/dp_1012 <樓梯配方>"
+```
+
+平面會自動偵測（最擠的 2 cm 高度層，佔 5% 以上的點而且很平）；`--plane-z` 可以指定。純 numpy/scipy，主機上 3 秒。
+
+### 2.2 評估場景、掃參數（`scripts/eval_scene.py`、`scripts/sweep_scene.py`）
+
+`eval_scene.py` 在 container 裡跑（要 Embree 和 MuJoCo），對一個建好的場景報告：
+
+| 區塊 | 內容 |
+|---|---|
+| `ground` | `meta.json` 的地面統計（`planar_fraction`、`plane_rms_m`、`cells_filled`…） |
+| `stairs` | 每個 `--stairs-box xmin,xmax,ymin,ymax[,zmin,zmax]`：平板有幾個高度層、相鄰層的階高（平均 / 標準差）、不在任何層上的格子比例、斜坡格子比例（踏板被壓成斜面）、原始可站立欄位有平板蓋到的比例（coverage）、平板和原始頂面的差（residual）、平板低於原始頂面 8 cm 以上的比例（buried）。`<scene>/eval_profile.txt` 有沿樓梯方向的 ASCII 側面圖 |
+| `walk` | `--auto`：從出生點沿壓平的地板格做 BFS（8 鄰、高度差 ≤ 0.2 m，樓梯也算），每 0.3 m 一格從 BFS 的上一格「踩進去」（`IdealBase.reset` + `_check`）。機身在那格本來就放不下的（牆邊、家具）不算；有腳踩在沒平板的欄位的算 `edge_fraction`（地板邊緣或破洞）；其餘是有效取樣，`no_ground / step_up / step_down / slope / collision` 的數量就是地板缺陷，另外報有腳下方 3×3 射線打不到東西的比例 |
+| `stairs_walk` | 每個 stairs box 再走一次：用設定檔的機器人限制，以及 `--climb`（預設 `robot.max_step_up=0.22,robot.max_slope_deg=45`、不檢查碰撞）—— 分開「幾何有問題」和「機器人限制不夠」 |
+| `spawn` | 設定檔出生點：有沒有找到地板、有沒有被移動、地板高度 |
+
+```bash
+docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1012 --pcd Maps/dp_1012_fixed.pcd --find-stairs"   # 掃樓梯候選，印出可以直接用的 --stairs-box
+docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1012 --pcd Maps/dp_1012_fixed.pcd --auto --stairs-box=-6,-3,-18,-14,-0.5,6.3"
+docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1008 --poses Maps/dp_1008/poses.txt"              # 沿 SLAM keyframe 軌跡重播
+```
+
+`sweep_scene.py` 用一組參數把同一張 PCD 建成 `scenes/sweep/<prefix>_<tag>/`、每個都跑 `eval_scene.py`，把參數和所有指標寫成一張 CSV（`results/sweep_<prefix>/stage<N>.csv`，重跑會合併；`meta.json` 的 `build_args` 相同就不重建）：
+
+```bash
+docker/run.sh "python3 scripts/sweep_scene.py --pcd Maps/dp_1012_fixed.pcd --prefix dp_1012 --stage 1 --stairs-box=-6,-3,-18,-14,-0.5,6.3 --stairs-box=-42,-40,7,10,-1,5.9"
+docker/run.sh "python3 scripts/sweep_scene.py ... --stage 2 --variant 'tol05:--ground-tol 0.05' --variant 'fill16:--ground-fill 16'"   # 自訂變體
+```
+
+stage 1 內建 10 個變體（預設、`min-cells 12`、加 `fill-guard`、加 `surface median`、加 `peel`、median + peel、再 ± `layers 1` / `min-cells 8` / `max-above 1` / `tol 0.05`），stage 2 內建 6 個 `small-flat` 變體；其他用 `--variant` 加。
 
 ## 3. 跑模擬
 
@@ -325,7 +374,9 @@ scripts/run_sim.sh --config config/sim_other.yaml              # 整份換掉
 | `QUADSIM_GUI=1 but DISPLAY is not set` | 不是在桌面終端機執行。改在有 X 的終端機跑，或不開 GUI |
 | viewer 一幀要幾百 ms | 走到 `sw` 路徑。看啟動 log 的 `viewer: gl=`，有 NVIDIA GPU 就設 `QUADSIM_GL=nvidia`；確認 `viewer.shadows: false` |
 | RViz 點雲、格線畫不出來 | GL 退到 2.1 fallback。用 `QUADSIM_GL=nvidia` 或 `sw`，不要用沒 `/dev/dri` 的 `hw` |
-| 一起步就 `stuck` / `no_ground` | 場景地板有破洞。用目前預設（`--ground-fill 12 --ground-fill-nb 3`）重建場景，並確認 `robot.max_feet_over_gap: 1` |
+| 一起步就 `stuck` / `no_ground` | 場景地板有破洞。用目前預設（`--ground-fill 12 --ground-fill-nb 3`）重建場景，並確認 `robot.max_feet_over_gap: 1`。用 `scripts/eval_scene.py --auto` 找出缺陷在哪（[2.2](#22-評估場景掃參數scriptseval_scenepyscriptssweep_scenepy)） |
+| 到處 `step_down`，地板像有很多坑 | PCD 帶合成地面層（例如 dp_1012 的 z = −0.95）。先跑 `scripts/fix_pcd_plane.py` 再建場景（[2.1](#21-pcd-裡的合成地面scriptsfix_pcd_planepy)） |
+| 樓梯變斜坡、或踏板留成體素 | 用樓梯配方重建（[第 2 章](#2-建場景pcd--scenes)），用 `eval_scene.py --stairs-box` 看側面圖 |
 | 啟動 log 有 `moved True` 或 ROS warning 說機身被移動 | 出生點和地圖重疊，多半是 `spawn` 的 `z_floor` 給到別層。改成目標樓層的地板高度 |
 | 其他節點時間不對、TF 過期 | 沒設 `use_sim_time:=true` |
 | 導航 stack 看不到 sim 的 topic | RMW 或 domain 不同。sim 用 CycloneDDS、domain 1、`conf/cyclonedds.xml`；跑 `docker/run.sh "ros2 topic list"` 比對 |

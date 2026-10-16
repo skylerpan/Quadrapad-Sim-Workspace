@@ -32,7 +32,11 @@ SCENE_FORMAT = 2          # 2: ground.npz + NaN zmean under slabs; keep in sync 
 def build(pcd: str, out: str, voxel: float, min_pts: int, min_neighbors: int, crop_pct: float,
           z_min: float | None, z_max: float | None, flatten: bool = True, ground_tol: float = 0.06,
           ground_max_rms: float = 0.035, ground_thickness: float = 0.2, ground_fill: int = 12,
-          ground_fill_nb: int = 3, ground_max_above: int = 2) -> dict:
+          ground_fill_nb: int = 3, ground_max_above: int = 2, ground_min_cells: int = 30,
+          ground_layers: int = 2, ground_grow: int = 3, ground_floor_tol: float = 0.15,
+          ground_fill_guard: float = 0.0, ground_surface: str = "mean", ground_peel: int = 0,
+          ground_small_flat: int = 0) -> dict:
+    build_args = {k: v for k, v in locals().items()}       # recorded in meta.json (scenes are a cache)
     os.makedirs(out, exist_ok=True)
     t = {"start": time.time()}
     log = lambda msg: print(f"[{time.time() - t['start']:6.1f}s] {msg}", flush=True)
@@ -62,7 +66,10 @@ def build(pcd: str, out: str, voxel: float, min_pts: int, min_neighbors: int, cr
     log(f"standable voxels: {int(stand.sum())}; spawn={None if spawn is None else np.round(spawn, 3).tolist()}")
     if flatten:                              # uses the raw per-voxel z, so run before smoothing
         ground = extract_ground(grid, stand, tol=ground_tol, max_rms=ground_max_rms, thickness=ground_thickness,
-                                fill=ground_fill, fill_nb=ground_fill_nb, max_above=ground_max_above)
+                                fill=ground_fill, fill_nb=ground_fill_nb, max_above=ground_max_above,
+                                min_cells=ground_min_cells, layers=ground_layers, grow=ground_grow,
+                                floor_tol=ground_floor_tol, fill_guard=ground_fill_guard,
+                                surface=ground_surface, peel=ground_peel, small_flat=ground_small_flat)
         log(f"ground: {ground.stats}")
     grid.zmean = smooth_surface_z(grid)
     centers = grid.centers()
@@ -86,10 +93,14 @@ def build(pcd: str, out: str, voxel: float, min_pts: int, min_neighbors: int, cr
     if flatten:
         np.savez_compressed(ground_path, slabs=ground.slabs)
         zmean[ground.remove] = np.nan        # terrain rays use the exact slab hit height there
-        top = np.searchsorted(grid.codes, grid.encode(ground.cell_keys))
+        # filled/grown cells have no voxel of their own: they take intensity 0
+        codes = grid.codes
+        cell_codes = grid.encode(ground.cell_keys)
+        top = np.clip(np.searchsorted(codes, cell_codes), 0, len(codes) - 1)
+        cell_i = np.where(codes[top] == cell_codes, grid.intensity[top], 0).astype(grid.intensity.dtype)
         cell_xyz = np.column_stack([grid.origin[:2] + (ground.cell_keys[:, :2] + 0.5) * voxel, ground.cell_h])
         map_xyz = np.vstack([map_xyz, cell_xyz])
-        map_i = np.concatenate([map_i, grid.intensity[top]])
+        map_i = np.concatenate([map_i, cell_i])
     elif os.path.exists(ground_path):
         os.remove(ground_path)
     np.savez_compressed(os.path.join(out, "voxels.npz"), keys=grid.keys, intensity=grid.intensity, zmean=zmean,
@@ -106,6 +117,7 @@ def build(pcd: str, out: str, voxel: float, min_pts: int, min_neighbors: int, cr
         "min_pts": min_pts,
         "min_neighbors": min_neighbors,
         "crop_pct": crop_pct,
+        "build_args": build_args,
         "points_raw": n_raw,
         "voxels_raw": n_vox_raw,
         "voxels": int(len(grid.keys)),
@@ -146,10 +158,31 @@ def main(argv=None):
                     help="a hole column is filled when at least this many of its 8 neighbours are floor")
     ap.add_argument("--ground-max-above", type=int, default=2,
                     help="max voxels above the floor plane (within 0.8 m) for a column to be grown/filled as floor")
+    ap.add_argument("--ground-min-cells", type=int, default=30,
+                    help="smallest floor region kept (cells); stair treads need 8-12")
+    ap.add_argument("--ground-layers", type=int, default=2,
+                    help="voxel layers below the top voxel averaged into a cell's surface height")
+    ap.add_argument("--ground-grow", type=int, default=3,
+                    help="rings of neighbouring columns grown into the floor past noise voxels")
+    ap.add_argument("--ground-floor-tol", type=float, default=0.15,
+                    help="a grown column needs a voxel within this height of the floor plane (m)")
+    ap.add_argument("--ground-fill-guard", type=float, default=0.0,
+                    help="do not grow/fill under a column with a solid voxel up to this height above the "
+                         "proposed floor (m; 0 = off). Keeps stair treads from being buried by the landing")
+    ap.add_argument("--ground-surface", choices=["mean", "median"], default="mean",
+                    help="per-cell surface height: count-weighted mean, or median (robust to a sparse noise "
+                         "voxel on top and to riser points under a tread)")
+    ap.add_argument("--ground-peel", type=int, default=0,
+                    help="split a non-planar floor region into its dominant plane + the rest, this many "
+                         "levels deep (0 = off). Separates landings from the treads chained to them")
+    ap.add_argument("--ground-small-flat", type=int, default=0,
+                    help="regions of at most this many cells get a horizontal plane at their median height "
+                         "(0 = off; 60 for stair treads, which a free plane fit turns into ramps)")
     a = ap.parse_args(argv)
     build(a.pcd, a.out, a.voxel, a.min_pts, a.min_neighbors, a.crop_pct, a.z_min, a.z_max,
           not a.no_flatten, a.ground_tol, a.ground_max_rms, a.ground_thickness, a.ground_fill, a.ground_fill_nb,
-          a.ground_max_above)
+          a.ground_max_above, a.ground_min_cells, a.ground_layers, a.ground_grow, a.ground_floor_tol,
+          a.ground_fill_guard, a.ground_surface, a.ground_peel, a.ground_small_flat)
 
 
 if __name__ == "__main__":

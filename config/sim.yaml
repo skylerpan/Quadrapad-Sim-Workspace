@@ -1,6 +1,6 @@
 # Quadruped navigation sim (MuJoCo, ideal base). All units SI unless noted.
-scene: scenes/dp_1008            # directory produced by pcd2sim.build_scene
-spawn: [0.0, 0.0, 0.0, 0.0]   # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0. z_floor = floor height of that storey
+scene: scenes/dp_1012            # directory produced by pcd2sim.build_scene (dp_1012: from Maps/dp_1012_fixed.pcd, see docs/scene-tuning-dp_1012-2026-10-16.md)
+spawn: [0.0, 0.0, 0.0, -0.4]  # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0. z_floor = floor height of that storey (dp_1012 1F at (0,0): -0.40)
 
 physics:
   timestep: 0.0025            # s (400 Hz; IMU/clock 200 Hz and control 50 Hz divide evenly)
@@ -14,10 +14,10 @@ robot:                        # Go2-like ideal base (legs are not simulated)
   foot_offsets: [[0.19, 0.13], [0.19, -0.13], [-0.19, 0.13], [-0.19, -0.13]]
   foot_patch: 0.08            # spacing of the 3x3 ray patch under each foot
   attitude_tau: 0.15          # low-pass of height/roll/pitch (s); SLAM floors are noisy
-  max_step_up: 0.18           # largest per-foot height change accepted per control tick
+  max_step_up: 0.22           # largest per-foot height change accepted per control tick (stairs rise 0.17-0.20: 0.18 left no margin)
   max_step_down: 0.25
   max_feet_over_gap: 1        # feet allowed over a gap in the floor (height taken from the other feet's plane)
-  max_slope_deg: 30.0
+  max_slope_deg: 45.0         # plane through the 4 feet on a flight of stairs is 31-42 deg; 30 refused every staircase
   vel_limits: [1.5, 0.8, 2.0]     # |vx|, |vy|, |wz|
   acc_limits: [2.0, 2.0, 4.0]
   cmd_tau: 0.15               # first-order lag of the gait controller (s)
