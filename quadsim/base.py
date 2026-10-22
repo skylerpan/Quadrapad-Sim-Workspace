@@ -41,9 +41,18 @@ class Ground:
         return bool(np.isfinite(self.feet_h).all())
 
 
+def body_lift(cfg: dict, roll: float, pitch: float) -> float:
+    """Height of the body centre above the feet-plane point under it, such that the centre is
+    `stand_height` from the plane measured along the plane normal. The body bottom then stays
+    parallel to the feet plane at the same clearance on a slope or a flight of stairs; lifting straight
+    up by stand_height swings the front-bottom corner of a pitched body into the next riser."""
+    return cfg["stand_height"] * float(np.sqrt(1.0 + np.tan(pitch) ** 2 + np.tan(roll) ** 2))
+
+
 class IdealBase:
     def __init__(self, cfg: dict, ray_scene, voxel_lookup=None,
-                 blocked: Callable[[float, float, float, float], bool] | None = None):
+                 blocked: Callable[..., bool] | None = None):
+        """`blocked(x, y, yaw, z_center, roll, pitch) -> bool`: would the body box overlap the map."""
         self.c = cfg
         self.scene = ray_scene
         self.lookup = voxel_lookup
@@ -53,6 +62,7 @@ class IdealBase:
         g = np.array([-s, 0.0, s])
         self.patch = np.array([(a, b) for a in g for b in g])                    # [9,2]
         self.local = (self.feet[:, None, :] + self.patch[None, :, :]).reshape(-1, 2)  # [36,2]
+        self.feet_A = np.column_stack([self.feet, np.ones(len(self.feet))])        # plane fit through the feet
         self.vel_lim = np.asarray(cfg["vel_limits"], dtype=np.float64)
         self.acc_lim = np.asarray(cfg["acc_limits"], dtype=np.float64)
         self.x = self.y = self.yaw = 0.0
@@ -98,6 +108,12 @@ class IdealBase:
         a, b, z0 = coef
         if not supported.all():
             feet_h = np.where(supported, feet_h, a * self.feet[:, 0] + b * self.feet[:, 1] + z0)
+        # Body attitude = plane through the four foot heights (the body follows the feet). The ray plane
+        # above only fills a foot over a gap: its outlier refit collapses onto one tread on stairs (36
+        # rays on two levels 0.2 m apart keep a single level), which left the body level and 0.22 m
+        # above the lower tread while the front feet were already a tread up.
+        coef, *_ = np.linalg.lstsq(self.feet_A, feet_h, rcond=None)
+        a, b, z0 = coef
         return Ground(feet_h, float(z0), float(np.arctan(b)), float(-np.arctan(a)))
 
     # -- API -------------------------------------------------------------------
@@ -150,7 +166,8 @@ class IdealBase:
             return "step_down"
         if np.degrees(np.arccos(np.cos(g.roll) * np.cos(g.pitch))) > c["max_slope_deg"]:
             return "slope"
-        if self.blocked is not None and self.blocked(x, y, yaw, g.z0 + c["stand_height"]):
+        if self.blocked is not None and \
+                self.blocked(x, y, yaw, g.z0 + body_lift(c, g.roll, g.pitch), g.roll, g.pitch):
             return "collision"
         self.ground = g
         return None
@@ -159,4 +176,4 @@ class IdealBase:
         """Body-centre position and wxyz quaternion for the mocap target."""
         z0, roll, pitch = self.smooth
         R = rot_zyx(self.yaw, pitch, roll)
-        return np.array([self.x, self.y, z0 + self.c["stand_height"]]), quat_wxyz(R)
+        return np.array([self.x, self.y, z0 + body_lift(self.c, roll, pitch)]), quat_wxyz(R)

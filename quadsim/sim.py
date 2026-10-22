@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import mujoco
 import numpy as np
 
-from .base import IdealBase
+from .base import IdealBase, body_lift, rot_zyx
 from .config import load_scene_meta
 from .lidar import LidarFrame, RollingLidar
 from .model import add_map_mesh, build_mjcf
@@ -153,16 +153,18 @@ class Simulator:
         the map there; warns when it moves the base or finds no free pose.
         Returns (ground found, base moved away from the requested pose)."""
         ok = self.base.reset(x, y, yaw, z_floor_hint)
-        stand = self.cfg["robot"]["stand_height"]
-        if not self._blocked(x, y, yaw, self.base.ground.z0 + stand):
+        r_cfg = self.cfg["robot"]
+        blocked = lambda px, py, pyaw: self._blocked(
+            px, py, pyaw, self.base.ground.z0 + body_lift(r_cfg, self.base.ground.roll, self.base.ground.pitch),
+            self.base.ground.roll, self.base.ground.pitch)
+        if not blocked(x, y, yaw):
             return ok, False
         for r in np.arange(0.1, 1.01, 0.1):
             n = max(8, int(2 * np.pi * r / 0.1))
             for a in np.arange(n) * 2 * np.pi / n:
                 cx, cy = x + r * np.cos(a), y + r * np.sin(a)
                 for dyaw in (0.0, np.pi / 2, np.pi, -np.pi / 2):
-                    if self.base.reset(cx, cy, yaw + dyaw, z_floor_hint) and \
-                            not self._blocked(cx, cy, yaw + dyaw, self.base.ground.z0 + stand):
+                    if self.base.reset(cx, cy, yaw + dyaw, z_floor_hint) and not blocked(cx, cy, yaw + dyaw):
                         warnings.warn(f"pose ({x:.2f}, {y:.2f}, yaw {yaw:.2f}) overlaps the map; moved to "
                                       f"({cx:.2f}, {cy:.2f}, yaw {yaw + dyaw:.2f})", stacklevel=3)
                         return True, True
@@ -182,26 +184,38 @@ class Simulator:
         z_hi = pos[2] + self.half[2] + 0.3
         self.proxies.update(pos, half_xy, z_lo, z_hi, r["collision_margin"])
 
-    def _blocked(self, x: float, y: float, yaw: float, z_center: float) -> bool:
-        """Would the body box (yawed rectangle, z band) overlap any map box? 2D SAT per candidate."""
+    def _blocked(self, x: float, y: float, yaw: float, z_center: float, roll: float = 0.0,
+                 pitch: float = 0.0) -> bool:
+        """Would the body box, oriented like the physical body (yaw, pitch, roll), overlap any map box?
+        Oriented box vs axis-aligned boxes: AABB pre-query, then a vectorised separating-axis test.
+        The box is the physical body minus 5 mm at the bottom (numeric slack): the bottom stands ~0.22 m
+        above the feet plane, so the floor is never in it; a larger margin hides low obstacles MuJoCo
+        still hits. Level (roll = pitch = 0) this is the yawed-rectangle / z-band test of before; on a
+        flight of stairs the pitched box clears the next riser that a level box's front edge hit."""
         hx, hy, hz = self.half
-        c, s = abs(np.cos(yaw)), abs(np.sin(yaw))
-        ex, ey = hx * c + hy * s, hx * s + hy * c                      # body AABB half extents
-        # Same z band as the physical body (5 mm numeric slack): the body bottom stands ~0.22 m above
-        # the floor, so the floor is never in it; a larger margin hides low obstacles MuJoCo still hits.
-        lo = np.array([x - ex, y - ey, z_center - hz + 0.005])
-        hi = np.array([x + ex, y + ey, z_center + hz])
-        ids = self.index.query(lo, hi)
+        R = rot_zyx(yaw, pitch, roll)                                  # columns = body axes in world
+        half = np.array([hx, hy, hz - 0.0025])
+        centre = np.array([x, y, z_center]) + R[:, 2] * 0.0025
+        ext = np.abs(R) @ half                                         # world AABB of the oriented box
+        ids = self.index.query(centre - ext, centre + ext)
         if len(ids) == 0:
             return False
         b = self.index.boxes[ids]
-        d = b[:, :2] - (x, y)
-        bh = b[:, 3:5]
-        cy, sy = np.cos(yaw), np.sin(yaw)
-        du = np.abs(d[:, 0] * cy + d[:, 1] * sy)                       # along body x
-        dw = np.abs(-d[:, 0] * sy + d[:, 1] * cy)                      # along body y
-        overlap = ((du <= hx + bh[:, 0] * c + bh[:, 1] * s) & (dw <= hy + bh[:, 0] * s + bh[:, 1] * c))
-        return bool(overlap.any())  # world-axis tests are implied by the AABB query above
+        d = b[:, :3] - centre
+        bh = b[:, 3:6]
+        axes = [np.eye(3)[i] for i in range(3)] + [R[:, i] for i in range(3)]
+        for i in range(3):
+            for j in range(3):
+                L = np.cross(np.eye(3)[i], R[:, j])
+                n = np.linalg.norm(L)
+                if n > 1e-6:
+                    axes.append(L / n)
+        separated = np.zeros(len(ids), dtype=bool)
+        for L in axes:
+            r_body = float(np.sum(half * np.abs(R.T @ L)))
+            r_map = bh @ np.abs(L)
+            separated |= np.abs(d @ L) > r_body + r_map
+        return bool((~separated).any())
 
     def control_tick(self) -> TickOutput:
         """Advance one control period (ctrl_steps physics steps)."""
