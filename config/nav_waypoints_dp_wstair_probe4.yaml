@@ -1,0 +1,10 @@
+frame_id: map
+waypoints:
+  - {name: land, x: -10.7, y: -9.5, z: 1.3, yaw: 0.0}
+  - {name: k1,   x: -10.1, y: -9.5, z: 1.3, yaw: 0.0}
+  - {name: k2,   x:  -9.9, y: -9.5, z: 1.3, yaw: 0.0}
+  - {name: k3,   x:  -9.7, y: -9.5, z: 1.3, yaw: 0.0}
+  - {name: k4,   x:  -9.5, y: -9.5, z: 1.3, yaw: 0.0}
+  - {name: k5,   x:  -9.3, y: -9.5, z: 1.3, yaw: 0.0}
+  - {name: k6,   x:  -9.3, y: -9.9, z: 1.3, yaw: -1.57}
+  - {name: k7,   x:  -9.3, y: -10.3, z: 1.7, yaw: -1.57}
