@@ -1,0 +1,16 @@
+# 2026-10-22: second-floor probe points for scenes/dp. The 2F slab top is at z ~5.2 (1F floor -0.4,
+# stair candidate --stairs-box=-11,-8,-13,-11,-0.6,6.4 from eval_scene --find-stairs). Waypoint z is
+# the planner seed height; it snaps to the floor voxel. Used with --dry-run first to see which 2F
+# points the global planner can reach, then live.
+frame_id: map
+waypoints:
+  - {name: home,   x: -0.3, y: -0.8,  z: 0.02, yaw: 3.14}
+  - {name: f2_a,   x: -6.0, y: -16.6, z: 5.3,  yaw: 0.0}    # 2F slab right beside the stair box
+  - {name: f2_b,   x: -4.0, y: -16.6, z: 5.3,  yaw: 0.0}
+  - {name: f2_c,   x: -8.0, y: -14.0, z: 5.3,  yaw: 0.0}
+  - {name: f2_n,   x:  0.0, y: 26.0,  z: 5.3,  yaw: 1.57}   # big 2F region north of spawn
+  - {name: f2_s,   x:  0.0, y:  2.0,  z: 5.3,  yaw: 1.57}   # 2F above the spawn corridor
+  - {name: stair_w, x: -10.9, y: -13.4, z: 0.02, yaw: 1.57}  # 1F foot of the main (west) staircase, treads x -11.5..-10.3 rising north from y -12.4
+  - {name: stair_e, x:  6.3, y: -13.0, z: 0.02, yaw: 1.57}  # 1F staging point 1.3 m south of the east staircase (treads x 5.8..6.8, first riser y -11.8), facing up the stairs
+  - {name: land_e, x:  5.2, y: -6.9,  z: 2.5,  yaw: 3.14}  # middle of the east-stair top landing (y -6.4..-7.4, z 2.3), facing west toward flight 2 at x 4.5
+  - {name: stair_2, x:  4.5, y: -7.2,  z: 2.5,  yaw: -1.57}  # top of the landing on flight 2's axis (x 4.5), facing south up flight 2

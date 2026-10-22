@@ -1,0 +1,11 @@
+# probe points along the west (main) staircase box -11..-8,-13..-11 to find where the planner's layers break
+frame_id: map
+waypoints:
+  - {name: w_foot,  x: -10.9, y: -13.0, z: 0.0,  yaw: 1.57}   # 1F floor south of flight 1
+  - {name: w_f1a,   x: -10.9, y: -12.2, z: 0.0,  yaw: 1.57}   # flight 1 lower step (-0.1)
+  - {name: w_f1b,   x: -10.9, y: -11.4, z: 0.6,  yaw: 1.57}   # flight 1 upper step (0.5)
+  - {name: w_f1top, x: -10.9, y: -11.0, z: 0.8,  yaw: 1.57}   # flight 1 top (0.7)
+  - {name: w_l1,    x: -10.2, y: -11.0, z: 1.8,  yaw: 0.0}    # landing / flight 2 (1.7)
+  - {name: w_f2,    x:  -9.4, y: -11.4, z: 2.2,  yaw: 0.0}    # flight 2 (2.1)
+  - {name: w_f3,    x:  -9.4, y: -12.6, z: 2.6,  yaw: -1.57}  # 2.5 level
+  - {name: w_f4,    x:  -9.4, y: -12.6, z: 5.2,  yaw: -1.57}  # 5.1 level (2F)

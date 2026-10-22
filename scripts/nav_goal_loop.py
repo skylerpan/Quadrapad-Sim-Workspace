@@ -391,7 +391,7 @@ class Runner:
                 status = result_fut.result().status
                 status_name = STATUS_NAMES.get(status, str(status))
                 break
-            if any(e["type"] == "collision" for e in ev):
+            if a.collision_is_fail and any(e["type"] == "collision" for e in ev):
                 status_name = "COLLISION"
                 break
             if n.now_sim() - t_exec > leg_timeout:
@@ -441,8 +441,10 @@ class Runner:
         ev = [e for e in n.events if e.get("t", 0.0) >= leg["t_start_sim"] and e.get("type") in ("collision", "stuck")]
         leg["events"] = [{k: e.get(k) for k in ("type", "reason", "t")} for e in ev]
         if any(e["type"] == "collision" for e in ev):
-            leg["reason"] = "COLLISION"
-            return False
+            if a.collision_is_fail:
+                leg["reason"] = "COLLISION"
+                return False
+            leg["warnings"].append("COLLISION")
         if any(e["type"] == "stuck" for e in ev):
             if a.stuck_is_fail:
                 leg["reason"] = "STUCK"
@@ -706,6 +708,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     g.add_argument("--max-consecutive-fail", type=int, default=3)
     g.add_argument("--stop-on-fail", action="store_true")
     g.add_argument("--stuck-is-fail", type=lambda s: s.lower() not in ("0", "false", "no"), default=True)
+    g.add_argument("--collision-is-fail", type=lambda s: s.lower() not in ("0", "false", "no"), default=True,
+                   help="false: a sim collision/contact event no longer cancels the leg; it is recorded as a "
+                        "COLLISION warning and the leg is judged by the action result and ground truth "
+                        "(2026-10-22: the body touches stair risers while climbing, which is not a navigation failure)")
     t = ap.add_argument_group("ROS names")
     t.add_argument("--tracked-pose-topic", default="/robot01/tracked_pose")
     t.add_argument("--gt-topic", default="/sim/ground_truth/odom")
