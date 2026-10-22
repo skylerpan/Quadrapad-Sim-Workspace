@@ -88,6 +88,39 @@ def remove_isolated(grid: VoxelGrid, min_neighbors: int = 2) -> VoxelGrid:
     return grid.subset(nb >= min_neighbors)
 
 
+_NEIGHBORS_13 = _NEIGHBORS_26[[i for i, (dx, dy, dz) in enumerate(_NEIGHBORS_26)
+                               if dx > 0 or (dx == 0 and (dy > 0 or (dy == 0 and dz > 0)))]]   # each pair once
+
+
+def components_26(grid: VoxelGrid) -> tuple[int, np.ndarray]:
+    """26-connected component labels of the occupied voxels: (n_components, label per voxel)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    codes = grid.codes
+    n = len(codes)
+    rows, cols = [], []
+    for off in _NEIGHBORS_13:
+        k2 = grid.keys + off
+        hit = contains(codes, k2, grid.dims)
+        if hit.any():
+            rows.append(np.flatnonzero(hit))
+            cols.append(np.searchsorted(codes, encode(k2[hit], grid.dims)))
+    if not rows:
+        return n, np.arange(n)
+    rows, cols = np.concatenate(rows), np.concatenate(cols)
+    adj = coo_matrix((np.ones(len(rows), dtype=np.int8), (rows, cols)), shape=(n, n))
+    return connected_components(adj, directed=False)
+
+
+def remove_small_clusters(grid: VoxelGrid, min_voxels: int) -> VoxelGrid:
+    """Drop 26-connected clusters with fewer than min_voxels voxels (specks, ghosts). <= 1 is a no-op."""
+    if min_voxels <= 1 or len(grid.keys) == 0:
+        return grid
+    _, lab = components_26(grid)
+    size = np.bincount(lab)[lab]
+    return grid.subset(size >= min_voxels)
+
+
 def smooth_surface_z(grid: VoxelGrid, radius: int = 1, tol: float = 0.06) -> np.ndarray:
     """Bilateral xy-smoothing of per-voxel mean z.
 

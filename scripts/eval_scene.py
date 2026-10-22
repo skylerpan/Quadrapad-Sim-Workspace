@@ -19,7 +19,7 @@ Sections of the report (also written to <scene>/eval.json, ASCII stair profiles 
            (floor edges and holes); the rest are "valid" and their no_ground / step_up / step_down / slope /
            collision counts are the floor defects, plus the share with a foot patch over nothing (rays).
            Stair boxes are replayed again with --climb overrides (default robot.max_step_up=0.22
-           robot.max_slope_deg=45) and no collision test, to separate build geometry from robot limits.
+           robot.max_slope_deg=50) and no collision test, to separate build geometry from robot limits.
            --poses poses.txt / --waypoints yaml replay a polyline instead (poses: SLAM keyframes).
   spawn    config spawn: ground found, moved to a free pose, floor z
 key=value arguments override config/sim.yaml (e.g. robot.max_step_up=0.2).
@@ -40,7 +40,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import breadth_first_order, connected_components
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from pcd2sim.pcd_io import read_pcd  # noqa: E402
+from pcd2sim.octomap_io import read_map_points  # noqa: E402
 from pcd2sim.voxel import crop_percentile, remove_isolated, standable_mask, voxelize  # noqa: E402
 from quadsim.base import IdealBase  # noqa: E402
 from quadsim.config import load_config  # noqa: E402
@@ -145,11 +145,12 @@ def in_box(box: dict, xy: np.ndarray, z: np.ndarray | None = None) -> np.ndarray
     return m
 
 
-# -- raw PCD side (stair detection, coverage) -------------------------------------------------------
+# -- raw map side (stair detection, coverage) -------------------------------------------------------
 def raw_surface(pcd_path: str, voxel: float, boxes: list[dict] | None = None):
-    """Standable raw columns (x, y, z of the top surface voxel) from the PCD, optionally only inside boxes
-    (grown by 1 m; the whole column height is kept so the roof test works)."""
-    xyz, _ = read_pcd(pcd_path)
+    """Standable raw columns (x, y, z of the top surface voxel) from the source map (.pcd, or the occupied
+    cells of a .bt/.ot octree), optionally only inside boxes (grown by 1 m; the whole column height is kept
+    so the roof test works)."""
+    xyz, _, _ = read_map_points(pcd_path)
     xyz = xyz[crop_percentile(xyz, 0.05)]
     if boxes:
         keep = np.zeros(len(xyz), dtype=bool)
@@ -485,7 +486,7 @@ def load_waypoints(path: str) -> np.ndarray:
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scene", required=True)
-    ap.add_argument("--pcd", help="source PCD: stair coverage and --find-stairs need it")
+    ap.add_argument("--pcd", help="source map (.pcd / .bt / .ot): stair coverage and --find-stairs need it")
     ap.add_argument("--config", default=None)
     ap.add_argument("--stairs-box", action="append", default=[], help="xmin,xmax,ymin,ymax[,zmin,zmax]; repeatable")
     ap.add_argument("--stairs-axis", type=float, default=None, help="profile axis (deg); default: fitted")
@@ -496,7 +497,7 @@ def main(argv=None):
     ap.add_argument("--waypoints", help="waypoints yaml to replay as straight legs")
     ap.add_argument("--z-floor", type=float, default=None, help="floor z hint for --waypoints (default: z - 0.4)")
     ap.add_argument("--spawn", help="x,y,yaw,z_floor (default: config)")
-    ap.add_argument("--climb", default="robot.max_step_up=0.22,robot.max_slope_deg=45",
+    ap.add_argument("--climb", default="robot.max_step_up=0.22,robot.max_slope_deg=50",
                     help="comma-separated robot overrides for the second stair replay ('' = skip)")
     ap.add_argument("--json", default=None, help="report path (default <scene>/eval.json)")
     ap.add_argument("overrides", nargs="*", help="key=value config overrides")

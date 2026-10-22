@@ -56,11 +56,13 @@ FLAG2ARG = {"--voxel": "voxel", "--min-pts": "min_pts", "--min-neighbors": "min_
             "--ground-max-above": "ground_max_above", "--ground-min-cells": "ground_min_cells",
             "--ground-layers": "ground_layers", "--ground-grow": "ground_grow", "--ground-floor-tol": "ground_floor_tol",
             "--ground-fill-guard": "ground_fill_guard", "--ground-surface": "ground_surface", "--ground-peel": "ground_peel",
-            "--ground-small-flat": "ground_small_flat"}
+            "--ground-small-flat": "ground_small_flat", "--octomap-occ-thres": "octomap_occ_thres",
+            "--min-cluster": "min_cluster"}
 DEFAULTS = {"voxel": 0.1, "min_pts": 1, "min_neighbors": 2, "crop_pct": 0.05, "z_min": None, "z_max": None,
             "ground_tol": 0.06, "ground_max_rms": 0.035, "ground_thickness": 0.2, "ground_fill": 12, "ground_fill_nb": 3,
             "ground_max_above": 2, "ground_min_cells": 30, "ground_layers": 2, "ground_grow": 3, "ground_floor_tol": 0.15,
-            "ground_fill_guard": 0.0, "ground_surface": "mean", "ground_peel": 0, "ground_small_flat": 0}
+            "ground_fill_guard": 0.0, "ground_surface": "mean", "ground_peel": 0, "ground_small_flat": 0,
+            "octomap_occ_thres": 0.5, "min_cluster": 0}
 
 
 def flags_to_args(flags: str) -> dict:
@@ -86,8 +88,11 @@ def same_build(meta_path: str, want: dict, pcd: str) -> bool:
     with open(meta_path) as f:
         meta = json.load(f)
     have = meta.get("build_args") or {}
-    if os.path.basename(have.get("pcd", "")) != os.path.basename(pcd):
+    if os.path.basename(have.get("source", have.get("pcd", ""))) != os.path.basename(pcd):
         return False
+    if meta.get("source_format") == "octomap":                      # 1:1 conversion: only z_min/z_max/occ_thres matter
+        want = {k: v for k, v in want.items()
+                if k in ("z_min", "z_max", "min_neighbors", "min_cluster", "octomap_occ_thres")}
     for k, v in want.items():
         hv = have.get(k)
         if isinstance(v, float) or isinstance(hv, float):

@@ -45,9 +45,9 @@ DDS 條件：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、domain 1�
 
 要在同一台機器上另外起一個不互相干擾的 sim（例如跑測試時），給不同的 domain：`ROS_DOMAIN_ID=77 docker/run.sh ...`。
 
-## 2. 建場景（PCD → scenes/）
+## 2. 建場景（PCD / OctoMap → scenes/）
 
-把 `Maps/<name>.pcd` 轉成模擬用的場景目錄 `scenes/<name>/`。`Maps/*.pcd` 和 `scenes/` 都在 `.gitignore` 裡，要自己放。
+把 `Maps/<name>.pcd`（或 OctoMap `.bt` / `.ot`，見 §2.3）轉成模擬用的場景目錄 `scenes/<name>/`。`Maps/*.pcd` 和 `scenes/` 都在 `.gitignore` 裡，要自己放。
 
 ```bash
 scripts/build_scenes.sh                       # Maps/*.pcd 全部建，額外參數會傳給 build_scene
@@ -60,12 +60,13 @@ docker/run.sh "python3 -m pcd2sim.build_scene --help"
 
 | 參數 | 預設 | 說明 |
 |---|---|---|
-| `--pcd`, `--out` | 必填 | 輸入 PCD、輸出目錄 |
-| `--voxel` | 0.1 | 體素邊長（m）。5 cm 會讓表面破洞太多 |
-| `--min-pts`, `--min-neighbors` | 1, 2 | 每個體素最少點數、最少 26 鄰居數（去雜訊） |
+| `--map`（別名 `--pcd`）, `--out` | 必填 | 輸入地圖（`.pcd` / `.bt` / `.ot`，看副檔名）、輸出目錄 |
+| `--voxel` | 0.1 | 體素邊長（m）。5 cm 會讓表面破洞太多。OctoMap 輸入固定用樹的解析度，這個參數會被忽略 |
+| `--min-pts`, `--min-neighbors` | 1, 2 | 每個體素最少點數、最少 26 鄰居數（去雜訊）。`--min-neighbors` 對 OctoMap 輸入也套用，0 = 關 |
+| `--min-cluster` | 0 | 26 連通的叢集少於這個體素數就整叢丟掉（0 = 關）。octree 的雜訊多半是 1–4 格的小碎點，給 4 很合適；PCD 建置通常不開 |
 | `--crop-pct` | 0.05 | 每軸百分位裁切（0 = 不裁） |
 | `--z-min`, `--z-max` | 無 | 只保留這個高度範圍 |
-| `--no-flatten` | — | 不做地面平面化，保留原始體素地板 |
+| `--no-flatten` | — | 不做地面平面化，保留原始體素地板（octree 輸入：純 1:1 box，不補洞） |
 | `--ground-tol` | 0.06 | 同一地面區內允許的高度跳變（m） |
 | `--ground-max-rms` | 0.035 | 平面擬合 RMS 超過就不壓平（m） |
 | `--ground-thickness` | 0.2 | 地板平板厚度（m） |
@@ -80,6 +81,7 @@ docker/run.sh "python3 -m pcd2sim.build_scene --help"
 | `--ground-surface` | mean | 每格表面高度用點數加權平均（`mean`）或加權中位數（`median`，不受頂上一顆雜訊體素和踏板下方豎板點的影響） |
 | `--ground-peel` | 0 | 不是單一平面的地面區先「剝」出主平面，剩下的格子再分成連通塊，最多剝幾層（0 = 關）。把平台和沿豎板欄位連上來的踏板分開 |
 | `--ground-small-flat` | 0 | 格數不超過這個數的區直接壓成水平面（高度取中位數），不做斜面擬合（0 = 關）。踏板只有 2–3 格深、原始表面本來就斜幾公分，自由擬合會變成小斜坡；60（0.6 m²）不會影響真正的坡道 |
+| `--octomap-occ-thres` | 0.5 | 只對 `.ot`：occupancy 機率 ≥ 這個值的葉節點算 occupied |
 
 **樓梯配方**（dp_1012 掃描出來的最佳組合，見 [scene-tuning-dp_1012-2026-10-16.md](scene-tuning-dp_1012-2026-10-16.md)）：`--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100`。預設值完全不動，所以舊場景重建結果不變。
 
@@ -116,7 +118,7 @@ docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1012_fixed.pcd --out
 | `ground` | `meta.json` 的地面統計（`planar_fraction`、`plane_rms_m`、`cells_filled`…） |
 | `stairs` | 每個 `--stairs-box xmin,xmax,ymin,ymax[,zmin,zmax]`：平板有幾個高度層、相鄰層的階高（平均 / 標準差）、不在任何層上的格子比例、斜坡格子比例（踏板被壓成斜面）、原始可站立欄位有平板蓋到的比例（coverage）、平板和原始頂面的差（residual）、平板低於原始頂面 8 cm 以上的比例（buried）。`<scene>/eval_profile.txt` 有沿樓梯方向的 ASCII 側面圖 |
 | `walk` | `--auto`：從出生點沿壓平的地板格做 BFS（8 鄰、高度差 ≤ 0.2 m，樓梯也算），每 0.3 m 一格從 BFS 的上一格「踩進去」（`IdealBase.reset` + `_check`）。機身在那格本來就放不下的（牆邊、家具）不算；有腳踩在沒平板的欄位的算 `edge_fraction`（地板邊緣或破洞）；其餘是有效取樣，`no_ground / step_up / step_down / slope / collision` 的數量就是地板缺陷，另外報有腳下方 3×3 射線打不到東西的比例 |
-| `stairs_walk` | 每個 stairs box 再走一次：用設定檔的機器人限制，以及 `--climb`（預設 `robot.max_step_up=0.22,robot.max_slope_deg=45`、不檢查碰撞）—— 分開「幾何有問題」和「機器人限制不夠」 |
+| `stairs_walk` | 每個 stairs box 再走一次：用設定檔的機器人限制，以及 `--climb`（預設 `robot.max_step_up=0.22,robot.max_slope_deg=50`、不檢查碰撞）—— 分開「幾何有問題」和「機器人限制不夠」 |
 | `spawn` | 設定檔出生點：有沒有找到地板、有沒有被移動、地板高度 |
 
 ```bash
@@ -133,6 +135,52 @@ docker/run.sh "python3 scripts/sweep_scene.py ... --stage 2 --variant 'tol05:--g
 ```
 
 stage 1 內建 10 個變體（預設、`min-cells 12`、加 `fill-guard`、加 `surface median`、加 `peel`、median + peel、再 ± `layers 1` / `min-cells 8` / `max-above 1` / `tol 0.05`），stage 2 內建 6 個 `small-flat` 變體；其他用 `--variant` 加。
+
+### 2.2b OctoMap 轉回表面點雲（`scripts/bt_to_pcd.py`）
+
+把手畫 / 修過的 `.bt` 轉成 PCD，給 `map_server_3d`（local costmap 的靜態圖）用，讓它和 sim 場景、全域規劃讀同一份幾何。只取外露面（鄰居不是 occupied 的面），每面均勻取樣，輸出 binary PCD（x y z，同座標系）。
+
+```bash
+python3 scripts/bt_to_pcd.py Maps/dp_1012_handmade.bt --dry-run                                        # 只報告 voxel / 外露面數與建議點數
+python3 scripts/bt_to_pcd.py Maps/dp_1012_handmade.bt -o Maps/dp_1012_handmade_surface.pcd --points 12800000   # 精確點數、分層抖動
+python3 scripts/bt_to_pcd.py Maps/dp_1012_handmade.bt -o out.pcd --grid 4                                # 每面 4×4 規則格（0.2 m → 5 cm）
+```
+
+`--skip-down` 不取朝下的面（天花板 / 樓板底面）；`--offset 0.005` 把點往面外推一點。dp_1012_handmade.bt（46 萬格）約 3 秒，12.8 M 點 154 MB。
+
+**一條指令部署到 planner workspace**（`scripts/deploy_octomap_surface.py`）：取樣成 `Maps/<stem>_surface.pcd` → 複製到 `SyncAI-Device-Workspace/src/syncai_planner/octo_planner_3d/maps/<name>/` → `touch` 那邊的 `.bt` 和 `.layers` → 把 `maps_config.yaml` 的 `maps.<name>.pcd_path` 與 `robot01.ini` 的 `[3Dmap] pcd` 改指到新檔。`touch` 不能省：planner 只要看到 PCD 比 `.bt` 新，就會用 PCD 重建並**覆寫**手修的 `.bt`（`octo_planner_rviz_node.cpp`），`.layers` 同理。腳本永遠不覆寫既有 `.bt`：planner 那份和來源不同就停下來讓你決定。
+
+```bash
+python3 scripts/deploy_octomap_surface.py Maps/dp.bt --dry-run                    # 只印會做什麼
+python3 scripts/deploy_octomap_surface.py Maps/dp.bt                              # name=dp
+python3 scripts/deploy_octomap_surface.py Maps/dp_1012_handmade.bt --name dp_1012  # 自訂地圖名；--no-ini 不碰 robot01.ini
+```
+
+### 2.3 從 OctoMap 建場景（`.bt` / `.ot`）
+
+`--map` 也吃 OctoMap 檔（副檔名決定格式）。純 numpy 解析（`pcd2sim/octomap_io.py`），不需要 octomap 套件：`.bt` 只有 occupied / free 兩值；`.ot` 帶 log-odds，`--octomap-occ-thres` 決定多少機率算 occupied（支援 `OcTree` 和 `ColorOcTree`）。**流程**：每個 occupied 格子（prune 過的大節點先展開成樹解析度）1:1 變成一個體素 → 去雜訊 → 地面平面化（和 PCD 同一套 `--ground-*`：補地板破洞、每個地面區吸附成平面、長過雜訊欄位、丟飄浮碎塊）→ 合併成 box。`--no-flatten` 跳過平面化，保留原始 1:1 體素地板（破洞就是破洞）。PCD 那套百分位裁切和表面平滑不跑，`--voxel`、`--min-pts`、`--crop-pct` 對 octree 輸入沒有作用。
+
+**去雜訊**（兩道，和 PCD 共用同一套程式）：
+1. `--min-neighbors`（預設 2）：26 鄰居中 occupied 少於這個數的體素丟掉。給 0 就是純 1:1。
+2. `--min-cluster`（預設 0 = 關）：26 連通叢集少於 N 格整叢丟掉，比第一道強。
+
+以 `Maps/dp_1008/octomap.bt`（0.1 m，123.8 萬格）對照 PCD 建的 `scenes/dp_1008`（同一個 0.1 m 格網）量過：預設 `--min-neighbors 2` 刪 22,069 格（1.8%），其中 87% 在 PCD 場景裡不存在，也就是真的雜訊；`--min-neighbors 3` 會刪 40,515 格但只有一半是雜訊，開始吃到真幾何，所以不要調高。`--min-cluster 4` 刪 19,207 格、76% 是雜訊，要更乾淨時加上。`dp_1012.bt`（0.2 m）本來就乾淨，預設只刪 677 格。
+
+```bash
+docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012.bt --out scenes/dp_1012_bt --z-min -0.8"
+docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1012_bt --pcd Maps/dp_1012.bt --auto"
+docker/run.sh "python3 scripts/sweep_scene.py --pcd Maps/dp_1012.bt --prefix dp_1012_bt --stage 1"
+```
+
+- 體素邊長 = 樹的解析度（`dp_1012.bt` 是 0.2 m）；給了 `--voxel` 只會印警告然後忽略。
+- octree 沒有點數和 intensity：`voxels.npz` 的 intensity 全為 0（模擬 LiDAR 的反射率是平的），`zmean` 是格子中心 z。地面平面化內部把每格點數當 4（`ground.py` 把 ≤ 3 點當稀疏雜訊，octree 的雜訊已經由 `--min-neighbors` 處理掉）。
+- 格子的表面高度是格子頂面（occupied 格是實心塊）。`--ground-layers` 維持預設 2：地板上方因雜訊多出來的那層格子會把「最上層」抬高一格，把下面兩層一起平均才接近真地板。量過 `dp_1012.bt`（0.2 m）：`--ground-layers 0` 把地板切成一格一階的 0.2 m 梯田，`eval_scene --auto` 從出生點只走得到 118 m²；預設 2 走得到 1,479 m²、失敗 0.84%。
+- 地板收尾的效果：`dp_1012.bt`（0.2 m）155 個地面區全部是平面、補了 16,390 格破洞，`eval_scene --auto` 走動失敗 0.84%、腳下射線打不到東西 0.55%；`dp_1008/octomap.bt`（0.1 m）補 45,001 格、92.8% 的地面區是平面（RMS 1.8 cm），走動失敗 0.22%、腳下射線打不到東西 0.06%。
+- `Maps/dp_1012.bt` 一樣含有 PCD 的合成地面層（§2.1；在 octree 裡是整層 z = −0.9 的格子，7.2 萬個）。真地板在 −0.7 / −0.5 / −0.3，用 `--z-min -0.8` 直接切掉。
+- **解析度太粗，不適合當需要爬樓梯的物理場景**：0.2 m 把階高量化掉、地板稍微傾斜就出現 0.2 m 的假台階，而且沒有地面平面化來吸收（見 [pcd-to-sim-architecture.md](pcd-to-sim-architecture.md) §11）。拿來快速建粗場景、或只有 octomap 沒有 PCD 的地圖時用。
+- 輸出目錄另外取名（`scenes/dp_1012_bt`），不要蓋掉 PCD 建的場景。`meta.json` 多了 `source_format`（`pcd` / `octomap`）和 `octomap_res`；`source_pcd*` 欄位照舊，裝的是來源地圖（不管格式）。
+- `--no-flatten` 的場景沒有地面格，`scripts/eval_scene.py` 的走動評估（walk）只會印 `None`。
+- `dp_1012.bt`（43.7 萬格，`--z-min -0.8` 後 36.1 萬格）在 Jetson 上約 1 s，出來 4.4 萬個 box。
 
 ## 3. 跑模擬
 
@@ -225,11 +273,11 @@ Frame（`ros.frames`）：`map`、`odom`、`base_link`、`livox_frame`。靜態 
 ### 6.1 單元測試
 
 ```bash
-docker/run.sh "python3 -m pytest -q"               # tests/ 下 7 個檔、22 個測試，不用 ROS 也不用場景
+docker/run.sh "python3 -m pytest -q"               # tests/ 下 12 個檔、49 個測試，不用 ROS；樓梯 / 碰撞代理的幾個需要已建好的場景，沒有就跳過
 docker/run.sh "python3 -m pytest -q tests/test_ground.py -k fill"
 ```
 
-涵蓋：PCD 讀寫、體素化與 box 合併、地面平面化、碰撞代理、感測器時間、碰撞檢查、CustomMsg / PointCloud2 序列化。
+涵蓋：PCD 讀寫、OctoMap `.bt` / `.ot` 解析與從 octree 建場景、體素化與 box 合併、地面平面化、合成地面層修正、碰撞代理、感測器時間、碰撞檢查、CustomMsg / PointCloud2 序列化。
 
 ### 6.2 Headless 效能測試
 
@@ -350,7 +398,7 @@ python3 scripts/make_waypoints_from_poses.py Maps/dp_1008/poses.txt --spacing 8 
 |---|---|
 | `scene`、`spawn` | 預設場景目錄、出生點 `[x, y, yaw, z_floor]` |
 | `physics` | `timestep`（400 Hz）、`control_hz`（50）、`rtf` |
-| `robot` | 理想底盤：機身尺寸、站高、腳位、`max_step_up/down`、`max_feet_over_gap`、`max_slope_deg`、`vel_limits` / `acc_limits`、`cmd_tau`、`cmd_timeout`、碰撞代理池大小 |
+| `robot` | 理想底盤：機身尺寸、站高（沿腳平面法線量，機身底面在樓梯上和腳平面平行）、腳位、`max_step_up/down`、`max_feet_over_gap`、`max_slope_deg`（四隻腳的平面：手畫 0.2 m 深踏板是 46°，預設 50）、`attitude_tau`、`vel_limits` / `acc_limits`、`cmd_tau`、`cmd_timeout`、碰撞代理池大小。roll / pitch / 高度取四隻腳高度（各 3×3 射線取中位數）構成的平面，碰撞盒跟著機身一起傾斜 |
 | `lidar` | Mid-360 參數：安裝位置、頻率、點數、FOV、距離、雜訊、`pattern`（`synthetic` 或 CSV 路徑） |
 | `imu` | 頻率、`acc_unit`（`g` / `mps2`）、雜訊、bias random walk |
 | `viewer` | `shadows`、`sync_hz` |

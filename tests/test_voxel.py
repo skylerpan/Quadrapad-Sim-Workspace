@@ -1,6 +1,6 @@
 import numpy as np
 
-from pcd2sim.voxel import (boxes_to_world, fit_floor_normal, merge_boxes, remove_isolated, smooth_surface_z,
+from pcd2sim.voxel import (boxes_to_world, components_26, remove_small_clusters, fit_floor_normal, merge_boxes, remove_isolated, smooth_surface_z,
                            voxelize)
 
 
@@ -61,3 +61,18 @@ def test_floor_normal_and_surface_smoothing():
     resid_raw = g.zmean - np.tan(tilt) * g.centers()[:, 0]
     resid_s = zs - np.tan(tilt) * g.centers()[:, 0]
     assert resid_s.std() < 0.7 * resid_raw.std()          # noise reduced
+
+
+def test_remove_small_clusters():
+    from pcd2sim.voxel import voxelize
+    block = np.array([(i, j, k) for i in range(3) for j in range(3) for k in range(3)], dtype=float)   # 27 voxels
+    chain = np.array([(10, 0, 0), (11, 1, 0), (12, 2, 1)], dtype=float)                                  # 3, diagonal
+    lone = np.array([(20, 20, 20)], dtype=float)
+    g = voxelize(np.vstack([block, chain, lone]) + 0.5, None, 1.0)
+    assert len(g.keys) == 31
+    n, lab = components_26(g)
+    assert n == 3 and sorted(np.bincount(lab).tolist()) == [1, 3, 27]
+    assert len(remove_small_clusters(g, 0).keys) == 31 and len(remove_small_clusters(g, 1).keys) == 31
+    assert len(remove_small_clusters(g, 2).keys) == 30
+    assert len(remove_small_clusters(g, 4).keys) == 27
+    assert len(remove_small_clusters(g, 28).keys) == 0

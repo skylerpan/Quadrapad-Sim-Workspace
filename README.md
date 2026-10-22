@@ -19,6 +19,8 @@ docker build -t quadsim:latest docker/
 
 # 2. Maps/*.pcd -> scenes/<name>/ (about 2-5 s per map)
 scripts/build_scenes.sh
+#    An OctoMap works too (coarse geometry, see docs/usage.md section 2.3):
+#    docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012.bt --out scenes/dp_1012_bt --z-min -0.8"
 
 # 3. Start the sim (defaults to scenes/dp_1008, real time)
 scripts/run_sim.sh
@@ -105,7 +107,7 @@ MuJoCo: free-body base ← soft weld ← mocap target (integrated cmd_vel + terr
 - **Rolling LiDAR**: every ray is cast from the sensor pose nearest its emission time (at most half a physics step off), so motion distortion appears naturally. Points are in the sensor frame at emission time, like the real driver
 - Scan pattern: by default a synthetic Mid-360-like non-repetitive pattern (one azimuth revolution per frame, elevation −7°…52° from a low-discrepancy sequence). `lidar.pattern: <csv>` loads a measured pattern table instead (columns `t,azimuth_deg,elevation_deg[,line]`)
 - Reflectivity comes from the mean intensity of the original PCD points in each voxel
-- Ideal base: first-order lag, velocity and acceleration limits. Each of the 4 feet samples the ground with 3×3 rays to get height, roll and pitch (robust plane fit). Moves are rejected with an event when a single step is too high, the slope is too steep, there is no ground, or the body would collide
+- Ideal base: first-order lag, velocity and acceleration limits. Each of the 4 feet samples the ground with 3×3 rays (median per foot); roll, pitch and height come from the plane through the four feet, and the body centre sits `stand_height` from that plane along its normal, so the body bottom stays parallel to a flight of stairs. The collision box is pitched and rolled like the body. Moves are rejected with an event when a single step is too high, the slope is too steep, there is no ground, or the body would collide
 
 ## Benchmarks (aarch64, 6 cores, no GPU, single Python process)
 | Scene | Points | Voxels / boxes | Build | Sim RTF (headless) | Points/frame | Static frame vs map NN P95 |
@@ -135,11 +137,11 @@ Body roll / pitch standard deviation while walking, before → after ground flat
 ## Files
 | Path | Contents |
 |---|---|
-| `pcd2sim/` | PCD I/O, voxelization, denoising, box merging, ground flattening (`ground.py`), floor and spawn analysis, `build_scene` CLI |
+| `pcd2sim/` | PCD I/O, OctoMap `.bt`/`.ot` reader (`octomap_io.py`), voxelization, denoising, box merging, ground flattening (`ground.py`), floor and spawn analysis, `build_scene` CLI |
 | `quadsim/` | `sim.py` core (no ROS), `lidar.py`, `base.py`, `proxies.py`, `raycast.py`, `model.py`, `ros_io.py`, `sim_node.py` |
 | `config/sim.yaml` | all parameters |
 | `config/nav_waypoints_dp_1008.yaml` | waypoints for the navigation goal-loop test on dp_1008 (1F) |
 | `scripts/` | `build_scenes.sh`, `run_sim.sh`, `smoke_test.sh`, `bench.py`, `ros_smoke_test.py`, `nav_goal_loop.sh` / `nav_goal_loop.py` (navigation goal-loop test), `make_waypoints_from_poses.py`, `fix_pcd_plane.py` (synthetic ground layer), `eval_scene.py` / `sweep_scene.py` (scene quality, parameter sweeps) |
 | `docker/` | Dockerfile, `run.sh`, minimal `livox_ros_driver2` message package |
 | `docs/` | `usage.md` (usage guide by task), `pcd-to-sim-architecture.md` (design), `nav-goal-loop-test-2026-10-13.md` / `nav-goal-loop-test-dp_1012-2026-10-14.md` (test records), `scene-tuning-dp_1012-2026-10-16.md` (build parameter sweep, stairs) |
-| `tests/` | unit tests (PCD, voxels and box merging, ground flattening, proxies, sensor timing, collision check, CustomMsg/PointCloud2 serialization) |
+| `tests/` | unit tests (PCD, OctoMap parsing and octree builds, voxels and box merging, ground flattening, proxies, sensor timing, collision check, CustomMsg/PointCloud2 serialization) |
