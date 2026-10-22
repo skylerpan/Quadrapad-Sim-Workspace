@@ -19,6 +19,8 @@ docker build -t quadsim:latest docker/
 
 # 2. Maps/*.pcd → scenes/<name>/（每份地圖約 2–5 秒）
 scripts/build_scenes.sh
+#    OctoMap 也可以（幾何較粗，見 docs/usage.md §2.3）：
+#    docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012.bt --out scenes/dp_1012_bt --z-min -0.8"
 
 # 3. 啟動模擬（預設使用 scenes/dp_1008，即時速度）
 scripts/run_sim.sh
@@ -105,7 +107,7 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
 - **滾動式 LiDAR**：每條射線用最接近它發射時刻的感測器位姿來投射（誤差不超過半個物理步），會自然產生運動畸變。座標是發射當下的感測器座標系，和實機驅動一致
 - 掃描樣式：預設是合成的類 Mid-360 非重複樣式（每幀方位角掃一圈，仰角 −7°~52° 用低差異序列）。用 `lidar.pattern: <csv>` 可以改成實測樣式表（欄位 `t,azimuth_deg,elevation_deg[,line]`）
 - 反射率來自原始 PCD 每個體素的平均 intensity
-- 理想底盤：一階延遲、速度和加速度上限；4 隻腳各用 3×3 射線取地面，計算高度、roll、pitch（穩健平面擬合）；遇到單步高差超限、坡度超限、沒有地面或機身會撞到時，拒絕移動並發出事件
+- 理想底盤：一階延遲、速度和加速度上限；4 隻腳各用 3×3 射線取地面（每腳取中位數），高度、roll、pitch 取四隻腳構成的平面，機身中心沿該平面法線抬 `stand_height`，所以在樓梯上機身底面和腳平面平行；碰撞盒跟著機身一起傾斜；遇到單步高差超限、坡度超限、沒有地面或機身會撞到時，拒絕移動並發出事件
 
 ## 實測數據（aarch64、6 核、無 GPU，單一 Python 行程）
 | 場景 | 點數 | 體素 / box | 建置 | 模擬 RTF（headless） | 點數/幀 | 靜態幀對地圖 NN P95 |
@@ -135,7 +137,7 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
 ## 檔案
 | 路徑 | 內容 |
 |---|---|
-| `pcd2sim/` | PCD 讀寫、體素化、去雜訊、box 合併、地面平面化（`ground.py`）、地板與出生點、`build_scene` CLI |
+| `pcd2sim/` | PCD 讀寫、OctoMap `.bt` / `.ot` 解析（`octomap_io.py`）、體素化、去雜訊、box 合併、地面平面化（`ground.py`）、地板與出生點、`build_scene` CLI |
 | `quadsim/` | `sim.py` 核心（無 ROS）、`lidar.py`、`base.py`、`proxies.py`、`raycast.py`、`model.py`、`ros_io.py`、`sim_node.py` |
 | `config/sim.yaml` | 所有參數 |
 | `config/nav_waypoints_dp_1008.yaml` | dp_1008（1F）導航下點迴圈測試用的 waypoint |
