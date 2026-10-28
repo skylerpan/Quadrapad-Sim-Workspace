@@ -1,7 +1,7 @@
 # quadsim 使用手冊
 
 依「要做什麼」分章，每章給指令、常用參數和注意事項。完整參數清單一律以程式的 `--help` 為準。
-專案概觀、架構與實測數據見 [README.zh-TW.md](../README.zh-TW.md)；設計背景見 [pcd-to-sim-architecture.md](pcd-to-sim-architecture.md) §12–§13；導航測試的實測紀錄見 [nav-goal-loop-test-2026-10-13.md](nav-goal-loop-test-2026-10-13.md)。
+專案概觀、架構與實測數據見 [README.zh-TW.md](../README.zh-TW.md)；設計背景見 [pcd-to-sim-architecture.md](pcd-to-sim-architecture.md) §12–§13；導航測試的實測紀錄見 [archive/nav-goal-loop-test-2026-10-13.md](archive/nav-goal-loop-test-2026-10-13.md)。
 
 ## 0. 總覽
 
@@ -17,7 +17,6 @@
 | 看 topic / frame 名稱 | 讀 `config/sim.yaml` 的 `ros:` 區塊 | — | [5](#5-ros-2-介面) |
 | 跑單元測試 | `docker/run.sh "python3 -m pytest -q"` | 主機 | [6.1](#61-單元測試) |
 | 量模擬器效能（不用 ROS） | `docker/run.sh "python3 scripts/bench.py ..."` | 主機 | [6.2](#62-headless-效能測試) |
-| ROS 2 端到端冒煙測試 | `scripts/smoke_test.sh [scene]` | 主機 | [6.3](#63-ros-2-冒煙測試) |
 | 自動連續下導航點 | `scripts/nav_goal_loop.sh [參數]` | 主機 | [7](#7-導航下點迴圈測試) |
 | 從 SLAM 軌跡產生 waypoint | `scripts/make_waypoints_from_poses.py` | 主機或容器 | [8](#8-產生-waypoint) |
 | 改參數 | 編 `config/sim.yaml` 或指令列 `key=value` | — | [9](#9-設定檔與參數覆寫) |
@@ -61,29 +60,31 @@ docker/run.sh "python3 -m pcd2sim.build_scene --help"
 | 參數 | 預設 | 說明 |
 |---|---|---|
 | `--map`（別名 `--pcd`）, `--out` | 必填 | 輸入地圖（`.pcd` / `.bt` / `.ot`，看副檔名）、輸出目錄 |
-| `--voxel` | 0.1 | 體素邊長（m）。5 cm 會讓表面破洞太多。OctoMap 輸入固定用樹的解析度，這個參數會被忽略 |
-| `--min-pts`, `--min-neighbors` | 1, 2 | 每個體素最少點數、最少 26 鄰居數（去雜訊）。`--min-neighbors` 對 OctoMap 輸入也套用，0 = 關 |
+| `--voxel` | 0.1 | 體素邊長（m）。5 cm 以下表面會破很多洞，要配 `--close-rounds`（見 [2.4](#24-003-m-高解析度建置dp_full_original)）。OctoMap 輸入固定用樹的解析度，這個參數會被忽略 |
+| `--min-neighbors` | 2 | 26 鄰居中 occupied 少於這個數的體素丟掉（去雜訊）。對 OctoMap 輸入也套用，0 = 關 |
 | `--min-cluster` | 0 | 26 連通的叢集少於這個體素數就整叢丟掉（0 = 關）。octree 的雜訊多半是 1–4 格的小碎點，給 4 很合適；PCD 建置通常不開 |
-| `--crop-pct` | 0.05 | 每軸百分位裁切（0 = 不裁） |
-| `--z-min`, `--z-max` | 無 | 只保留這個高度範圍 |
+| `--z-min` | 無 | 丟掉這個高度以下的點（例如 PCD 的合成地面層） |
 | `--no-flatten` | — | 不做地面平面化，保留原始體素地板（octree 輸入：純 1:1 box，不補洞） |
 | `--ground-tol` | 0.06 | 同一地面區內允許的高度跳變（m） |
-| `--ground-max-rms` | 0.035 | 平面擬合 RMS 超過就不壓平（m） |
-| `--ground-thickness` | 0.2 | 地板平板厚度（m） |
-| `--ground-fill` | 12 | 補地板破洞的輪數（SLAM 地板沒點的格子） |
-| `--ground-fill-nb` | 3 | 8 個鄰居至少幾個是地板才補 |
+| `--ground-fill` | 12 | 補地板破洞的輪數（SLAM 地板沒點的格子；8 個鄰居至少 3 個是地板才補） |
 | `--ground-max-above` | 2 | 一欄要被當成地板補起來，上方 0.8 m 內最多幾個體素 |
 | `--ground-min-cells` | 30 | 小於這個格數的地面區不壓平（當成雜物頂面）。樓梯踏板很小，有樓梯的地圖用 8–12 |
 | `--ground-layers` | 2 | 每格的表面高度取最上層體素往下幾層一起算 |
 | `--ground-grow` | 3 | 地板往旁邊只因雜訊沒被判成可站立的欄位長幾圈 |
-| `--ground-floor-tol` | 0.15 | 長過去的欄位要在平面高度 ± 這個範圍內有體素（m） |
-| `--ground-fill-guard` | 0 | 欄位上方 0.1 m 到這個高度之間有實心體素（> 3 點）就不補、不長（m；0 = 關）。防止平台把旁邊的踏板埋掉 |
+| `--ground-fill-guard` | 0 | 欄位上方 0.1 m（或一格，取大者）到這個高度之間有實心體素（點數 > `--ground-spike-pts`）就不補、不長（m；0 = 關）。防止平台把旁邊的踏板埋掉 |
 | `--ground-surface` | mean | 每格表面高度用點數加權平均（`mean`）或加權中位數（`median`，不受頂上一顆雜訊體素和踏板下方豎板點的影響） |
 | `--ground-peel` | 0 | 不是單一平面的地面區先「剝」出主平面，剩下的格子再分成連通塊，最多剝幾層（0 = 關）。把平台和沿豎板欄位連上來的踏板分開 |
 | `--ground-small-flat` | 0 | 格數不超過這個數的區直接壓成水平面（高度取中位數），不做斜面擬合（0 = 關）。踏板只有 2–3 格深、原始表面本來就斜幾公分，自由擬合會變成小斜坡；60（0.6 m²）不會影響真正的坡道 |
-| `--octomap-occ-thres` | 0.5 | 只對 `.ot`：occupancy 機率 ≥ 這個值的葉節點算 occupied |
+| `--ground-spike-pts` | 3 | 長 / 補出來的地板欄位上方，點數 ≤ 這個數的體素當 SLAM 雜訊刪掉；`--ground-fill-guard` 也要點數 > 這個數才算實心。以 10 cm 體素設計；2–3 cm 體素幾乎每格只有 1 點，要給 0（每格都算真的） |
+| `--ground-sheet-pts` | 2 | 地板帶上方一層、點數 ≤ 這個數、頂上沒東西的體素是地板雜訊的上緣，刪掉。2–3 cm 體素給 0 |
+| `--ground-float-max` | 4 | 浮在地板上方 0.5 m 內、沒碰到別的東西、體素數 ≤ 這個數的小叢當雜訊。隨 1/體素² 放大：10 cm 用 4，3 cm 約 40 |
+| `--ground-roof-cell` | 一格 | 可站立體素的「上方 1.5 m 內要有結構（天花板）」檢查看多寬的 xy 欄位（m）。天花板掃得稀，3 cm 的欄位大多沒有天花板點，整片地板會被判成不可站立；0.03 m 用 0.15 |
+| `--ground-column-gap` | 0 | 多樓層補地板：長 / 補時，只有「同一欄位在提議高度 ± 這個範圍（到 2 倍）內已經有地面格」才跳過（m）。0 = 欄位裡任何樓層有地面格就不碰（舊行為；2F 地板下方的 1F 破洞永遠補不到）。0.03 m 用 0.3 |
+| `--close-rounds` | 0 | 補洞輪數（0 = 關）。把「在表面裡面」的空格補成實心：某個軸平面（xy / xz / yz）的 8 個鄰居 ≥ 6 個有點（地板 / 牆上的洞；邊緣格最多 5），或 26 鄰居 ≥ 12 個有點（厚而雜的面裡的洞、內角）。平貼在完整平面旁的格子只看得到 9 個鄰居、自己的平面裡 0 個，所以面不會變厚、邊不會長出去；2 輪補得掉 2 格寬的縫 |
+| `--workers` | 全部 CPU | 補洞分塊（每塊 200 萬格）用幾個 fork 出來的 process 平行算 |
+| `--keep-tmp`, `--resume` | 關, 關 | 階段檔（體素、補洞後體素、地面）和補洞的分塊檔放在 `<out>/.tmp`；成功後整個目錄刪掉，`--keep-tmp` 留著，`--resume` 讀既有階段檔跳過前面的階段（建置中途失敗時目錄會留著） |
 
-**樓梯配方**（dp_1012 掃描出來的最佳組合，見 [scene-tuning-dp_1012-2026-10-16.md](scene-tuning-dp_1012-2026-10-16.md)）：`--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100`。預設值完全不動，所以舊場景重建結果不變。
+**樓梯配方**（dp_1012 掃描出來的最佳組合，見 [archive/scene-tuning-dp_1012-2026-10-16.md](archive/scene-tuning-dp_1012-2026-10-16.md)）：`--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100`。預設值完全不動，所以舊場景重建結果不變。
 
 輸出（都在 `--out`）：
 
@@ -109,7 +110,7 @@ docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1012_fixed.pcd --out
 
 平面會自動偵測（最擠的 2 cm 高度層，佔 5% 以上的點而且很平）；`--plane-z` 可以指定。純 numpy/scipy，主機上 3 秒。
 
-### 2.2 評估場景、掃參數（`scripts/eval_scene.py`、`scripts/sweep_scene.py`）
+### 2.2 評估場景（`scripts/eval_scene.py`）
 
 `eval_scene.py` 在 container 裡跑（要 Embree 和 MuJoCo），對一個建好的場景報告：
 
@@ -126,15 +127,6 @@ docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1012 --pcd Maps/d
 docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1012 --pcd Maps/dp_1012_fixed.pcd --auto --stairs-box=-6,-3,-18,-14,-0.5,6.3"
 docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1008 --poses Maps/dp_1008/poses.txt"              # 沿 SLAM keyframe 軌跡重播
 ```
-
-`sweep_scene.py` 用一組參數把同一張 PCD 建成 `scenes/sweep/<prefix>_<tag>/`、每個都跑 `eval_scene.py`，把參數和所有指標寫成一張 CSV（`results/sweep_<prefix>/stage<N>.csv`，重跑會合併；`meta.json` 的 `build_args` 相同就不重建）：
-
-```bash
-docker/run.sh "python3 scripts/sweep_scene.py --pcd Maps/dp_1012_fixed.pcd --prefix dp_1012 --stage 1 --stairs-box=-6,-3,-18,-14,-0.5,6.3 --stairs-box=-42,-40,7,10,-1,5.9"
-docker/run.sh "python3 scripts/sweep_scene.py ... --stage 2 --variant 'tol05:--ground-tol 0.05' --variant 'fill16:--ground-fill 16'"   # 自訂變體
-```
-
-stage 1 內建 10 個變體（預設、`min-cells 12`、加 `fill-guard`、加 `surface median`、加 `peel`、median + peel、再 ± `layers 1` / `min-cells 8` / `max-above 1` / `tol 0.05`），stage 2 內建 6 個 `small-flat` 變體；其他用 `--variant` 加。
 
 ### 2.2b OctoMap 轉回表面點雲（`scripts/bt_to_pcd.py`）
 
@@ -158,7 +150,7 @@ python3 scripts/deploy_octomap_surface.py Maps/dp_1012_handmade.bt --name dp_101
 
 ### 2.3 從 OctoMap 建場景（`.bt` / `.ot`）
 
-`--map` 也吃 OctoMap 檔（副檔名決定格式）。純 numpy 解析（`pcd2sim/octomap_io.py`），不需要 octomap 套件：`.bt` 只有 occupied / free 兩值；`.ot` 帶 log-odds，`--octomap-occ-thres` 決定多少機率算 occupied（支援 `OcTree` 和 `ColorOcTree`）。**流程**：每個 occupied 格子（prune 過的大節點先展開成樹解析度）1:1 變成一個體素 → 去雜訊 → 地面平面化（和 PCD 同一套 `--ground-*`：補地板破洞、每個地面區吸附成平面、長過雜訊欄位、丟飄浮碎塊）→ 合併成 box。`--no-flatten` 跳過平面化，保留原始 1:1 體素地板（破洞就是破洞）。PCD 那套百分位裁切和表面平滑不跑，`--voxel`、`--min-pts`、`--crop-pct` 對 octree 輸入沒有作用。
+`--map` 也吃 OctoMap 檔（副檔名決定格式）。純 numpy 解析（`pcd2sim/octomap_io.py`），不需要 octomap 套件：`.bt` 只有 occupied / free 兩值；`.ot` 帶 log-odds，機率 ≥ 0.5 算 occupied（支援 `OcTree` 和 `ColorOcTree`）。**流程**：每個 occupied 格子（prune 過的大節點先展開成樹解析度）1:1 變成一個體素 → 去雜訊 → 地面平面化（和 PCD 同一套 `--ground-*`：補地板破洞、每個地面區吸附成平面、長過雜訊欄位、丟飄浮碎塊）→ 合併成 box。`--no-flatten` 跳過平面化，保留原始 1:1 體素地板（破洞就是破洞）。PCD 那套百分位裁切和表面平滑不跑，`--voxel` 對 octree 輸入沒有作用。
 
 **去雜訊**（兩道，和 PCD 共用同一套程式）：
 1. `--min-neighbors`（預設 2）：26 鄰居中 occupied 少於這個數的體素丟掉。給 0 就是純 1:1。
@@ -169,7 +161,6 @@ python3 scripts/deploy_octomap_surface.py Maps/dp_1012_handmade.bt --name dp_101
 ```bash
 docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012.bt --out scenes/dp_1012_bt --z-min -0.8"
 docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1012_bt --pcd Maps/dp_1012.bt --auto"
-docker/run.sh "python3 scripts/sweep_scene.py --pcd Maps/dp_1012.bt --prefix dp_1012_bt --stage 1"
 ```
 
 - 體素邊長 = 樹的解析度（`dp_1012.bt` 是 0.2 m）；給了 `--voxel` 只會印警告然後忽略。
@@ -181,14 +172,53 @@ docker/run.sh "python3 scripts/sweep_scene.py --pcd Maps/dp_1012.bt --prefix dp_
 - 輸出目錄另外取名（`scenes/dp_1012_bt`），不要蓋掉 PCD 建的場景。`meta.json` 多了 `source_format`（`pcd` / `octomap`）和 `octomap_res`；`source_pcd*` 欄位照舊，裝的是來源地圖（不管格式）。
 - `--no-flatten` 的場景沒有地面格，`scripts/eval_scene.py` 的走動評估（walk）只會印 `None`。
 - `dp_1012.bt`（43.7 萬格，`--z-min -0.8` 後 36.1 萬格）在 Jetson 上約 1 s，出來 4.4 萬個 box。
+- **目前的正式場景都是手修 octree 的純 1:1 建置**（`--no-flatten --min-neighbors 0`，不補洞、不平面化，樓梯踏板照手畫的格子走）：`scenes/dp_1012` ← `Maps/dp_1012_handmade.bt`（`config/sim.yaml` 預設，1F 原點地板 z = −0.4，樓梯 D 是 `tests/test_stairs_dp_1012.py` 的目標），`scenes/dp` ← `Maps/dp.bt`（整棟，2F 導航測試用 `config/nav_waypoints_dp_2f.yaml`）。重建：`docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0"`。手修 .bt 的部署見 [2.2b](#22b-octomap-轉回表面點雲scriptsbt_to_pcdpy)。
+
+### 2.4 0.03 m 高解析度建置（dp_full_original）
+
+機器狗的物理場景建議 2–3 cm（[pcd-to-sim-architecture.md](pcd-to-sim-architecture.md) §4、§11）。`Maps/dp_full_original.pcd`（1,956 萬點，xyz + intensity，和 `Maps/dp.pcd` 同一個檔；`fix_pcd_plane.py --dry-run` 沒找到合成地面）直接用 `--voxel 0.03` 建會是一張篩網：1,240 萬個體素裡 69% 只有 1 個點、94% ≤ 3 點，牆和地板散在 2–3 層裡，634 萬個 box 彼此不相鄰，LiDAR 會穿過去。所以多了補洞（`--close-rounds`）和幾個要跟著解析度換算的地面參數：
+
+```bash
+docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_full_original.pcd --out scenes/dp_full_003 --voxel 0.03 \
+  --close-rounds 2 \
+  --ground-min-cells 90 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 1100 \
+  --ground-layers 7 --ground-grow 10 --ground-fill 60 --ground-max-above 7 \
+  --ground-spike-pts 0 --ground-sheet-pts 0 --ground-float-max 40 \
+  --ground-roof-cell 0.15 --ground-column-gap 0.3"
+```
+
+從 0.1 m 樓梯配方換算（格數 ×11、層數 ×3.3；以公尺為單位的 `--ground-tol`、`--ground-fill-guard` 不變）：
+
+| 參數 | 0.1 m 配方 | 0.03 m | 單位 |
+|---|---|---|---|
+| `--ground-min-cells` | 8 | 90 | 格（0.08 m²） |
+| `--ground-small-flat` | 100 | 1100 | 格（1 m²） |
+| `--ground-layers` | 2 | 7 | 體素層（0.2 m） |
+| `--ground-grow` | 3 | 10 | 圈（0.3 m） |
+| `--ground-fill` | 12 | 60 | 輪（1.8 m：掃描起點正下方的地板有一個半徑約 1 m 的洞，Mid-360 往下看不到） |
+| `--ground-max-above` | 2 | 7 | 體素（地板上方 0.2 m 的雜訊） |
+| `--ground-spike-pts` / `--ground-sheet-pts` | 3 / 2 | 0 / 0 | 每格點數 → 每格都算真的 |
+| `--ground-float-max` | 4 | 40 | 每叢體素數 |
+| `--ground-roof-cell` | （一格） | 0.15 | m；天花板點稀，3 cm 欄位大多沒有「屋頂」 |
+| `--ground-column-gap` | （0） | 0.3 | m；1F 在 2F 平板正下方，舊規則一格一樓層、補不到 |
+
+另外兩處依解析度自動換算、不用給參數：地面格之間連成一區（以及 5×5 中位數）看鄰居最上層體素相差 0.1 m 以內（0.1 m 時就是 ±1 層）；`--ground-fill-guard` 的「上方有實心體素」從地板上方 0.1 m 起算而不是一格（0.1 m 時一樣）。沒有這幾項時 1F 地板只剩 LiDAR 掃描線的條紋（每條 3 cm 寬、間隔 5–10 cm 沒有點），`eval_scene --auto` 從 1F 只走得到 233 m²、41% 的取樣有腳踩在沒有地板的欄位上。
+
+實測（Jetson，14 workers）：補洞 2 輪 +324 萬格（1,108 萬 → 1,433 萬，去雜訊後），有 ≥ 12 個鄰居的體素比例 29% → 60%，補洞階段峰值記憶體 3 GB、66 s。整個建置 15 分鐘、峰值記憶體 9.8 GB（原始點陣列在體素化後就釋放，階段檔放 `<out>/.tmp`，結束自動刪掉；13 分鐘花在 `--ground-column-gap` 的多樓層補地板，每一輪都對全部地面格的 8 個鄰居提案）：地面 610 萬格、88.4% 壓成平面（RMS 1.8 cm）、補 459 萬格破洞、fill-guard 擋下 212 萬格、90 萬片 slab，最後 1,121 萬個體素合併成 309 萬個 box（`boxes.npy` 74 MB，整個場景 451 MB）。補 60 輪會從門窗開口往牆外多長約 1.8 m 的地板，目前接受。
+
+跑這個場景要注意：
+
+- `config/sim.yaml` 的 `robot.collision_pool` 128 / `collision_margin` 1.0 是以 0.1–0.2 m 的 box 設計的；0.03 m 時機身周圍 1 m 的視窗裡有上千個 box，`ProxyPool` 只會放最近的 128 個（`overflow` 計數會跳）。用這個場景時加 `robot.collision_pool=1024 robot.collision_margin=0.4`（`_blocked` 的分離軸檢查用整個索引，不受影響）。
+- viewer 的地圖 mesh 只畫離出生點最近的 `viewer.max_map_boxes` 個 box（預設 40 萬），所以 `--viewer` 只會看到出生點附近；`viewer.max_map_boxes=1500000` 大約能看到整層（2,900 萬面，載入多 13 s）。headless 不受影響。
+- `scenes/dp` 不動（還是 `Maps/dp.bt` 的 0.2 m 1:1 場景）；要用新場景就 `scene=scenes/dp_full_003`。
 
 ## 3. 跑模擬
 
 ```bash
-scripts/run_sim.sh                                   # 用 config/sim.yaml（預設 scene: scenes/dp_1008、rtf 1.0）
-scripts/run_sim.sh --scene scenes/dp_1008_fillC      # 換場景
+scripts/run_sim.sh                                   # 用 config/sim.yaml（預設 scene: scenes/dp_1012、rtf 1.0）
+scripts/run_sim.sh --scene scenes/dp                 # 換場景
 scripts/run_sim.sh --rtf 0 --duration 60             # 全速跑 60 秒 sim time 後結束
-scripts/run_sim.sh --no-gt-tf                        # 不發真值 map→odom→base_link TF（交給 Point-LIO / 定位 stack）
+scripts/run_sim.sh ros.publish_gt_tf=false           # 不發真值 map→odom→base_link TF（交給 Point-LIO / 定位 stack）
 scripts/run_sim.sh lidar.range_noise=0.0 robot.vel_limits=[1.0,0.5,1.5]
 docker/run.sh "python3 -m quadsim.sim_node --help"
 ```
@@ -200,17 +230,16 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 | `--config <yaml>` | 換整份設定檔（預設 `config/sim.yaml`） |
 | `--scene <dir>` | 場景目錄，覆寫設定檔的 `scene:` |
 | `--rtf <f>` | 即時倍率；0 = 能多快跑多快 |
-| `--no-gt-tf` | 不發真值 TF（`map → odom`、`odom → base_link`），交給定位 stack；等同 `ros.publish_gt_tf=false` |
 | `--duration <s>` | 跑這麼多 sim 秒後自動結束（0 = 不停） |
 | `--viewer` | 開 MuJoCo viewer（需要 `QUADSIM_GUI=1`，見第 4 章） |
 | `key=value ...` | 任何設定檔欄位的覆寫（見第 9 章） |
 
-出生點：`config/sim.yaml` 的 `spawn: [x, y, yaw, z_floor]`（目前 `[0, 0, 0, 0]`）；設成 `null` 會用 `meta.json` 裡 build_scene 算出的點。`z_floor` 要給**目標樓層的地板高度**（會從它上方 0.5 m 往下找到下方 1 m）；給到兩層之間會站在雜物或牆緣上。出生點或 `set_pose` 和地圖重疊時，機身會自動移到 1 m 內最近的空位（最多轉 90°）。
+出生點：`config/sim.yaml` 的 `spawn: [x, y, yaw, z_floor]`（目前 `[0, 0, 0, -0.4]`，dp_1012 1F）；設成 `null` 會用 `meta.json` 裡 build_scene 算出的點。`z_floor` 要給**目標樓層的地板高度**（會從它上方 0.5 m 往下找到下方 1 m）；給到兩層之間會站在雜物或牆緣上。出生點或 `set_pose` 和地圖重疊時，機身會自動移到 1 m 內最近的空位（最多轉 90°）。
 
 啟動 log 要看的幾行：
 
 ```
-scene scenes/dp_1008 (231371 boxes), spawn requested [x, y, yaw, z_floor] [0.0, 0.0, 0.0, 0.0] -> base at [0.0, 0.0, -0.15] yaw 0.00 (floor z -0.45, moved False), rtf 1.0, gt_tf True, custom_msg True
+scene scenes/dp_1012 (44116 boxes), spawn requested [x, y, yaw, z_floor] [0.0, 0.0, 0.0, -0.4] -> base at [0.0, 0.0, 0.1] yaw 0.00 (floor z -0.2, moved False), rtf 1.0, gt_tf True, custom_msg True
 viewer: gl=nvidia (docker/run.sh QUADSIM_GL), map mesh 3100000 faces, shadows False, sync <= 30 Hz   # 只有 --viewer 時出現
 event: {'type': 'spawn', ...}                   # 同一筆也會發到 /sim/events
 sim t=10.0s pose=[...]                          # 每 10 sim 秒一行
@@ -255,7 +284,7 @@ MuJoCo viewer 把整張地圖當一個 mesh 畫（dp_1008 約 310 萬個三角�
 | 訂閱 | `/cmd_vel` | `cmd_vel` | geometry_msgs/Twist（vx, vy, wz）；超過 `robot.cmd_timeout`（0.5 s）沒收到就歸零 | — |
 | 訂閱 | `/sim/set_pose` | `set_pose` | geometry_msgs/PoseStamped（x, y, yaw；**z 是地板高度提示**，多樓層時用來選層） | — |
 
-Frame（`ros.frames`）：`map`、`odom`、`base_link`、`livox_frame`。靜態 `base_link → livox_frame` 一律發布；`publish_gt_tf: true`（預設）時再加 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。用 `--no-gt-tf` 關掉後，這兩段由 Point-LIO / 定位 stack 發。
+Frame（`ros.frames`）：`map`、`odom`、`base_link`、`livox_frame`。靜態 `base_link → livox_frame` 一律發布；`publish_gt_tf: true`（預設）時再加 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。用 `ros.publish_gt_tf=false` 關掉後，這兩段由 Point-LIO / 定位 stack 發。
 
 `/sim/events` 的 `type`：
 
@@ -273,7 +302,7 @@ Frame（`ros.frames`）：`map`、`odom`、`base_link`、`livox_frame`。靜態 
 ### 6.1 單元測試
 
 ```bash
-docker/run.sh "python3 -m pytest -q"               # tests/ 下 12 個檔、49 個測試，不用 ROS；樓梯 / 碰撞代理的幾個需要已建好的場景，沒有就跳過
+docker/run.sh "python3 -m pytest -q"               # tests/ 下 13 個檔，不用 ROS；樓梯、碰撞檢查、感測器時間的幾個需要已建好的 scenes/dp_1012，沒有就跳過
 docker/run.sh "python3 -m pytest -q tests/test_ground.py -k fill"
 ```
 
@@ -293,24 +322,13 @@ docker/run.sh "python3 scripts/bench.py --scene scenes/dp_1008 --seconds 30 phys
 - 靜態一幀對 `map_ds.pcd` 的最近鄰距離 P95（應 < 2 個體素）
 - 行走期間的 stuck / collision 事件
 
-### 6.3 ROS 2 冒煙測試
-
-```bash
-scripts/smoke_test.sh                      # 預設 scenes/dp2f
-scripts/smoke_test.sh scenes/dp_1008       # 指定場景
-```
-
-在同一個容器裡 headless 起 sim（`--rtf 1.0`），再跑 `scripts/ros_smoke_test.py`，結束後印 sim log 的最後幾行，以測試程式的 exit code 結束。測試依序檢查：topic 頻率（以 sim time 計：`/clock`、`/livox/imu`、`/livox/points`、`/livox/lidar`、真值 odom）→ TF `map → livox_frame` → `/cmd_vel` 直走（`--drive-seconds`，預設 6）→ 直走到 sim 回報 collision 或 stuck 事件 → `/sim/set_pose` 回到起點。約 20–30 秒跑完。
-
-測試程式用的是第 5 章的預設 topic / frame 名，而且需要 PointCloud2 與真值 TF 都開著；如果你的 `ros:` 區塊改過名稱，請先改回預設或在容器內自己起 sim 加覆寫後再跑 `ros_smoke_test.py`。跑的時候若機器上已有另一個 sim，用 `ROS_DOMAIN_ID=77 scripts/smoke_test.sh ...` 隔開。
-
 ## 7. 導航下點迴圈測試
 
 把 map frame 的 waypoint 一個接一個下給導航 stack，並用 sim 真值驗證每一段。`scripts/nav_goal_loop.sh` 在 sim 容器內執行 `scripts/nav_goal_loop.py`，所以會在同一個 DDS domain。
 
 前置條件：
 
-1. sim 用 `scripts/run_sim.sh --no-gt-tf` 啟動（TF 交給定位），`ros.topics` 的 LiDAR / IMU / cmd_vel 名稱要和導航 stack 用的一致（見第 5、9 章）。
+1. sim 用 `scripts/run_sim.sh ros.publish_gt_tf=false` 啟動（TF 交給定位），`ros.topics` 的 LiDAR / IMU / cmd_vel 名稱要和導航 stack 用的一致（見第 5、9 章）。
 2. 導航 stack 起好：定位（Point-LIO）、全域規劃（`octo_planner_rviz_node`）、控制（`syncai_controller_3d`），且 planner 的地圖和 sim 場景來自同一份 PCD。測試程式的 `--*-topic` 預設是 `robot01` 導航 stack 的名稱，接別的 stack 用這些參數改。
 3. 測試期間 **不要按 teleop**（鍵盤節點也會發 cmd_vel）。
 4. 定位已收斂：preflight 會比對 tracked pose 和真值，差超過 `--loc-preflight`（0.5 m）或 pose 太舊就以 exit 2 結束。
@@ -368,8 +386,10 @@ Waypoint 檔（欄位 `name, x, y, z, yaw` 與 sequencer 的 YAML 相同，map f
 | `config/nav_waypoints_dp_1008_manual.yaml` | 手動 teleop 到位後讀定位記下的 p01–p05，排成最長路線 |
 | `config/nav_waypoints_dp_1008_3pt.yaml` | p03 → p01 → p02 三角形（避開 p04 / p05 旁的地板破洞） |
 | `config/nav_waypoints_dp_1008_2pt.yaml` | p01 ↔ p02 來回，跑得最乾淨的一條路線 |
+| `config/nav_waypoints_dp_2f.yaml` | `scenes/dp` 2F 的 10 點路線（2026-10-22 起的主要測試集） |
+| `config/archive/` | 一次性的探點集（dp_probe、西側樓梯 probe 1–4、dp_1012_3pt、custom_2026-10-27），留作紀錄 |
 
-各檔的來龍去脈與當天的失敗分析見 [nav-goal-loop-test-2026-10-13.md](nav-goal-loop-test-2026-10-13.md)。
+各檔的來龍去脈與當天的失敗分析見 [archive/nav-goal-loop-test-2026-10-13.md](archive/nav-goal-loop-test-2026-10-13.md)。
 
 ## 8. 產生 waypoint
 
@@ -399,8 +419,8 @@ python3 scripts/make_waypoints_from_poses.py Maps/dp_1008/poses.txt --spacing 8 
 | `scene`、`spawn` | 預設場景目錄、出生點 `[x, y, yaw, z_floor]` |
 | `physics` | `timestep`（400 Hz）、`control_hz`（50）、`rtf` |
 | `robot` | 理想底盤：機身尺寸、站高（沿腳平面法線量，機身底面在樓梯上和腳平面平行）、腳位、`max_step_up/down`、`max_feet_over_gap`、`max_slope_deg`（四隻腳的平面：手畫 0.2 m 深踏板是 46°，預設 50）、`attitude_tau`、`vel_limits` / `acc_limits`、`cmd_tau`、`cmd_timeout`、碰撞代理池大小。roll / pitch / 高度取四隻腳高度（各 3×3 射線取中位數）構成的平面，碰撞盒跟著機身一起傾斜 |
-| `lidar` | Mid-360 參數：安裝位置、頻率、點數、FOV、距離、雜訊、`pattern`（`synthetic` 或 CSV 路徑） |
-| `imu` | 頻率、`acc_unit`（`g` / `mps2`）、雜訊、bias random walk |
+| `lidar` | Mid-360 參數：安裝位置、頻率、點數、FOV、距離、雜訊（掃描樣式固定為合成的非重複樣式） |
+| `imu` | 頻率、雜訊、bias random walk（加速度單位固定為 g，和 livox_ros_driver2 相同） |
 | `viewer` | `shadows`、`sync_hz` |
 | `ros` | frame 名、`publish_gt_tf`、`publish_custom_msg`、`publish_pointcloud2`、`pointcloud2_format`、`publish_map_cloud`、各 topic 名 |
 
@@ -411,7 +431,6 @@ scripts/run_sim.sh physics.rtf=0 lidar.range_noise=0.0        # 數字
 scripts/run_sim.sh robot.vel_limits=[1.0,0.5,1.5]              # list 不要有空白
 scripts/run_sim.sh ros.topics.cmd_vel=/dog/cmd_vel ros.frames.base=base_footprint   # 對齊別的 stack 的名稱
 scripts/run_sim.sh ros.publish_gt_tf=false ros.publish_pointcloud2=false          # 布林值
-scripts/run_sim.sh lidar.pattern=config/mid360_pattern.csv     # 實測掃描樣式表（欄位 t,azimuth_deg,elevation_deg[,line]）
 scripts/run_sim.sh --config config/sim_other.yaml              # 整份換掉
 ```
 
@@ -422,7 +441,7 @@ scripts/run_sim.sh --config config/sim_other.yaml              # 整份換掉
 | `QUADSIM_GUI=1 but DISPLAY is not set` | 不是在桌面終端機執行。改在有 X 的終端機跑，或不開 GUI |
 | viewer 一幀要幾百 ms | 走到 `sw` 路徑。看啟動 log 的 `viewer: gl=`，有 NVIDIA GPU 就設 `QUADSIM_GL=nvidia`；確認 `viewer.shadows: false` |
 | RViz 點雲、格線畫不出來 | GL 退到 2.1 fallback。用 `QUADSIM_GL=nvidia` 或 `sw`，不要用沒 `/dev/dri` 的 `hw` |
-| 一起步就 `stuck` / `no_ground` | 場景地板有破洞。用目前預設（`--ground-fill 12 --ground-fill-nb 3`）重建場景，並確認 `robot.max_feet_over_gap: 1`。用 `scripts/eval_scene.py --auto` 找出缺陷在哪（[2.2](#22-評估場景掃參數scriptseval_scenepyscriptssweep_scenepy)） |
+| 一起步就 `stuck` / `no_ground` | 場景地板有破洞。用目前預設（`--ground-fill 12`）重建場景，並確認 `robot.max_feet_over_gap: 1`。用 `scripts/eval_scene.py --auto` 找出缺陷在哪（[2.2](#22-評估場景scriptseval_scenepy)） |
 | 到處 `step_down`，地板像有很多坑 | PCD 帶合成地面層（例如 dp_1012 的 z = −0.95）。先跑 `scripts/fix_pcd_plane.py` 再建場景（[2.1](#21-pcd-裡的合成地面scriptsfix_pcd_planepy)） |
 | 樓梯變斜坡、或踏板留成體素 | 用樓梯配方重建（[第 2 章](#2-建場景pcd--scenes)），用 `eval_scene.py --stairs-box` 看側面圖 |
 | 啟動 log 有 `moved True` 或 ROS warning 說機身被移動 | 出生點和地圖重疊，多半是 `spawn` 的 `z_floor` 給到別層。改成目標樓層的地板高度 |
@@ -430,5 +449,4 @@ scripts/run_sim.sh --config config/sim_other.yaml              # 整份換掉
 | 導航 stack 看不到 sim 的 topic | RMW 或 domain 不同。sim 用 CycloneDDS、domain 1、`conf/cyclonedds.xml`；跑 `docker/run.sh "ros2 topic list"` 比對 |
 | nav 測試 exit 2（preflight failed） | tracked pose 沒在發、太舊或和真值差超過 0.5 m：定位還沒收斂，或 Point-LIO 掛了（曾經 segfault） |
 | nav 測試每段 0.3 s 就 `ABORTED` | controller 判起點不安全，sim 不會自己脫困。見測試紀錄 §4.2；用 teleop 推開後再跑 |
-| `scripts/smoke_test.sh` 全部 topic 收不到 | `ros:` 區塊的 topic / frame 名和第 5 章的預設不同，或 PointCloud2 / 真值 TF 被關掉。見 [6.3](#63-ros-2-冒煙測試) |
 | `scenes/`、`results/`、`Maps/*.pcd` 不在 git 裡 | 本來就 gitignore；場景用第 2 章重建 |

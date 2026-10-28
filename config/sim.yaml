@@ -1,5 +1,5 @@
 # Quadruped navigation sim (MuJoCo, ideal base). All units SI unless noted.
-scene: scenes/dp_1012            # directory produced by pcd2sim.build_scene (dp_1012: pure 1:1 build of Maps/dp_1012_handmade.bt, --no-flatten --min-neighbors 0; stair-tuned PCD recipe in docs/scene-tuning-dp_1012-2026-10-16.md)
+scene: scenes/dp_1012            # directory produced by pcd2sim.build_scene (dp_1012: pure 1:1 build of Maps/dp_1012_handmade.bt, --no-flatten --min-neighbors 0; stair-tuned PCD recipe in docs/archive/scene-tuning-dp_1012-2026-10-16.md)
 spawn: [0.0, 0.0, 0.0, -0.4]  # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0. z_floor = floor height of that storey (dp_1012 1F at (0,0): -0.40)
 
 physics:
@@ -37,12 +37,10 @@ lidar:                        # Livox Mid-360-like, rolling (per-point time)
   range_noise: 0.02           # sigma (m)
   dropout: 0.0                # random drop probability
   grazing_cos: 0.08           # drop returns with |cos(incidence)| below this
-  pattern: synthetic          # "synthetic" or a CSV path with columns t,azimuth_deg,elevation_deg[,line]
   seed: 0
 
 imu:                          # co-located with the LiDAR (Mid-360 internal IMU)
   rate_hz: 200
-  acc_unit: g                 # "g" (livox_ros_driver2) or "mps2"
   acc_noise: 0.02             # m/s^2 white noise sigma
   gyro_noise: 0.002           # rad/s
   acc_bias_rw: 0.0005         # m/s^2/sqrt(s)
@@ -51,6 +49,7 @@ imu:                          # co-located with the LiDAR (Mid-360 internal IMU)
 viewer:                       # MuJoCo viewer (--viewer) only; the map mesh has millions of triangles
   shadows: false              # the map casting shadows on itself doubles the render cost for little gain
   sync_hz: 30                 # max rate (wall clock) at which the sim pushes its state to the viewer window
+  max_map_boxes: 400000       # boxes drawn in the viewer mesh, nearest to the spawn first (0.1-0.2 m scenes have fewer; a 0.03 m scene has ~3.4 M, 12 triangles each: 1500000 shows ~the whole storey)
 
 ros:
   frames: {map: map, odom: robot01/odom, base: robot01/base_link, lidar: robot01/laser}

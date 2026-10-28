@@ -76,3 +76,71 @@ def test_remove_small_clusters():
     assert len(remove_small_clusters(g, 2).keys) == 30
     assert len(remove_small_clusters(g, 4).keys) == 27
     assert len(remove_small_clusters(g, 28).keys) == 0
+
+
+def _grid_from_keys(keys, voxel=0.03, intensity=None):
+    from pcd2sim.voxel import VoxelGrid, encode
+    keys = np.asarray(keys, dtype=np.int32)
+    dims = keys.max(axis=0) + 2
+    order = np.argsort(encode(keys, dims))
+    keys = keys[order]
+    inten = np.full(len(keys), 10.0, np.float32) if intensity is None else np.asarray(intensity, np.float32)[order]
+    zmean = (keys[:, 2] + 0.5) * voxel
+    return VoxelGrid(keys, np.ones(len(keys), np.int32), inten, zmean.astype(np.float32),
+                     np.zeros(3), voxel, dims)
+
+
+def test_close_holes_fills_sheet_hole_without_thickening(tmp_path):
+    from pcd2sim.voxel import close_holes, encode
+    sheet = np.mgrid[0:12, 0:12, 2:3].reshape(3, -1).T
+    hole = (sheet[:, 0] == 5) & (sheet[:, 1] == 6)
+    g = _grid_from_keys(sheet[~hole])
+    g2, n = close_holes(g, rounds=1, workers=1, tmp_dir=str(tmp_path / "close"))
+    assert n == 1
+    assert len(g2.keys) == len(sheet)                            # hole filled, nothing else added
+    assert set(map(tuple, g2.keys.tolist())) == set(map(tuple, sheet.tolist()))
+    assert np.all(np.diff(encode(g2.keys, g2.dims)) > 0)        # still code-sorted
+    assert not (tmp_path / "close").exists()                     # it created the dir, so it removed it
+
+
+def test_close_holes_inside_corner_only_and_no_sheet_thickening(tmp_path):
+    from pcd2sim.voxel import close_holes
+    floor = np.mgrid[0:10, 0:10, 0:1].reshape(3, -1).T
+    wall = np.mgrid[0:10, 9:10, 1:6].reshape(3, -1).T          # wall standing on the floor's far edge
+    g = _grid_from_keys(np.vstack([floor, wall]))
+    g2, n = close_holes(g, rounds=1, workers=1, tmp_dir=str(tmp_path))
+    added = set(map(tuple, g2.keys.tolist())) - set(map(tuple, np.vstack([floor, wall]).tolist()))
+    assert all(k[2] == 1 and k[1] == 8 for k in added)         # only the inside corner line (sees 9 + 6)
+    assert n == len(added) <= 10
+
+
+def test_close_holes_wall_gap_and_speck(tmp_path):
+    from pcd2sim.voxel import close_holes
+    wall = np.mgrid[0:10, 4:5, 0:8].reshape(3, -1).T
+    gap = (wall[:, 0] == 4) & (wall[:, 2] == 3)
+    speck = np.array([[20, 20, 20]])
+    keys = np.vstack([wall[~gap], speck])
+    inten = np.r_[np.full(len(wall[~gap]), 30.0), 200.0]
+    g = _grid_from_keys(keys, intensity=inten)
+    g2, n = close_holes(g, rounds=2, workers=1, tmp_dir=str(tmp_path))
+    assert n == 1
+    k = g2.keys.tolist()
+    assert [4, 4, 3] in k and [20, 20, 20] in k                   # gap filled, speck untouched and not grown
+    assert len(g2.keys) == len(keys) + 1
+    added = np.flatnonzero((g2.keys == [4, 4, 3]).all(axis=1))[0]
+    assert g2.counts[added] == 1 and abs(g2.intensity[added] - 30.0) < 1e-5
+    assert abs(g2.zmean[added] - 3.5 * 0.03) < 1e-6
+
+
+def test_close_holes_rounds_zero_and_chunking_invisible(tmp_path):
+    from pcd2sim.voxel import close_holes
+    rng = np.random.default_rng(3)
+    floor = np.mgrid[0:40, 0:40, 1:2].reshape(3, -1).T
+    keep = rng.random(len(floor)) > 0.15                         # 15 % holes
+    g = _grid_from_keys(floor[keep])
+    g0, n0 = close_holes(g, rounds=0)
+    assert n0 == 0 and g0 is g
+    a, na = close_holes(g, rounds=2, workers=1, tmp_dir=str(tmp_path / "a"))
+    b, nb = close_holes(g, rounds=2, workers=3, tmp_dir=str(tmp_path / "b"), chunk=97)
+    assert na == nb > 0
+    assert np.array_equal(a.keys, b.keys) and np.allclose(a.intensity, b.intensity)

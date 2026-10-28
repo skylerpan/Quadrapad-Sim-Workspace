@@ -1,0 +1,9 @@
+# Three waypoints sent from webrvizlite on /set_waypoint (map frame), 2026-10-27.
+# z copied from the other 1F sets (ground is z 0 at the spawn); yaw from the sent quaternion.
+frame_id: map
+waypoints:
+  - {name: wp1, x: -11.50, y:  -2.00, z: 0.02, yaw: -1.62}   # west, facing south; sent (-12.05, -2.02) was 0.15 m from the wall column at x -12.2 (planner snapped it 0.35 m), moved 0.55 m east into the open floor 2026-10-27
+  - {name: v12a, x:   4.60, y:  -2.60, z: 0.02, yaw: -1.57}   # via pair 2026-10-27: v12a (floor side) -> v12b (platform side) is a 1.4 m straight southward crossing of the 0.2 m ledge at y -3.2 (x 4.3..4.9, gradient yaw -1.5..-1.6). A single via point let the path cut SE across the ledge's diagonal jog east of x 5.2 (gradient check 73-88 deg > 70).
+  - {name: v12b, x:   4.60, y:  -4.00, z: 0.02, yaw: -1.57}
+  - {name: wp2, x:   8.20, y: -11.56, z: 0.02, yaw:  1.62}   # south-east, facing north (quat z 0.7244 w 0.6894 = 92.8 deg)
+  - {name: wp3, x:   4.98, y:   6.40, z: 0.02, yaw: -3.10}   # north-east, facing west (quat z -0.9998 w 0.0212 = -177.6 deg)

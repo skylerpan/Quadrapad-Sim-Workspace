@@ -21,10 +21,8 @@ SCENE_FORMAT = 2          # bump with pcd2sim.build_scene.SCENE_FORMAT when scen
 
 
 def _warn_stale_scene(scene_dir: str, meta: dict):
-    """Scenes are a build cache: warn (don't fail) if built by older code or from a changed PCD."""
+    """Scenes are a build cache: warn (don't fail) if the source map changed since the build."""
     why = []
-    if meta.get("format_version", 1) < SCENE_FORMAT:
-        why.append(f"format {meta.get('format_version', 1)} < {SCENE_FORMAT}")
     src = meta.get("source_pcd")
     if src and os.path.exists(src) and "source_pcd_mtime" in meta:
         st = os.stat(src)
@@ -38,7 +36,7 @@ def _warn_stale_scene(scene_dir: str, meta: dict):
 @dataclass
 class ImuSample:
     t: float
-    acc: np.ndarray    # sensor frame, unit per cfg (g or m/s^2)
+    acc: np.ndarray    # sensor frame, in g (like livox_ros_driver2)
     gyro: np.ndarray   # rad/s
 
 
@@ -57,14 +55,12 @@ class Simulator:
         scene_dir = cfg["scene"]
         self.meta = load_scene_meta(scene_dir)
         _warn_stale_scene(scene_dir, self.meta)
-        t0 = time.time()
         boxes = np.load(os.path.join(scene_dir, "boxes.npy"))
-        ground = os.path.join(scene_dir, "ground.npz")      # flattened floor (absent in older scenes)
+        ground = os.path.join(scene_dir, "ground.npz")      # flattened floor slabs (absent in --no-flatten scenes)
         slabs = np.load(ground)["slabs"] if os.path.exists(ground) else None
         self.rays = RayScene(boxes, slabs)
         self.voxels = VoxelLookup(os.path.join(scene_dir, "voxels.npz"))
         self.index = BoxIndex(boxes)
-        self.load_seconds = time.time() - t0
 
         r = cfg["robot"]
         self.half = np.asarray(r["body_size"]) / 2.0
@@ -80,7 +76,12 @@ class Simulator:
         xml = build_mjcf(cfg, self.meta["gravity"], pos, r["collision_pool"])
         if visual_map:                      # only for the viewer: headless runs keep the 130-geom model
             spec = mujoco.MjSpec.from_string(xml)
-            add_map_mesh(spec, boxes, slabs)
+            max_vis = int(cfg.get("viewer", {}).get("max_map_boxes", 400_000))
+            vis_boxes = boxes
+            if len(boxes) > max_vis:        # draw the boxes nearest the spawn (a 0.03 m map has millions)
+                d2 = ((boxes[:, :2] - pos[:2]) ** 2).sum(axis=1)
+                vis_boxes = boxes[np.argpartition(d2, max_vis)[:max_vis]]
+            add_map_mesh(spec, vis_boxes, slabs, max_boxes=max_vis)
             self.m = spec.compile()
         else:
             self.m = mujoco.MjModel.from_xml_string(xml)
@@ -269,8 +270,7 @@ class Simulator:
         self.gyro_bias += self.rng.normal(0, c["gyro_bias_rw"] * np.sqrt(dt), 3)
         acc += self.acc_bias + self.rng.normal(0, c["acc_noise"], 3)
         gyro += self.gyro_bias + self.rng.normal(0, c["gyro_noise"], 3)
-        if c.get("acc_unit", "g") == "g":
-            acc /= G
+        acc /= G                                    # livox_ros_driver2 publishes acceleration in g
         return ImuSample(t, acc, gyro)
 
     def _base_contact(self):
@@ -288,6 +288,3 @@ class Simulator:
         mujoco.mju_quat2Mat(R, q[3:7])          # from qpos: d.xmat still holds the pre-step pose
         v_body = R.reshape(3, 3).T @ self.d.qvel[0:3]
         return q[0:3].copy(), q[3:7].copy(), v_body, self.d.qvel[3:6].copy()
-
-    def lidar_pose_in_base(self):
-        return np.asarray(self.cfg["lidar"]["mount_xyz"], dtype=np.float64)

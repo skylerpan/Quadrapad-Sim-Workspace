@@ -1,6 +1,6 @@
 """Headless benchmark + sanity checks of the simulator core (no ROS needed).
 
-Usage: python3 scripts/bench.py [--scene scenes/dp2f] [--seconds 30] [key=value overrides...]
+Usage: python3 scripts/bench.py [--scene scenes/dp_1012] [--seconds 30] [key=value overrides...]
 
 Checks:
   - real-time factor and time split (physics / lidar / control)
@@ -73,7 +73,7 @@ def main():
     print(f"offset_time monotonic: {mono}, within [0,{period}): {rng_ok}")
     if imu_rest:
         acc = np.mean(imu_rest, axis=0)
-        print(f"IMU at rest mean acc {np.round(acc, 4).tolist()} ({cfg['imu']['acc_unit']}), "
+        print(f"IMU at rest mean acc {np.round(acc, 4).tolist()} (g), "
               f"|a|={np.linalg.norm(acc):.4f}")
     if static_check is not None:
         from scipy.spatial import cKDTree

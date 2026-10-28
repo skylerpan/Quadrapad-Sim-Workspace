@@ -10,26 +10,24 @@ English | [繁體中文](README.zh-TW.md)
 
 The robot is an **ideal base** (no legs are simulated): it follows `/cmd_vel` and hugs the terrain.
 
-**Usage guide** with every command, flag and environment variable, organised by task: [`docs/usage.md`](docs/usage.md) (Traditional Chinese). Design background: [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md) (Traditional Chinese, §12–§13). Navigation goal-loop test record on dp_1008 with the failure analysis: [`docs/nav-goal-loop-test-2026-10-13.md`](docs/nav-goal-loop-test-2026-10-13.md) (Traditional Chinese).
+**Usage guide** with every command, flag and environment variable, organised by task: [`docs/usage.md`](docs/usage.md) (Traditional Chinese). Design background: [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md) (Traditional Chinese, §12–§13). Navigation goal-loop test record on dp_1008 with the failure analysis: [`docs/archive/nav-goal-loop-test-2026-10-13.md`](docs/archive/nav-goal-loop-test-2026-10-13.md) (Traditional Chinese).
 
 ## Quick start
 ```bash
 # 1. Build the Docker image (based on syncai-robot-base, adds mujoco and the livox CustomMsg)
 docker build -t quadsim:latest docker/
 
-# 2. Maps/*.pcd -> scenes/<name>/ (about 2-5 s per map)
-scripts/build_scenes.sh
-#    An OctoMap works too (coarse geometry, see docs/usage.md section 2.3):
-#    docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012.bt --out scenes/dp_1012_bt --z-min -0.8"
+# 2. Build the default scene: a 1:1 conversion of the hand-edited OctoMap (about 2 s)
+docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0"
+#    PCD maps: scripts/build_scenes.sh builds every Maps/*.pcd with ground flattening (docs/usage.md section 2)
 
-# 3. Start the sim (defaults to scenes/dp_1008, real time)
+# 3. Start the sim (defaults to scenes/dp_1012, real time)
 scripts/run_sim.sh
-scripts/run_sim.sh --scene scenes/dp_1008_fillC --no-gt-tf   # no ground-truth TF: leave it to Point-LIO and global localization
+scripts/run_sim.sh --scene scenes/dp ros.publish_gt_tf=false   # another scene; no ground-truth TF: leave it to Point-LIO and global localization
 
 # 4. Check
 docker/run.sh "python3 -m pytest -q"                    # unit tests
-docker/run.sh "python3 scripts/bench.py --scene scenes/dp_1008 physics.rtf=0"   # headless benchmark
-scripts/smoke_test.sh scenes/dp_1008                    # ROS 2 end-to-end test (rates, TF, driving, collision, set_pose)
+docker/run.sh "python3 scripts/bench.py physics.rtf=0"   # headless benchmark on the default scene
 
 # GUI (needs an X display; run from a desktop terminal, DISPLAY and XAUTHORITY are passed into the container)
 QUADSIM_GUI=1 scripts/run_sim.sh --viewer                # MuJoCo viewer (camera follows the body; the map is visual only)
@@ -58,7 +56,7 @@ The container uses `--net=host` and the same DDS settings as WebRvizLite: Cyclon
 | Sub | `/cmd_vel` | geometry_msgs/Twist (vx, vy, wz) | — |
 | Sub | `/sim/set_pose` | geometry_msgs/PoseStamped (x, y, yaw; **z is a floor-height hint**) | — |
 
-**TF**: the static `base_link → livox_frame` is always published. With `publish_gt_tf: true` (default), `map → odom` (identity) and `odom → base_link` (ground truth) are added. After `--no-gt-tf`, your localization stack publishes those two.
+**TF**: the static `base_link → livox_frame` is always published. With `publish_gt_tf: true` (default), `map → odom` (identity) and `odom → base_link` (ground truth) are added. With `ros.publish_gt_tf=false`, your localization stack publishes those two.
 
 All parameters (topics, frames, noise, body size, velocity limits, …) live in [`config/sim.yaml`](config/sim.yaml). They can be overridden on the command line, e.g. `scripts/run_sim.sh lidar.range_noise=0.0 robot.vel_limits=[1.0,0.5,1.5]`.
 
@@ -99,13 +97,13 @@ MuJoCo: free-body base ← soft weld ← mocap target (integrated cmd_vel + terr
     - noise spikes next to the floor, small holes, and small clusters floating above the floor are removed
     - voxels in the first layer above the plane with only 1–2 points and nothing on top (the upper tail of the floor noise) are removed too
   - **Gaps**: a Mid-360 cannot see the floor right around the robot, so SLAM floors have columns with no points at all, and the flattening seams leave more. Columns with at least 3 floor neighbours and nothing standing on them are filled as floor (`--ground-fill 12 --ground-fill-nb 3`; dp_1008 1F went from 0.37% to 0.17% no-ground samples along the mapping path). The base additionally tolerates one foot over a remaining gap (`robot.max_feet_over_gap: 1`, that foot takes the height of the plane through the other three) instead of refusing to move with a `stuck/no_ground` event
-  - **Stairs**: a tread is only 24–36 cells, so the default `--ground-min-cells 30` drops it and the landing's grow/fill then buries it; riser points and a sparse noise voxel on top also give the tread cells a ramp of intermediate heights that chains them to the landing. The stair recipe `--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100` keeps small regions, refuses to fill under a column with a solid voxel 0.1–0.3 m up, takes the weighted median instead of the mean for the cell height, splits a non-planar region into its dominant plane plus the rest, and snaps regions of up to 100 cells to a horizontal plane (a free plane fit turns a 2–3 cell deep tread into a ramp). All of it is off by default (old scenes rebuild identically); `scripts/eval_scene.py --stairs-box` measures the result (levels, rises, coverage, ASCII profile), `scripts/sweep_scene.py` compares parameter sets. See [`docs/scene-tuning-dp_1012-2026-10-16.md`](docs/scene-tuning-dp_1012-2026-10-16.md)
+  - **Stairs**: a tread is only 24–36 cells, so the default `--ground-min-cells 30` drops it and the landing's grow/fill then buries it; riser points and a sparse noise voxel on top also give the tread cells a ramp of intermediate heights that chains them to the landing. The stair recipe `--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100` keeps small regions, refuses to fill under a column with a solid voxel 0.1–0.3 m up, takes the weighted median instead of the mean for the cell height, splits a non-planar region into its dominant plane plus the rest, and snaps regions of up to 100 cells to a horizontal plane (a free plane fit turns a 2–3 cell deep tread into a ramp). All of it is off by default (old scenes rebuild identically); `scripts/eval_scene.py --stairs-box` measures the result (levels, rises, coverage, ASCII profile). The scenes in use today (`scenes/dp_1012`, `scenes/dp`) skip all of this: they are pure 1:1 builds of hand-edited OctoMaps (`--no-flatten --min-neighbors 0`). Sweep history:  [`docs/archive/scene-tuning-dp_1012-2026-10-16.md`](docs/archive/scene-tuning-dp_1012-2026-10-16.md)
   - **Synthetic ground plane**: an exported PCD can carry a generated, perfectly flat ground layer below the real floor (dp_1012: z = −0.95, 25 % of the points); every scan hole in the real floor then becomes a pit. `scripts/fix_pcd_plane.py` keeps that layer only where the real floor has no points, lifted to the neighbouring floor height, and drops the rest
   - Turn it off with `build_scene --no-flatten` to keep the raw voxel floor
 - **Spawn and `/sim/set_pose` check whether the body overlaps the map**: if it does, the base moves to the nearest free pose within 1 m (up to 90° turned) and the TF/odom follow the *moved* pose. The start-up log prints `spawn requested [x, y, yaw, z_floor] -> base at [...]`, a ROS warning is logged when the base was moved, and a `spawn` event (`requested`, `pose`, `floor_z`, `moved`) goes out on `/sim/events`; `set_pose` events carry the same fields
 - **Spawn is set in `config/sim.yaml`** (`spawn: [x, y, yaw, z_floor]`); `null` takes the point `build_scene` wrote to `scenes/<name>/meta.json`. Do not edit `meta.json` by hand: it is a build cache that the next build overwrites. `z_floor` must be the floor height of the storey you want (the ground is searched from 0.5 m above it down to 1 m below it): a z between floors stands the base on clutter or a wall edge, which then triggers the relocation above
 - **Rolling LiDAR**: every ray is cast from the sensor pose nearest its emission time (at most half a physics step off), so motion distortion appears naturally. Points are in the sensor frame at emission time, like the real driver
-- Scan pattern: by default a synthetic Mid-360-like non-repetitive pattern (one azimuth revolution per frame, elevation −7°…52° from a low-discrepancy sequence). `lidar.pattern: <csv>` loads a measured pattern table instead (columns `t,azimuth_deg,elevation_deg[,line]`)
+- Scan pattern: a synthetic Mid-360-like non-repetitive pattern (one azimuth revolution per frame, elevation −7°…52° from a low-discrepancy sequence)
 - Reflectivity comes from the mean intensity of the original PCD points in each voxel
 - Ideal base: first-order lag, velocity and acceleration limits. Each of the 4 feet samples the ground with 3×3 rays (median per foot); roll, pitch and height come from the plane through the four feet, and the body centre sits `stand_height` from that plane along its normal, so the body bottom stays parallel to a flight of stairs. The collision box is pitched and rolled like the body. Moves are rejected with an event when a single step is too high, the slope is too steep, there is no ground, or the body would collide
 
@@ -130,7 +128,7 @@ Body roll / pitch standard deviation while walking, before → after ground flat
   - the bottoms of low objects within 10 cm of the floor are replaced by the slab
   - curved or cluttered areas (about 2–6% of ground cells) are median-smoothed rather than perfectly planar
   - the planes differ from the original points by ~2 cm RMS, the same order as the map's own noise
-- The synthetic scan pattern only approximates the Mid-360. Recording a rosbag from the real sensor and deriving a pattern table to load as CSV is recommended
+- The synthetic scan pattern only approximates the Mid-360 (no replay of a measured pattern table)
 - No dynamic obstacles (can be added later with an Embree dynamic scene or mocap bodies)
 - The z of `/sim/set_pose` should be close to the floor height; it selects the floor in multi-floor maps
 
@@ -140,8 +138,8 @@ Body roll / pitch standard deviation while walking, before → after ground flat
 | `pcd2sim/` | PCD I/O, OctoMap `.bt`/`.ot` reader (`octomap_io.py`), voxelization, denoising, box merging, ground flattening (`ground.py`), floor and spawn analysis, `build_scene` CLI |
 | `quadsim/` | `sim.py` core (no ROS), `lidar.py`, `base.py`, `proxies.py`, `raycast.py`, `model.py`, `ros_io.py`, `sim_node.py` |
 | `config/sim.yaml` | all parameters |
-| `config/nav_waypoints_dp_1008.yaml` | waypoints for the navigation goal-loop test on dp_1008 (1F) |
-| `scripts/` | `build_scenes.sh`, `run_sim.sh`, `smoke_test.sh`, `bench.py`, `ros_smoke_test.py`, `nav_goal_loop.sh` / `nav_goal_loop.py` (navigation goal-loop test), `make_waypoints_from_poses.py`, `fix_pcd_plane.py` (synthetic ground layer), `eval_scene.py` / `sweep_scene.py` (scene quality, parameter sweeps) |
+| `config/nav_waypoints_*.yaml` | waypoint sets for the navigation goal-loop test (`dp_1008*`: 1F of dp_1008; `dp_2f`: 2F of `scenes/dp`); one-off probe sets live in `config/archive/` |
+| `scripts/` | `build_scenes.sh`, `run_sim.sh`, `bench.py`, `nav_goal_loop.sh` / `nav_goal_loop.py` (navigation goal-loop test), `make_waypoints_from_poses.py`, `fix_pcd_plane.py` (synthetic ground layer), `eval_scene.py` (scene quality), `bt_to_pcd.py` / `deploy_octomap_surface.py` (hand-edited OctoMap -> surface PCD for the planner) |
 | `docker/` | Dockerfile, `run.sh`, minimal `livox_ros_driver2` message package |
-| `docs/` | `usage.md` (usage guide by task), `pcd-to-sim-architecture.md` (design), `nav-goal-loop-test-2026-10-13.md` / `nav-goal-loop-test-dp_1012-2026-10-14.md` (test records), `scene-tuning-dp_1012-2026-10-16.md` (build parameter sweep, stairs) |
+| `docs/` | `usage.md` (usage guide by task), `pcd-to-sim-architecture.md` (design); `archive/`: dated test records and the dp_1012 build parameter sweep |
 | `tests/` | unit tests (PCD, OctoMap parsing and octree builds, voxels and box merging, ground flattening, proxies, sensor timing, collision check, CustomMsg/PointCloud2 serialization) |

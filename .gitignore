@@ -2,8 +2,8 @@ scenes/
 __pycache__/
 *.pyc
 .pytest_cache/
-# source maps are large binaries (20-150 MB): keep them out of git
-Maps/*.pcd
+# source maps are large binaries (hundreds of MB): keep them out of git
+Maps/
 # MuJoCo viewer Print/Save dumps
 MJDATA.TXT
 MJMODEL.TXT

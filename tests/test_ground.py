@@ -185,3 +185,89 @@ def test_small_flat_makes_treads_horizontal():
         # a tread may be split into a few small regions, each snapped flat: no ramp, few distinct heights
         assert len(np.unique(np.round(h, 3))) <= 4, f"tread {i} is not piecewise flat"
         assert h.max() - h.min() < 0.07, f"tread {i} spread {h.max() - h.min():.3f}"
+
+
+def test_spike_pts_zero_keeps_one_point_voxel_above_grown_floor():
+    """At 2-3 cm voxels nearly every voxel holds one point, so the spike/sheet count tests must be
+    switchable off: spike_pts=0 / sheet_pts=0 keep a 1-point voxel standing just above the floor."""
+    from pcd2sim.voxel import VoxelGrid, encode, standable_mask
+    floor = np.mgrid[0:30, 0:30, 0:1].reshape(3, -1).T
+    post = np.array([[10, 10, 1], [10, 10, 2], [10, 10, 3]])        # 1-point voxels on the floor
+    keys = np.vstack([floor, post]).astype(np.int32)
+    dims = keys.max(axis=0) + 10
+    order = np.argsort(encode(keys, dims))
+    keys = keys[order]
+    counts = np.where(keys[:, 2] == 0, 10, 1).astype(np.int32)
+    zmean = ((keys[:, 2] + 0.5) * 0.1).astype(np.float32)
+    g = VoxelGrid(keys, counts, np.zeros(len(keys), np.float32), zmean, np.zeros(3), 0.1, dims)
+    stand = standable_mask(g, clearance=0.8, roof_min=0.0)
+    # z index 1 (centre 0.15 m) lies inside the floor band (h + band_above) and goes either way; test 2 and 3
+    post_idx = np.flatnonzero((keys[:, 0] == 10) & (keys[:, 1] == 10) & (keys[:, 2] >= 2))
+    gd_default = extract_ground(g, stand, min_cells=10)
+    gd_fine = extract_ground(g, stand, min_cells=10, spike_pts=0, sheet_pts=0, float_max_voxels=0)
+    assert gd_default.remove[post_idx].any()                   # defaults call the 1-point post noise
+    assert not gd_fine.remove[post_idx].any()                  # fine-voxel settings keep it
+
+
+def _fine_grid(keys, voxel=0.03):
+    """VoxelGrid from integer keys at a fine resolution: one point per voxel, zmean at the voxel centre."""
+    from pcd2sim.voxel import VoxelGrid, encode
+    keys = np.asarray(keys, dtype=np.int32)
+    dims = keys.max(axis=0) + 40
+    keys = keys[np.argsort(encode(keys, dims))]
+    return VoxelGrid(keys, np.ones(len(keys), np.int32), np.zeros(len(keys), np.float32),
+                     ((keys[:, 2] + 0.5) * voxel).astype(np.float32), np.zeros(3), voxel, dims)
+
+
+FINE = dict(min_cells=90, surface="median", layers=7, grow=10, fill=30, max_above=7,
+            spike_pts=0, sheet_pts=0, float_max_voxels=40)
+
+
+def test_column_gap_fills_1f_hole_under_a_2f_floor():
+    """Grow/fill used to skip any column that already had a ground cell on another storey."""
+    from pcd2sim.voxel import standable_mask
+    floor = np.mgrid[0:60, 0:60, 0:1].reshape(3, -1).T
+    hole = (floor[:, 0] >= 25) & (floor[:, 0] < 35) & (floor[:, 1] >= 25) & (floor[:, 1] < 35)
+    upper = np.mgrid[0:60, 0:60, 100:101].reshape(3, -1).T          # 2F floor 3 m up
+    roof = np.mgrid[0:60, 0:60, 200:201].reshape(3, -1).T           # roof over 2F
+    g = _fine_grid(np.vstack([floor[~hole], upper, roof]))
+    stand = standable_mask(g, roof_cell=0.15)
+    gd = extract_ground(g, stand, **FINE)
+    low = gd.cell_keys[gd.cell_h < 1.0]
+    in_hole = (low[:, 0] >= 25) & (low[:, 0] < 35) & (low[:, 1] >= 25) & (low[:, 1] < 35)
+    assert in_hole.sum() == 0                                      # old rule: 2F cells block the column
+    gd2 = extract_ground(g, stand, column_gap=0.3, **FINE)
+    low2 = gd2.cell_keys[gd2.cell_h < 1.0]
+    in_hole2 = (low2[:, 0] >= 25) & (low2[:, 0] < 35) & (low2[:, 1] >= 25) & (low2[:, 1] < 35)
+    assert in_hole2.sum() == 100                                   # filled
+    up2 = gd2.cell_keys[gd2.cell_h > 1.0]
+    inside = (up2[:, 0] < 60) & (up2[:, 1] < 60)                   # (fill also grows the 2F edge outward)
+    assert inside.sum() == 3600                                    # 2F untouched, no duplicate cells
+
+
+def test_roof_cell_rescues_floor_under_a_sparse_ceiling():
+    from pcd2sim.voxel import standable_mask
+    rng = np.random.default_rng(5)
+    floor = np.mgrid[0:60, 0:60, 0:1].reshape(3, -1).T
+    ceil_all = np.mgrid[0:60, 0:60, 90:91].reshape(3, -1).T
+    ceil = ceil_all[rng.random(len(ceil_all)) < 0.3]              # 30 % of the 3 cm columns have a ceiling point
+    g = _fine_grid(np.vstack([floor, ceil]))
+    s_default = standable_mask(g)
+    s_coarse = standable_mask(g, roof_cell=0.15)
+    n_floor_default = int((g.keys[s_default][:, 2] == 0).sum())
+    n_floor_coarse = int((g.keys[s_coarse][:, 2] == 0).sum())
+    assert n_floor_default < 0.4 * 3600 and n_floor_coarse > 0.95 * 3600
+    assert not s_coarse[g.keys[:, 2] == 90].any()                  # ceiling top stays non-standable
+
+
+def test_fine_floor_noise_links_into_one_region():
+    """At 3 cm the floor scatter puts neighbouring top voxels 2-3 layers apart; they must still link."""
+    from pcd2sim.voxel import standable_mask
+    rng = np.random.default_rng(6)
+    floor = np.mgrid[0:60, 0:60, 0:1].reshape(3, -1).T
+    floor[:, 2] = rng.integers(0, 3, len(floor))                   # top voxel in layer 0, 1 or 2
+    roof = np.mgrid[0:60, 0:60, 90:91].reshape(3, -1).T
+    g = _fine_grid(np.vstack([floor, roof]))
+    gd = extract_ground(g, standable_mask(g), **FINE)
+    inside = (gd.cell_keys[:, 0] < 60) & (gd.cell_keys[:, 1] < 60)      # fill grows the edge outward too
+    assert gd.stats["regions"] == 1 and inside.sum() == 3600 and gd.stats["cells_filled"] < 3000

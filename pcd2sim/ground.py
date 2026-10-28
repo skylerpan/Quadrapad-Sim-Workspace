@@ -86,12 +86,21 @@ def _components(n: int, rows: np.ndarray, cols: np.ndarray, members: np.ndarray)
     return [members[order[bounds[k]:bounds[k + 1]]] for k in range(len(bounds) - 1)]
 
 
+def _in_sorted(sorted_vals: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """Membership of `q` in the sorted unique array `sorted_vals` (np.isin re-sorts both on every call)."""
+    if len(sorted_vals) == 0:
+        return np.zeros(len(q), dtype=bool)
+    pos = np.clip(np.searchsorted(sorted_vals, q), 0, len(sorted_vals) - 1)
+    return sorted_vals[pos] == q
+
+
 def extract_ground(grid: VoxelGrid, stand: np.ndarray, tol: float = 0.06, max_rms: float = 0.035,
                    tile: float = 4.0, min_cells: int = 30, band_below: float = 0.2, band_above: float = 0.1,
                    thickness: float = 0.2, layers: int = 2, grow: int = 3, clearance: float = 0.8,
                    max_above: int = 2, spike_pts: int = 3, floor_tol: float = 0.15, fill: int = 12, fill_nb: int = 3,
                    float_height: float = 0.5, float_max_voxels: int = 4, sheet_pts: int = 2,
-                   fill_guard: float = 0.0, surface: str = "mean", peel: int = 0, small_flat: int = 0) -> Ground:
+                   fill_guard: float = 0.0, surface: str = "mean", peel: int = 0, small_flat: int = 0,
+                   column_gap: float = 0.0, link_height: float = 0.1) -> Ground:
     """Flatten the walkable surface of `grid` (raw per-voxel zmean, before smoothing).
 
     stand: [N] mask of walkable top-surface voxels (see voxel.standable_mask).
@@ -112,14 +121,22 @@ def extract_ground(grid: VoxelGrid, stand: np.ndarray, tol: float = 0.06, max_rm
     holes are filled (`fill` rounds; a column with >= fill_nb floor neighbours and nothing standing
     on it becomes floor, so gaps left by sparse returns or flattening seams close instead of
     swallowing a foot). With fill_guard > 0 a column is neither grown nor filled when it has a solid
-    voxel (> spike_pts points) between one voxel and fill_guard metres above the proposed height:
+    voxel (> spike_pts points) between max(voxel, band_above) and fill_guard metres above the proposed height:
     that column has a surface of its own (a stair tread next to a landing) and must not be buried.
+    Cells link into regions (and share the 5x5 median) when their top voxels lie within `link_height` of
+    each other (one layer at 10 cm voxels). Growing and filling skip columns that already hold a ground cell; with `column_gap` > 0 only a cell
+    within column_gap..2*column_gap of the proposed height blocks, so on a multi-storey map the floor under
+    an upper storey can still be filled (default 0: any cell in the column blocks, as before).
     Clusters of <= float_max_voxels voxels floating within float_height above the floor without
     touching anything else are dropped as noise, as are sparse (<= sheet_pts points) voxels in the
     first layer above the band with nothing on top (the upper tail of the floor noise).
     """
     v = grid.voxel
     k_floor = int(np.ceil(floor_tol / v)) + 1
+    # neighbouring cells link (regions, median) when their top voxels are within link_height: one layer at
+    # 10 cm voxels, where this was tuned; at 3 cm the floor scatter alone puts neighbours 2-3 layers apart
+    k_link = max(1, int(np.ceil(link_height / v)))
+    link_dz = range(-k_link, k_link + 1)
     codes = grid.codes                      # grid keys are sorted by code
     keys = grid.keys.astype(np.int64)
     ck = keys[stand]
@@ -144,7 +161,7 @@ def extract_ground(grid: VoxelGrid, stand: np.ndarray, tol: float = 0.06, max_rm
     ccodes = encode(ck, grid.dims)          # sorted, since ck is a subset of sorted keys
     rows, cols = [], []
     for dx, dy in _XY8:
-        for dz in (-1, 0, 1):
+        for dz in link_dz:
             j = _lookup(ccodes, ck + np.array([dx, dy, dz]), grid.dims)
             f = j >= 0
             i = np.flatnonzero(f)
@@ -228,11 +245,11 @@ def extract_ground(grid: VoxelGrid, stand: np.ndarray, tol: float = 0.06, max_rm
         h[idx] = coef[0] * (xy[idx, 0] - c0[0]) + coef[1] * (xy[idx, 1] - c0[1]) + coef[2]
     rest = np.flatnonzero(~planar)
     if len(rest):                            # 5x5 median within the same region, keeps edges sharp
-        nb = np.full((len(rest), 25 * 3), np.nan)
+        nb = np.full((len(rest), 25 * len(link_dz)), np.nan)
         col = 0
         for dx in range(-2, 3):
             for dy in range(-2, 3):
-                for dz in (-1, 0, 1):
+                for dz in link_dz:
                     j = _lookup(ccodes, ck[rest] + np.array([dx, dy, dz]), grid.dims)
                     f = j >= 0
                     f[f] = label[j[f]] == label[rest[f]]
@@ -249,31 +266,50 @@ def extract_ground(grid: VoxelGrid, stand: np.ndarray, tol: float = 0.06, max_rm
     spikes = np.zeros(len(keys), dtype=bool)
     n_grown = n_filled = n_guarded = 0
     frontier = np.arange(C)
+    # a, b, c, x0, y0 per plane, indexed once per round (a Python loop over every proposal took minutes
+    # per round on a 0.03 m map with millions of cells)
+    plane_arr = np.array([np.r_[coef, c0] for coef, c0 in planes], dtype=float).reshape(-1, 5)
     for rnd in range(grow + fill):
         filling = rnd >= grow
         base = np.arange(C) if filling else frontier
         if len(base) == 0:
             continue
-        col_codes = np.unique(ck[:, 0] * int(grid.dims[1]) + ck[:, 1])
         cxy = (ck[base, None, :2] + np.array(_XY8)[None]).reshape(-1, 2)
         src = np.repeat(base, len(_XY8))
         cc = cxy[:, 0] * int(grid.dims[1]) + cxy[:, 1]
         inb = np.all((cxy >= 0) & (cxy < grid.dims[:2]), axis=1)
-        pos = np.clip(np.searchsorted(col_codes, cc), 0, len(col_codes) - 1)
-        new = inb & (col_codes[pos] != cc)            # column has no ground cell yet
-        cxy, src, cc = cxy[new], src[new], cc[new]
-        _, first, n_nb = np.unique(cc, return_index=True, return_counts=True)
-        cxy, src = cxy[first], src[first]
-        if len(cxy) == 0:
-            continue
+        cxy, src, cc = cxy[inb], src[inb], cc[inb]
         g = group[src]
-        hc = h[src].copy()
+        hc = h[src].copy()                             # proposed height: the source cell's plane, or its height
         pl = g >= 0
         if pl.any():
-            p = np.array([np.r_[planes[k][0], planes[k][1]] for k in g[pl]])   # a, b, c, x0, y0
+            p = plane_arr[g[pl]]                       # a, b, c, x0, y0
             px = grid.origin[0] + (cxy[pl, 0] + 0.5) * v
             py = grid.origin[1] + (cxy[pl, 1] + 0.5) * v
             hc[pl] = p[:, 0] * (px - p[:, 3]) + p[:, 1] * (py - p[:, 4]) + p[:, 2]
+        if column_gap > 0:
+            # multi-storey: only a ground cell of the same storey blocks the column. Two height bands of
+            # 2 * column_gap, offset by half a band, so cells within column_gap always collide and cells
+            # further than 2 * column_gap never do.
+            band = 2.0 * column_gap
+            ccol = ck[:, 0] * int(grid.dims[1]) + ck[:, 1]
+            k1 = np.floor(h / band).astype(np.int64)
+            k2 = np.floor((h + 0.5 * band) / band).astype(np.int64)
+            taken = np.unique(np.r_[(ccol * 4_000_000 + k1) * 2, (ccol * 4_000_000 + k2) * 2 + 1])
+            q1 = (cc * 4_000_000 + np.floor(hc / band).astype(np.int64)) * 2
+            q2 = (cc * 4_000_000 + np.floor((hc + 0.5 * band) / band).astype(np.int64)) * 2 + 1
+            new = ~_in_sorted(taken, q1) & ~_in_sorted(taken, q2)
+            dedupe = cc * 4_000_000 + np.floor(hc / band).astype(np.int64)     # one proposal per column & band
+        else:
+            col_codes = np.unique(ck[:, 0] * int(grid.dims[1]) + ck[:, 1])
+            pos = np.clip(np.searchsorted(col_codes, cc), 0, len(col_codes) - 1)
+            new = col_codes[pos] != cc                 # column has no ground cell yet (any storey)
+            dedupe = cc
+        cxy, src, cc, hc, g, dedupe = cxy[new], src[new], cc[new], hc[new], g[new], dedupe[new]
+        _, first, n_nb = np.unique(dedupe, return_index=True, return_counts=True)
+        cxy, src, hc, g = cxy[first], src[first], hc[first], g[first]
+        if len(cxy) == 0:
+            continue
         kz = np.floor((hc - grid.origin[2]) / v).astype(np.int64)
         has_floor = np.zeros(len(cxy), dtype=bool)
         above = np.zeros(len(cxy), dtype=np.int64)
@@ -288,7 +324,9 @@ def extract_ground(grid: VoxelGrid, stand: np.ndarray, tol: float = 0.06, max_rm
             if fill_guard > 0:
                 cnt = np.zeros(len(cxy), dtype=np.int64)
                 cnt[f] = grid.counts[i[f]]
-                solid |= f & (zc > hc + v) & (zc <= hc + fill_guard) & (cnt > spike_pts)
+                # the guard band starts above the floor noise band (band_above; one voxel at 10 cm, where
+                # it was tuned), not one voxel up: at 3 cm voxels the floor's own scatter sits 1-2 voxels up
+                solid |= f & (zc > hc + max(v, band_above)) & (zc <= hc + fill_guard) & (cnt > spike_pts)
         ok = (n_nb >= fill_nb) if filling else has_floor
         ok &= above <= max_above
         if fill_guard > 0:

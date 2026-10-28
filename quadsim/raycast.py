@@ -47,7 +47,7 @@ class VoxelLookup:
         order = np.argsort(codes)
         self.codes = codes[order]
         self.refl = np.clip(d["intensity"][order], 0, 255).astype(np.uint8)
-        self.zmean = d["zmean"][order].astype(np.float64) if "zmean" in d else None
+        self.zmean = d["zmean"][order].astype(np.float64)     # every scene since format 2 carries zmean
 
     def _find(self, points: np.ndarray):
         """(index into attribute arrays, found mask) for the voxel containing each point."""
@@ -74,8 +74,6 @@ class VoxelLookup:
 
     def surface_z(self, points: np.ndarray, fallback: np.ndarray) -> np.ndarray:
         """Mean point z of the voxel containing each point (fallback where unknown or flattened)."""
-        if self.zmean is None:
-            return fallback
         idx, found = self._find(points)
         z = np.where(found, self.zmean[idx], fallback)
         return np.where(np.isfinite(z), z, fallback)

@@ -180,12 +180,13 @@ def test_build_from_bt_room(tmp_path):
     assert over.any() and abs(top[over].max() - 0.0) < 0.01                           # hole closed at floor level
 
     with pytest.warns(UserWarning):
-        meta = build(str(p), str(tmp_path / "scene"), voxel=RES / 2, crop_pct=0.05, min_neighbors=0, flatten=False)
+        meta = build(str(p), str(tmp_path / "scene"), voxel=RES / 2, min_neighbors=0, flatten=False)
     assert meta["source_format"] == "octomap" and meta["octomap_res"] == RES and meta["voxel"] == RES
     assert meta["build_args"]["voxel"] == RES and meta["build_args"]["source"].endswith("room.bt")
     assert meta["build_args"]["flatten"] is False and meta["ground"] is None
     assert meta["points_raw"] == len(cells) and meta["voxels"] == len(cells)       # filter off: pure 1:1
-    assert meta["noise_filter"] == {"sparse_removed": 0, "isolated_removed": 0, "small_clusters_removed": 0}
+    assert meta["noise_filter"] == {"isolated_removed": 0, "small_clusters_removed": 0,
+                                        "closed_added": 0}
     assert os.path.exists(tmp_path / "scene" / "boxes.npy") and not os.path.exists(tmp_path / "scene" / "ground.npz")
     vox = np.load(tmp_path / "scene" / "voxels.npz")
     assert vox["voxel"] == RES and len(vox["keys"]) == len(cells)

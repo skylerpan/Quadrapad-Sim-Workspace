@@ -29,10 +29,9 @@ def _radical_inverse_base2(i: np.ndarray) -> np.ndarray:
 class ScanPattern:
     """Maps global ray indices to (time, unit direction in sensor frame, line).
 
-    synthetic: one azimuth revolution per frame, elevation from a base-2
+    Synthetic Mid-360-like pattern: one azimuth revolution per frame, elevation from a base-2
     low-discrepancy sequence over the whole run, so successive frames hit new
     elevations (non-repetitive coverage that densifies with integration time).
-    csv: a recorded table (t, azimuth_deg, elevation_deg[, line]) replayed periodically.
     """
 
     def __init__(self, cfg: dict):
@@ -40,42 +39,17 @@ class ScanPattern:
         self.frame_hz = float(cfg["rate_hz"])
         self.el_lo, self.el_hi = np.deg2rad(cfg["fov_deg"])
         self.lines = int(cfg.get("lines", 4))
-        self.table = None
-        if cfg.get("pattern", "synthetic") != "synthetic":
-            tab = np.loadtxt(cfg["pattern"], delimiter=",", ndmin=2, comments="#")
-            order = np.argsort(tab[:, 0])
-            tab = tab[order]
-            self.table = {
-                "t": tab[:, 0] - tab[0, 0],
-                "dir": _sph_to_dir(np.deg2rad(tab[:, 1]), np.deg2rad(tab[:, 2])).astype(np.float32),
-                "line": (tab[:, 3] if tab.shape[1] > 3 else np.arange(len(tab)) % self.lines).astype(np.uint8),
-            }
-            dt = np.median(np.diff(self.table["t"])) if len(tab) > 1 else 1.0 / self.rate
-            self.period = float(self.table["t"][-1] + dt)
-            self.rate = len(tab) / self.period
 
     def rays(self, t0: float, t1: float):
         """Rays emitted in [t0, t1): (times [N], dirs [N,3] float32, line [N] uint8)."""
-        if self.table is None:
-            g0, g1 = int(np.ceil(t0 * self.rate)), int(np.ceil(t1 * self.rate))
-            g = np.arange(g0, g1, dtype=np.int64)
-            t = g / self.rate
-            frame = np.floor(t * self.frame_hz)
-            phase = (frame * _GOLDEN) % 1.0                       # interleave revolutions
-            az = 2 * np.pi * ((t * self.frame_hz) % 1.0 + phase / (self.rate / self.frame_hz))
-            el = self.el_lo + (self.el_hi - self.el_lo) * _radical_inverse_base2(g)
-            return t, _sph_to_dir(az, el).astype(np.float32), (g % self.lines).astype(np.uint8)
-        # replay recorded table
-        n0, n1 = int(np.floor(t0 / self.period)), int(np.floor(t1 / self.period))
-        ts, ds, ls = [], [], []
-        for n in range(n0, n1 + 1):
-            base = n * self.period
-            lo = np.searchsorted(self.table["t"], t0 - base, "left")
-            hi = np.searchsorted(self.table["t"], t1 - base, "left")
-            ts.append(self.table["t"][lo:hi] + base)
-            ds.append(self.table["dir"][lo:hi])
-            ls.append(self.table["line"][lo:hi])
-        return np.concatenate(ts), np.concatenate(ds), np.concatenate(ls)
+        g0, g1 = int(np.ceil(t0 * self.rate)), int(np.ceil(t1 * self.rate))
+        g = np.arange(g0, g1, dtype=np.int64)
+        t = g / self.rate
+        frame = np.floor(t * self.frame_hz)
+        phase = (frame * _GOLDEN) % 1.0                       # interleave revolutions
+        az = 2 * np.pi * ((t * self.frame_hz) % 1.0 + phase / (self.rate / self.frame_hz))
+        el = self.el_lo + (self.el_hi - self.el_lo) * _radical_inverse_base2(g)
+        return t, _sph_to_dir(az, el).astype(np.float32), (g % self.lines).astype(np.uint8)
 
 
 def _sph_to_dir(az: np.ndarray, el: np.ndarray) -> np.ndarray:
