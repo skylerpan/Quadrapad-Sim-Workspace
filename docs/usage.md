@@ -173,6 +173,7 @@ docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1012_bt --pcd Map
 - `--no-flatten` 的場景沒有地面格，`scripts/eval_scene.py` 的走動評估（walk）只會印 `None`。
 - `dp_1012.bt`（43.7 萬格，`--z-min -0.8` 後 36.1 萬格）在 Jetson 上約 1 s，出來 4.4 萬個 box。
 - **目前的正式場景都是手修 octree 的純 1:1 建置**（`--no-flatten --min-neighbors 0`，不補洞、不平面化，樓梯踏板照手畫的格子走）：`scenes/dp_1012` ← `Maps/dp_1012_handmade.bt`（`config/sim.yaml` 預設，1F 原點地板 z = −0.4，樓梯 D 是 `tests/test_stairs_dp_1012.py` 的目標），`scenes/dp` ← `Maps/dp.bt`（整棟，2F 導航測試用 `config/nav_waypoints_dp_2f.yaml`）。重建：`docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0"`。手修 .bt 的部署見 [2.2b](#22b-octomap-轉回表面點雲scriptsbt_to_pcdpy)。
+- `scenes/dp_bt` ← `Maps/archive/dp.bt`（2026-10-28）：整棟 0.1 m 的**原始掃描** octree（不是手修版：地板有 ±0.1 m 雜訊、平台有破洞、2F 樓板在東梯南端 5.3、西梯南端 5.1），同一組旗標 1:1 建置，164 萬格 → 36 萬 box，13 s。拿來做人工樓梯版 `scenes/dp_bt_s16`（[2.5](#25-人工樓梯scriptsmake_stairspy)）。
 
 ### 2.4 0.03 m 高解析度建置（dp_full_original）
 
@@ -235,6 +236,17 @@ spec（`config/stairs_dp_full.yaml`）：
 做法：在場景自己的 0.03 m 格網上把每階 `[h−thickness, h]` 的實心體積 rasterize 成 voxel，用 `pcd2sim.voxel.merge_boxes` 合成軸對齊 box；`voxels.npz` 的頂層 voxel `zmean` = 精確的 h（踏板頂不被 3 cm 量化，腳下射線經 `surface_z` 得到準確階高）；每階補一片 slab（eval / 地形射線）；`map_ds.pcd` 加入新 voxel 的中心；`meta.json` 多 `synthetic_stairs`。跨過腳印邊緣的長 slab 會被切掉腳印內的部分。
 
 `dp_full_003_s16`（2026-10-28）：東側樓梯 E1（16 × 0.159 m，x 5.55–6.85，y −11.95 → −7.6）+ 平台 2.2 + E2（18 × 0.156 m，x 3.65–5.05，y −7.65 → −12.45）到 2F 5.0；西側迴旋梯 W1–W4（9/8/8/8 階，0.156–0.169 m）+ 三個半層平台 1.1 / 2.35 / 3.7。腳印和高度是從原始點雲（每格中位高度、沿梯剖面）讀出來的，記在 spec 的註解裡。`tests/test_stairs_dp_full_s16.py` 以 0.5 m/s 直走上下 E1、上 W1，不得有任何 contact / stuck 事件。
+
+**1:1 octree 場景的精確 box 模式**（`--exact-boxes`；場景沒有 `ground.npz` 時自動啟用）：0.1–0.2 m 的格網裝不下 16 cm 的階高（rasterize 後 box 頂會變成 0.1/0.2 的倍數，只有 zmean 是準的，碰撞 box 和 LiDAR 看到的不是 16 cm），所以每一階 / 每個平台直接變成一個精確的 AABB `[h−thickness, h]`；原始幾何則**從清除後剩下的 voxel 重新 merge**（1:1 建置的 `boxes.npy` 本來就是 `merge_boxes(voxels)`），腳印邊不會留洞、腳印內不會殘留整排長 box。合成 voxel 還是會寫進 `voxels.npz`（頂面上下半格內的 voxel zmean 都是精確的 h，腳下探針不管落在哪一格都拿到 h）和 `map_ds.pcd`；沒有 slab。平面化過的場景會拒絕這個模式；非軸對齊的 flight 退回 raster。`--map` 在沒有 `ground.npz` 時改印帶內 voxel 頂面的高度圖。
+
+```bash
+docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/archive/dp.bt --out scenes/dp_bt --no-flatten --min-neighbors 0"   # 13 s
+docker/run.sh "python3 scripts/make_stairs.py --scene scenes/dp_bt --out scenes/dp_bt_s16 --spec config/stairs_dp_bt.yaml"      # 4 s
+docker/run.sh "python3 scripts/make_stairs.py --scene scenes/dp_bt --spec config/stairs_dp_bt.yaml --map west"                 # voxel 高度圖
+scripts/run_sim.sh --scene scenes/dp_bt_s16 robot.collision_pool=512 robot.collision_margin=0.4
+```
+
+`dp_bt_s16`（2026-10-28，`config/stairs_dp_bt.yaml`）：東側 E1（16 × 0.156 m，x 5.7–7.0，y −11.8 → −7.6，1F −0.2 → 平台 2.3）+ E2（19 × 0.158 m，x 3.9–5.1，到 2F 5.3）；西側 W1–W4（9/8/8/8 階，0.156 / 0.1625 m）+ 半層平台 1.2 / 2.5 / 3.8 → 2F 5.1。高度跟著這份掃描各接點的地板走（和 dp_full 的 PCD 差 0.1–0.25 m）；L2 掃到東半 2.4、西半 2.6，做成一片平的 2.5。平台拆成幾塊矩形避開扶手柱和西側兩段梯之間的半高分隔牆，梯腳 / 梯頭各有一塊接近墊壓平 ±0.1 m 的地板雜訊。`tests/test_stairs_dp_bt_s16.py` 直走上下 E1、上 W1、上 W2；`eval_scene.py` 的樓梯統計要 slab，對這種場景印不出東西，階高用 `tests/test_make_stairs.py` 的精確模式測試和爬梯測試保證。
 
 ## 3. 跑模擬
 

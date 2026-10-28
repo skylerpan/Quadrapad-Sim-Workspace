@@ -18,6 +18,13 @@ Inside each footprint the scene boxes, floor slabs, voxels and map_ds points in 
 steps are rasterised on the scene's own voxel grid, merged into axis-aligned boxes (pcd2sim.voxel.merge_boxes) and
 written back to boxes.npy / voxels.npz / ground.npz / map_ds.pcd. Tread tops keep their exact height in voxels.npz
 (zmean), so the ideal base sees the true riser even though the boxes are 3 cm-quantised.
+
+Exact-box mode (--exact-boxes; the default for scenes without ground.npz, i.e. 1:1 octree builds made with
+--no-flatten): a coarse grid (0.1-0.2 m) cannot carry 0.16 m risers in rasterised boxes, so every tread and landing
+becomes one exact AABB [h - thickness, h] instead, and the original boxes are re-merged from the voxels that survive
+the clearing (a 1:1 build's boxes.npy is exactly merge_boxes(voxels), so the footprint edges come out clean: no gaps
+outside, no leftovers inside). The synthetic voxels are still written so VoxelLookup / map_ds stay consistent, with
+the voxel under the terrain probe carrying the exact height. Flights that are not axis-aligned fall back to raster.
 """
 from __future__ import annotations
 
@@ -90,6 +97,30 @@ class Element:
         k = np.clip(np.floor(s / self.tread).astype(np.int64) + 1, 1, self.n)
         return m, np.where(m, self.z0 + k * self.rise, 0.0), np.where(m, k, 0)
 
+    @property
+    def axis_aligned(self) -> bool:
+        return self.kind == "landing" or min(abs(self.u[0]), abs(self.u[1])) < 1e-9
+
+    def exact_boxes(self, thickness: float) -> np.ndarray:
+        """One AABB (cx, cy, cz, hx, hy, hz) per tread / landing, tops at the exact heights. Axis-aligned only."""
+        if not self.axis_aligned:
+            raise ValueError(f"{self.name}: exact boxes need an axis-aligned flight (yaw {self.yaw_deg:.1f} deg)")
+        if self.kind == "landing":
+            x0, x1, y0, y1 = self.rect
+            return np.array([[0.5 * (x0 + x1), 0.5 * (y0 + y1), self.z - thickness / 2,
+                              0.5 * (x1 - x0), 0.5 * (y1 - y0), thickness / 2]], dtype=np.float64)
+        out = np.zeros((self.n, 6))
+        for k in range(1, self.n + 1):
+            a = self.start + self.u * ((k - 1) * self.tread)
+            b = self.start + self.u * (k * self.tread)
+            corners = np.array([a + self.v * (self.width / 2), a - self.v * (self.width / 2),
+                                b + self.v * (self.width / 2), b - self.v * (self.width / 2)])
+            lo, hi = corners.min(axis=0), corners.max(axis=0)
+            h = self.z0 + k * self.rise
+            out[k - 1] = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), h - thickness / 2,
+                          0.5 * (hi[0] - lo[0]), 0.5 * (hi[1] - lo[1]), thickness / 2]
+        return out
+
     def describe(self) -> str:
         if self.kind == "landing":
             return f"{self.stair}/{self.name}: landing z={self.z:.3f} rect={self.rect}"
@@ -128,8 +159,12 @@ def load_scene(scene: str):
 
 
 # -- geometry -----------------------------------------------------------------------------------------
-def rasterize(el: Element, grid: VoxelGrid, thickness: float):
-    """Voxel keys of the solid steps of one element: (keys [K,3] int64, is_top [K] bool, h [K] exact top, step [K])."""
+def rasterize(el: Element, grid: VoxelGrid, thickness: float, exact: bool = False):
+    """Voxel keys of the solid steps of one element: (keys [K,3] int64, is_top [K] bool, h [K] exact top, step [K]).
+    Raster mode puts the top voxel's face on the grid plane nearest h (the boxes are merged from these voxels).
+    Exact mode (the boxes are exact AABBs with their top at h) gives every voxel that reaches into [h - v/2, h] the
+    exact zmean h, so the terrain probe at h - v/4 (quadsim.base: the ray hit is probed a quarter voxel down) finds
+    the exact height whichever cell it rounds into."""
     v, o = grid.voxel, grid.origin
     x0, x1, y0, y1 = el.bbox()
     ix = np.arange(int(np.floor((x0 - o[0]) / v)), int(np.ceil((x1 - o[0]) / v)) + 1)
@@ -139,6 +174,18 @@ def rasterize(el: Element, grid: VoxelGrid, thickness: float):
     xy = o[:2] + (cells + 0.5) * v
     m, h, step = el.height(xy)
     cells, h, step = cells[m], h[m], step[m]
+    if exact:
+        # column from the cell that contains h (h exactly on a face -> the cell below it) down through the
+        # thickness; every cell that reaches into [h - v/2, h] is a "top" cell (zmean = h), so the probe at
+        # h - v/4 finds the exact height even when it sits on a cell face and rounds either way
+        kz_top = np.floor((h - o[2]) / v - 1e-9).astype(np.int64)
+        kz_lo = np.floor((h - 0.5 * v - o[2]) / v).astype(np.int64)
+        n_layers = int(np.ceil(thickness / v)) + 1
+        layers = np.arange(n_layers)
+        kz = kz_top[:, None] - layers[None]
+        keys = np.column_stack([np.repeat(cells, n_layers, axis=0), kz.ravel()])
+        is_top = (kz >= kz_lo[:, None]).ravel()
+        return keys, is_top, np.repeat(h, n_layers), np.repeat(step, n_layers)
     kz_top = np.rint((h - o[2]) / v).astype(np.int64) - 1          # top face nearest the exact height
     n_layers = int(np.ceil(thickness / v))
     layers = np.arange(n_layers)
@@ -295,30 +342,59 @@ def band_map(slabs: np.ndarray, x0, x1, y0, y1, z0, z1, cell: float = 0.2) -> st
     return "\n".join(lines)
 
 
+def voxel_band_map(grid: VoxelGrid, x0, x1, y0, y1, z0, z1, cell: float) -> str:
+    """Per cell: highest voxel top (dm) within the z band; '.' = no voxel. For scenes without ground.npz."""
+    c = grid.centers()
+    top = c[:, 2] + grid.voxel / 2
+    m = (c[:, 0] > x0) & (c[:, 0] < x1) & (c[:, 1] > y0) & (c[:, 1] < y1) & (top > z0) & (top < z1)
+    nx, ny = int(round((x1 - x0) / cell)), int(round((y1 - y0) / cell))
+    i = np.clip(((c[m, 0] - x0) / cell).astype(int), 0, nx - 1)
+    j = np.clip(((c[m, 1] - y0) / cell).astype(int), 0, ny - 1)
+    hmap = np.full((nx, ny), -np.inf)
+    np.maximum.at(hmap, (i, j), top[m])
+    lines = [f"voxel tops (dm) for z in [{z0:.2f}, {z1:.2f}], cell {cell} m; rows y (north up), cols x",
+             "        " + "".join(f"{x0 + (i + 0.5) * cell:6.1f}"[-3:] if i % 2 == 0 else "   " for i in range(nx))]
+    for j in range(ny - 1, -1, -1):
+        row = "".join("  ." if not np.isfinite(hmap[i, j]) else f"{int(round(hmap[i, j] * 10)):3d}" for i in range(nx))
+        lines.append(f"{y0 + (j + 0.5) * cell:7.1f}|{row}")
+    return "\n".join(lines)
+
+
 def print_maps(scene: str, spec: dict, stair: str, margin: float = 0.4):
     gp = os.path.join(scene, "ground.npz")
-    if not os.path.exists(gp):
-        raise SystemExit(f"{scene} has no ground.npz to map")
-    slabs = np.load(gp)["slabs"]
+    slabs = np.load(gp)["slabs"] if os.path.exists(gp) else None
+    grid = None if slabs is not None else load_scene(scene)[1]
     for el in spec["elements"]:
         if el.stair != stair and stair != "*":
             continue
         x0, x1, y0, y1 = el.bbox()
+        z0, z1 = el.z_lo - el.clear[0] - 0.1, el.z_hi + el.clear[1] + 0.1
         print(f"\n== {el.describe()}")
-        print(band_map(slabs, x0 - margin, x1 + margin, y0 - margin, y1 + margin,
-                       el.z_lo - el.clear[0] - 0.1, el.z_hi + el.clear[1] + 0.1))
+        if slabs is not None:
+            print(band_map(slabs, x0 - margin, x1 + margin, y0 - margin, y1 + margin, z0, z1))
+        else:
+            print(voxel_band_map(grid, x0 - margin, x1 + margin, y0 - margin, y1 + margin, z0, z1,
+                                 cell=grid.voxel if grid.voxel >= 0.1 else 0.2))
 
 
 # -- main ---------------------------------------------------------------------------------------------
-def apply(scene: str, out: str, spec: dict, log=print) -> dict:
+def apply(scene: str, out: str, spec: dict, log=print, exact: bool | None = None) -> dict:
+    """exact=None: exact-box mode when the scene has no ground.npz (a 1:1 octree build), raster mode otherwise."""
     if os.path.abspath(scene) == os.path.abspath(out):
         raise SystemExit("--out must differ from --scene (the original scene is kept)")
     t0 = time.time()
     boxes, grid, slabs, meta = load_scene(scene)
+    if exact is None:
+        exact = slabs is None
+    if exact and slabs is not None:
+        raise SystemExit("--exact-boxes needs a 1:1 build (no ground.npz): a flattened scene's boxes are not "
+                         "merge_boxes(voxels), so they cannot be rebuilt from the surviving voxels")
     pcd_path = os.path.join(scene, "map_ds.pcd")
     pts, inten = read_pcd(pcd_path) if os.path.exists(pcd_path) else (None, None)
     log(f"loaded {scene}: {len(boxes)} boxes, {len(grid.keys)} voxels, "
-        f"{0 if slabs is None else len(slabs)} slabs, {0 if pts is None else len(pts)} map points ({time.time() - t0:.1f}s)")
+        f"{0 if slabs is None else len(slabs)} slabs, {0 if pts is None else len(pts)} map points ({time.time() - t0:.1f}s); "
+        f"mode {'exact boxes' if exact else 'raster'}")
+    exact_el = []
     drop_b = np.zeros(len(boxes), bool)
     drop_v = np.zeros(len(grid.keys), bool)
     drop_s = np.zeros(0 if slabs is None else len(slabs), bool)
@@ -338,14 +414,18 @@ def apply(scene: str, out: str, spec: dict, log=print) -> dict:
             new_slabs.append(remainder)
         if p is not None:
             drop_p |= p
-        keys, is_top, h, _ = rasterize(el, grid, float(spec["thickness"]))
+        el_exact = exact and el.axis_aligned
+        if exact and not el_exact:
+            log(f"warning: {el.describe()} is not axis-aligned; its boxes are rasterised on the grid")
+        exact_el.append(el_exact)
+        keys, is_top, h, _ = rasterize(el, grid, float(spec["thickness"]), exact=el_exact)
         new_keys.append(keys)
         new_top.append(is_top)
         new_h.append(h)
         new_slabs.append(tread_slabs(el, grid))
         info = {"stair": el.stair, "name": el.name, "kind": el.kind, "steps": el.n, "riser": round(el.rise, 4),
                 "clear": list(el.clear), "boxes_removed": int(b.sum()), "voxels_removed": int(vx.sum()),
-                "voxels_added": int(len(keys))}
+                "voxels_added": int(len(keys)), "boxes": "exact" if el_exact else "raster"}
         if el.kind == "flight":
             info.update({"tread": round(el.tread, 4), "length": round(el.length, 3), "width": el.width,
                          "z0": el.z0, "z1": el.z1, "yaw_deg": round(el.yaw_deg, 2)})
@@ -378,10 +458,25 @@ def apply(scene: str, out: str, spec: dict, log=print) -> dict:
     out_inten = np.concatenate([grid.intensity[keep_old], np.full(len(keys), fill_i, np.float32)])
     out_zmean = np.concatenate([grid.zmean[keep_old], zmean_new])
 
-    new_boxes = boxes_to_world(merge_boxes(keys), grid).astype(np.float32)
-    out_boxes = np.concatenate([boxes[~drop_b], new_boxes])
-    log(f"boxes: {len(boxes)} - {int(drop_b.sum())} + {len(new_boxes)} = {len(out_boxes)}; "
-        f"voxels: {len(grid.keys)} - {int(drop_v.sum()) + int(collide.sum())} + {len(keys)} = {len(out_keys)}")
+    if exact:
+        # the surviving original geometry is re-merged from its voxels (a 1:1 build's boxes are exactly
+        # merge_boxes(voxels)); the synthetic elements are exact AABBs, raster fallbacks are merged from their voxels
+        old_boxes = boxes_to_world(merge_boxes(grid.keys[keep_old].astype(np.int64)), grid).astype(np.float32)
+        parts = [el.exact_boxes(float(spec["thickness"])) for el, ex in zip(spec["elements"], exact_el) if ex]
+        raster_keys = [k for k, ex in zip(new_keys, exact_el) if not ex]
+        if raster_keys:
+            rk = np.concatenate(raster_keys)
+            rk = rk[np.unique(encode(rk, dims), return_index=True)[1]]
+            parts.append(boxes_to_world(merge_boxes(rk), grid))
+        new_boxes = np.concatenate(parts).astype(np.float32)
+        out_boxes = np.concatenate([old_boxes, new_boxes])
+        log(f"boxes: {len(boxes)} -> {len(old_boxes)} re-merged from the surviving voxels + {len(new_boxes)} synthetic "
+            f"= {len(out_boxes)}; voxels: {len(grid.keys)} - {int(drop_v.sum()) + int(collide.sum())} + {len(keys)} = {len(out_keys)}")
+    else:
+        new_boxes = boxes_to_world(merge_boxes(keys), grid).astype(np.float32)
+        out_boxes = np.concatenate([boxes[~drop_b], new_boxes])
+        log(f"boxes: {len(boxes)} - {int(drop_b.sum())} + {len(new_boxes)} = {len(out_boxes)}; "
+            f"voxels: {len(grid.keys)} - {int(drop_v.sum()) + int(collide.sum())} + {len(keys)} = {len(out_keys)}")
 
     os.makedirs(out, exist_ok=True)
     np.save(os.path.join(out, "boxes.npy"), out_boxes)
@@ -404,8 +499,9 @@ def apply(scene: str, out: str, spec: dict, log=print) -> dict:
     meta = dict(meta)
     meta["boxes"] = int(len(out_boxes))
     meta["voxels"] = int(len(out_keys))
-    meta["synthetic_stairs"] = {"source_scene": os.path.abspath(scene), "riser": spec["riser"],
-                                "thickness": spec["thickness"], "clear": list(spec["clear"]), "elements": report}
+    meta["synthetic_stairs"] = {"source_scene": os.path.abspath(scene), "mode": "exact_boxes" if exact else "raster",
+                                "riser": spec["riser"], "thickness": spec["thickness"], "clear": list(spec["clear"]),
+                                "elements": report}
     with open(os.path.join(out, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
     log(f"wrote {out} ({time.time() - t0:.1f}s)")
@@ -417,8 +513,12 @@ def main(argv=None):
     ap.add_argument("--scene", required=True, help="source scene directory")
     ap.add_argument("--spec", required=True, help="stairs spec yaml")
     ap.add_argument("--out", help="output scene directory (required unless --map)")
-    ap.add_argument("--map", metavar="STAIR", help="print slab height maps around every element of this stair "
-                                                   "(name, or * for all) and exit without writing")
+    ap.add_argument("--map", metavar="STAIR", help="print height maps (slab tops, or voxel tops when the scene has no "
+                                                   "ground.npz) around every element of this stair (name, or * for all) "
+                                                   "and exit without writing")
+    ap.add_argument("--exact-boxes", action="store_true", default=None,
+                    help="exact AABB per tread, original boxes re-merged from the surviving voxels "
+                         "(default for scenes without ground.npz; refused for flattened scenes)")
     a = ap.parse_args(argv)
     spec = load_spec(a.spec)
     for el in spec["elements"]:
@@ -428,7 +528,7 @@ def main(argv=None):
         return
     if not a.out:
         ap.error("--out is required (or use --map)")
-    apply(a.scene, a.out, spec)
+    apply(a.scene, a.out, spec, exact=a.exact_boxes)
 
 
 if __name__ == "__main__":

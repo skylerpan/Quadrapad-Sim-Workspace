@@ -138,7 +138,7 @@ Body roll / pitch standard deviation while walking, before → after ground flat
 | `pcd2sim/` | PCD I/O, OctoMap `.bt`/`.ot` reader (`octomap_io.py`), voxelization, denoising, box merging, ground flattening (`ground.py`), floor and spawn analysis, `build_scene` CLI |
 | `quadsim/` | `sim.py` core (no ROS), `lidar.py`, `base.py`, `proxies.py`, `raycast.py`, `model.py`, `ros_io.py`, `sim_node.py` |
 | `config/sim.yaml` | all parameters |
-| `config/stairs_dp_full.yaml` | synthetic-stair spec for the dp_full scenes (`scripts/make_stairs.py`, docs/usage.md section 2.5) |
+| `config/stairs_dp_full.yaml`, `config/stairs_dp_bt.yaml` | synthetic-stair specs for the dp_full (0.03 m PCD) and dp_bt (0.1 m 1:1 octree) scenes (`scripts/make_stairs.py`, docs/usage.md section 2.5) |
 | `config/nav_waypoints_*.yaml` | waypoint sets for the navigation goal-loop test (`dp_1008*`: 1F of dp_1008; `dp_2f`: 2F of `scenes/dp`); one-off probe sets live in `config/archive/` |
 | `scripts/` | `build_scenes.sh`, `run_sim.sh`, `bench.py`, `nav_goal_loop.sh` / `nav_goal_loop.py` (navigation goal-loop test), `make_waypoints_from_poses.py`, `fix_pcd_plane.py` (synthetic ground layer), `eval_scene.py` (scene quality), `make_stairs.py` (replace scanned stairs with clean 16 cm steps), `bt_to_pcd.py` / `deploy_octomap_surface.py` (hand-edited OctoMap -> surface PCD for the planner) |
 | `docker/` | Dockerfile, `run.sh`, minimal `livox_ros_driver2` message package |
