@@ -212,6 +212,30 @@ docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_full_original.pcd --
 - viewer 的地圖 mesh 只畫離出生點最近的 `viewer.max_map_boxes` 個 box（預設 40 萬），所以 `--viewer` 只會看到出生點附近；`viewer.max_map_boxes=1500000` 大約能看到整層（2,900 萬面，載入多 13 s）。headless 不受影響。
 - `scenes/dp` 不動（還是 `Maps/dp.bt` 的 0.2 m 1:1 場景）；要用新場景就 `scene=scenes/dp_full_003`。
 
+### 2.5 人工樓梯（`scripts/make_stairs.py`）
+
+掃描出來的樓梯（補洞、平面化之後）階高 0.10–0.22 m 亂跳、踏板有破洞，機器人爬梯時碰撞 / 拒絕都不穩定。`make_stairs.py` 把指定範圍內的樓梯換成乾淨的人工階梯：踏板是平的、豎板是實心的、每階約 16 cm。只動腳印範圍內、目標高度上下一個帶狀區的幾何（`clear`），牆、扶手、上一段梯的底面都留著。
+
+```bash
+docker/run.sh "python3 scripts/make_stairs.py --scene scenes/dp_full_003 --out scenes/dp_full_003_s16 --spec config/stairs_dp_full.yaml"   # 約 35 s
+docker/run.sh "python3 scripts/make_stairs.py --scene scenes/dp_full_003_s16 --spec config/stairs_dp_full.yaml --map east"               # 只印高度圖，檢查結果
+scripts/run_sim.sh --scene scenes/dp_full_003_s16 robot.collision_pool=1024 robot.collision_margin=0.4
+```
+
+spec（`config/stairs_dp_full.yaml`）：
+
+| 欄位 | 說明 |
+|---|---|
+| `riser` | 目標階高（0.16）。每段梯的階數 n = round(高差 / riser)，實際階高 = 高差 / n，頂端剛好接上平台 |
+| `thickness` | 每階往下的實心厚度（0.30 > 階高，豎板才是實心的；不往下填滿，下面可能是下一層的平台） |
+| `clear` | 清除帶 `[下, 上]`：原始 box / slab / voxel / `map_ds` 點的頂面落在目標高度 h 的 `[h-下, h+上]` 內就移除（box 要整個在帶內才刪，牆柱不會被砍）。每個 flight / landing 可以自己覆寫 |
+| `flights` | 每段直梯：`start` / `end` 是軸線（梯腳第一階豎板 → 梯頭）的 xy，矩形以軸線為中心、寬 `width`；`z0` 腳下地板高、`z1` 頭頂平台高。任意 yaw 都可以 |
+| `landings` | 平台：axis-aligned 矩形 `[xmin, xmax, ymin, ymax]` + 頂面 `z`。也拿來當梯腳的「接近墊」，把平面化長出來的雜物壓平 |
+
+做法：在場景自己的 0.03 m 格網上把每階 `[h−thickness, h]` 的實心體積 rasterize 成 voxel，用 `pcd2sim.voxel.merge_boxes` 合成軸對齊 box；`voxels.npz` 的頂層 voxel `zmean` = 精確的 h（踏板頂不被 3 cm 量化，腳下射線經 `surface_z` 得到準確階高）；每階補一片 slab（eval / 地形射線）；`map_ds.pcd` 加入新 voxel 的中心；`meta.json` 多 `synthetic_stairs`。跨過腳印邊緣的長 slab 會被切掉腳印內的部分。
+
+`dp_full_003_s16`（2026-10-28）：東側樓梯 E1（16 × 0.159 m，x 5.55–6.85，y −11.95 → −7.6）+ 平台 2.2 + E2（18 × 0.156 m，x 3.65–5.05，y −7.65 → −12.45）到 2F 5.0；西側迴旋梯 W1–W4（9/8/8/8 階，0.156–0.169 m）+ 三個半層平台 1.1 / 2.35 / 3.7。腳印和高度是從原始點雲（每格中位高度、沿梯剖面）讀出來的，記在 spec 的註解裡。`tests/test_stairs_dp_full_s16.py` 以 0.5 m/s 直走上下 E1、上 W1，不得有任何 contact / stuck 事件。
+
 ## 3. 跑模擬
 
 ```bash

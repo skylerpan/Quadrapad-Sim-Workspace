@@ -138,8 +138,9 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
 | `pcd2sim/` | PCD 讀寫、OctoMap `.bt` / `.ot` 解析（`octomap_io.py`）、體素化、去雜訊、box 合併、地面平面化（`ground.py`）、地板與出生點、`build_scene` CLI |
 | `quadsim/` | `sim.py` 核心（無 ROS）、`lidar.py`、`base.py`、`proxies.py`、`raycast.py`、`model.py`、`ros_io.py`、`sim_node.py` |
 | `config/sim.yaml` | 所有參數 |
+| `config/stairs_dp_full.yaml` | dp_full 場景的人工樓梯 spec（`scripts/make_stairs.py`，docs/usage.md §2.5） |
 | `config/nav_waypoints_*.yaml` | 導航下點迴圈測試的 waypoint 集（`dp_1008*`：dp_1008 的 1F；`dp_2f`：`scenes/dp` 的 2F）；一次性的探點集在 `config/archive/` |
-| `scripts/` | `build_scenes.sh`、`run_sim.sh`、`bench.py`、`nav_goal_loop.sh` / `nav_goal_loop.py`（導航下點迴圈測試）、`make_waypoints_from_poses.py`、`fix_pcd_plane.py`（合成地面層）、`eval_scene.py`（場景品質）、`bt_to_pcd.py` / `deploy_octomap_surface.py`（手修 OctoMap → 表面 PCD 部署給 planner） |
+| `scripts/` | `build_scenes.sh`、`run_sim.sh`、`bench.py`、`nav_goal_loop.sh` / `nav_goal_loop.py`（導航下點迴圈測試）、`make_waypoints_from_poses.py`、`fix_pcd_plane.py`（合成地面層）、`eval_scene.py`（場景品質）、`make_stairs.py`（把掃描樓梯換成乾淨的 16 cm 人工階梯）、`bt_to_pcd.py` / `deploy_octomap_surface.py`（手修 OctoMap → 表面 PCD 部署給 planner） |
 | `docker/` | Dockerfile、`run.sh`、最小化的 `livox_ros_driver2` 訊息套件 |
 | `docs/` | `usage.md`（依任務分章的使用手冊）、`pcd-to-sim-architecture.md`（設計）；`archive/`：有日期的測試紀錄和 dp_1012 建場景參數掃描 |
-| `tests/` | 單元測試（PCD、體素和 box 合併、地面平面化、碰撞代理、感測器時間、碰撞檢查、CustomMsg/PointCloud2 序列化） |
+| `tests/` | 單元測試（PCD、體素和 box 合併、地面平面化、碰撞代理、感測器時間、碰撞檢查、CustomMsg/PointCloud2 序列化、人工樓梯） |
