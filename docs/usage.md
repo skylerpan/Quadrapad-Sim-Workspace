@@ -121,12 +121,27 @@ docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1012_fixed.pcd --out
 | `walk` | `--auto`：從出生點沿壓平的地板格做 BFS（8 鄰、高度差 ≤ 0.2 m，樓梯也算），每 0.3 m 一格從 BFS 的上一格「踩進去」（`IdealBase.reset` + `_check`）。機身在那格本來就放不下的（牆邊、家具）不算；有腳踩在沒平板的欄位的算 `edge_fraction`（地板邊緣或破洞）；其餘是有效取樣，`no_ground / step_up / step_down / slope / collision` 的數量就是地板缺陷，另外報有腳下方 3×3 射線打不到東西的比例 |
 | `stairs_walk` | 每個 stairs box 再走一次：用設定檔的機器人限制，以及 `--climb`（預設 `robot.max_step_up=0.22,robot.max_slope_deg=50`、不檢查碰撞）—— 分開「幾何有問題」和「機器人限制不夠」 |
 | `spawn` | 設定檔出生點：有沒有找到地板、有沒有被移動、地板高度 |
+| `geometry` | `--geometry`：**不帶任何機器人**的幾何數字（`pcd2sim/geometry.py`），拿來比較建置配方。地板格 = 場景自己的可站立體素（有 `ground.npz` 時是 slab 格）；從出生點 8 鄰、高度差 ≤ 0.2 m 做 BFS 得到可達面積；可達地板旁邊「整欄什麼都沒有」（地板上下 −0.3 / +0.8 m 內沒有任何體素）的欄位是破洞，從地板邊一圈圈往外長到 1.5 m，長到 1.5 m 還沒停的是地圖邊緣（open edge）不算洞，其餘依大小分桶（1 / 2–4 / 5–20 / 21–100 / >100 格）並列出最大的幾個。加 `--poses` 時沿 SLAM 軌跡每 `--sample` 0.3 m 取樣：腳下找不到地板、欄位裡有東西擋住（obstacle）、地板相對 LiDAR 高度的離散（floor noise），加 `--pcd` 再算和原始點雲地板的差（residual） |
 
 ```bash
 docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1012 --pcd Maps/dp_1012_fixed.pcd --find-stairs"   # 掃樓梯候選，印出可以直接用的 --stairs-box
 docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1012 --pcd Maps/dp_1012_fixed.pcd --auto --stairs-box=-6,-3,-18,-14,-0.5,6.3"
 docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1008 --poses Maps/dp_1008/poses.txt"              # 沿 SLAM keyframe 軌跡重播
+docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1008 --geometry --poses Maps/dp_1008/poses.txt --pcd Maps/dp_1008.pcd"   # 純幾何：可達面積、破洞、軌跡下的地板
 ```
+
+dp_1008 六種建置的 `--geometry` 對照（2026-10-29，`--spawn 0,0,0,-0.5`，軌跡 2,757 個取樣）：
+
+| 建置 | 建置秒數 | box | 可達 m² | 洞數 / m² | 洞 > 1 m² | 軌跡無地板 | 地板離散 p95 | 對原始 p95 |
+|---|---|---|---|---|---|---|---|---|
+| 預設（平面化 + 補洞） | 23 | 231 k | 1,806 | 959 / 78 | 16 | 10 | 0.113 | 0.104 |
+| 平面化、不補洞 | 19 | 243 k | 1,239 | 2,906 / 139 | 15 | 19 | 0.114 | 0.105 |
+| 完全不過濾 | 16 | 300 k | 1,286 | 3,309 / 132 | 14 | 6 | 0.032 | 0.024 |
+| `--no-flatten` | 20 | 285 k | 1,717 | 4,051 / 159 | 17 | 9 | 0.032 | 0.024 |
+| `--no-flatten --close-rounds 1` | 27 | 220 k | 2,003 | 913 / 87 | 12 | 8 | 0.033 | 0.022 |
+| `--no-flatten --close-rounds 2` | 33 | 204 k | 2,044 | 589 / 85 | 13 | 8 | 0.035 | 0.025 |
+
+補洞 1 輪把表面接起來，box 反而比不補少（合併得更好）、可達面積最大、洞數降到四分之一；2 輪只再少一點點卻超過 30 秒。平面化場景的地板和 LiDAR 軌跡、原始點雲的差都在 10 cm 級，體素地板在 3 cm 級。大於 1 m² 的洞（掃描起點正下方那類）每種配方都剩十幾個，軌跡上 2,757 個取樣只有 8 個沒地板，所以先不另外補。
 
 ### 2.2b OctoMap 轉回表面點雲（`scripts/bt_to_pcd.py`）
 

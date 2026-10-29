@@ -22,6 +22,11 @@ Sections of the report (also written to <scene>/eval.json, ASCII stair profiles 
            robot.max_slope_deg=50) and no collision test, to separate build geometry from robot limits.
            --poses poses.txt / --waypoints yaml replay a polyline instead (poses: SLAM keyframes).
   spawn    config spawn: ground found, moved to a free pose, floor z
+  geometry --geometry: robot-free numbers from the scene's own voxel floor (pcd2sim.geometry): reachable
+           floor area from the spawn (8-connected, |dz| <= 0.2), holes next to it (empty columns, by size;
+           components reaching 1.5 m from the floor are open edges, not holes), and with --poses the floor
+           under the trajectory every 0.3 m: missing floor, obstacles, floor noise, residual vs the raw
+           cloud (--pcd). This is the Phase 1 comparison between build recipes; no robot limits involved.
 key=value arguments override config/sim.yaml (e.g. robot.max_step_up=0.2).
 """
 from __future__ import annotations
@@ -40,6 +45,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import breadth_first_order, connected_components
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from pcd2sim import geometry  # noqa: E402
 from pcd2sim.octomap_io import read_map_points  # noqa: E402
 from pcd2sim.voxel import crop_percentile, remove_isolated, standable_mask, voxelize  # noqa: E402
 from quadsim.base import IdealBase  # noqa: E402
@@ -482,6 +488,55 @@ def load_waypoints(path: str) -> np.ndarray:
     return np.array([[w["x"], w["y"], w.get("z", 0.0)] for w in d["waypoints"]], dtype=np.float64)
 
 
+# -- geometry (robot-free) ---------------------------------------------------------------------------
+def geometry_section(sim: Simulator, a, slabs, slab_cells: SlabCells) -> dict:
+    t0 = time.time()
+    grid = geometry.load_grid(a.scene)
+    if slabs is not None:
+        # flattened scene: the floor is the slabs, the floor voxels are gone from the boxes
+        keys = np.column_stack([slab_cells.ix, slab_cells.iy])
+        cells = geometry.slab_floor_cells(grid, keys, slab_cells.z)
+        extra = cells.k
+    else:
+        cells = geometry.floor_cells(grid)
+        extra = None
+    out = {"floor_cells": int(cells.n), "floor_m2": round(cells.n * grid.voxel ** 2, 1),
+           "source": "slabs" if slabs is not None else "voxels"}
+    start = cells.nearest(sim.base.x, sim.base.y, sim.base.ground.z0)
+    if start is None:
+        out["error"] = "spawn is not on a floor cell"
+        print(f"geometry: {out['error']}")
+        return out
+    reach = geometry.reachable(cells, start, dz_max=0.2)
+    out["reachable_cells"] = int(reach.sum())
+    out["reachable_m2"] = round(float(reach.sum()) * grid.voxel ** 2, 1)
+    out["holes"] = geometry.holes(grid, cells, reach, extra_occupied=extra)
+    h = out["holes"]
+    print(f"geometry: floor {out['floor_m2']} m2 ({out['source']}), reachable {out['reachable_m2']} m2 "
+          f"({out['reachable_cells']} cells); holes {h['components']} = {h['m2']} m2, by size "
+          f"{ {k: v['holes'] for k, v in h['by_size'].items()} }, open edges {h['open_edge_components']} "
+          f"({h['open_edge_cells']} cells) ({time.time() - t0:.1f}s)")
+    for hh in h["largest"][:5]:
+        print(f"   hole {hh['m2']:5.2f} m2 at x {hh['x']:7.1f} y {hh['y']:7.1f} z {hh['z']:5.2f}")
+    if a.poses:
+        pts = load_poses(a.poses)
+        s = geometry.resample(pts, a.sample)
+        hint = s[:, 2] - 0.4                              # keyframe z is the LiDAR, ~0.4-0.5 m over the floor
+        ref = None
+        if a.pcd:
+            rx, ry, rz, _ = raw_surface(a.pcd, grid.voxel)
+            ref = (rx, ry, rz)
+        tr = geometry.trajectory_floor(grid, cells, s, hint, reference=ref)
+        out["trajectory"] = tr
+        print(f"trajectory: {tr['samples']} samples every {a.sample} m; no floor {tr['no_floor']} "
+              f"({tr['no_floor_fraction']}), obstacle {tr['obstacle']} ({tr['obstacle_fraction']}), "
+              f"floor-hint offset {tr.get('hint_offset_median')} p95 dev {tr.get('hint_offset_p95_abs_dev')}"
+              + (f", vs raw: median {tr.get('residual_median')} p95 {tr.get('residual_p95_abs')} "
+                 f"max {tr.get('residual_max_abs')} ({tr.get('reference_samples')} samples, "
+                 f"raw missing {tr.get('reference_missing')})" if ref is not None else ""))
+    return out
+
+
 # -- main --------------------------------------------------------------------------------------------
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -492,6 +547,9 @@ def main(argv=None):
     ap.add_argument("--stairs-axis", type=float, default=None, help="profile axis (deg); default: fitted")
     ap.add_argument("--find-stairs", action="store_true", help="scan the PCD for staircases and print boxes")
     ap.add_argument("--auto", action="store_true", help="walk every reachable floor cell from the spawn")
+    ap.add_argument("--geometry", action="store_true",
+                    help="robot-free geometry metrics: reachable floor, holes, floor under --poses (see above)")
+    ap.add_argument("--sample", type=float, default=0.3, help="--geometry trajectory sample spacing (m)")
     ap.add_argument("--lattice", type=int, default=3, help="walk every n-th cell in x and y (default 3 = 0.3 m)")
     ap.add_argument("--poses", help="poses.txt (SLAM keyframes) to replay")
     ap.add_argument("--waypoints", help="waypoints yaml to replay as straight legs")
@@ -552,6 +610,8 @@ def main(argv=None):
               f"res p95 {m.get('residual_p95')} buried {m.get('buried_fraction')} cells {m.get('slab_cells')}")
         print(prof)
 
+    if a.geometry:
+        report["geometry"] = geometry_section(sim, a, slabs, cells)
     base = sim.base
     if a.auto:
         w = walk_auto(sim, cells, base, a.lattice, label="walk")
@@ -579,7 +639,7 @@ def main(argv=None):
                         print(f"stairs-walk {b['xmin']:.0f},{b['xmax']:.0f},{b['ymin']:.0f},{b['ymax']:.0f} [{k}]: "
                               f"valid {r.get('valid_samples')} (edge {r.get('edge_fraction')}) fail {r.get('fail_fraction')} "
                               f"events {r.get('events')} foot-over-nothing {r.get('unsupported_foot_fraction')}")
-    if a.poses:
+    if a.poses and not a.geometry:
         pts = load_poses(a.poses)
         pts[:, 2] -= 0.4 if a.z_floor is None else 0.0
         if a.z_floor is not None:
