@@ -308,7 +308,22 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 
 兩種模式對 ROS 的介面完全一樣（第 5 章）。`g23` 模式多兩種事件：`controller`（`state`：`connected` 第一次收到力矩指令、`stand` / `rl` / `lma` 送出模式指令、`lost` 超過 1 秒沒收到指令）和 `fall`（機身法線的 z 分量 < 0.5，每次出生 / set_pose 後只報一次）。`/sim/set_pose` 在 g23 模式會把機器人以預設關節角放到新位置、重新跑站立序列。
 
-控制器還沒接上時機器人只會軟倒在地上（沒有力矩）；`tests/test_g23.py` 用一個假控制器（PD 撐住預設姿勢）驗證協定、站立和事件。控制器本身的建置與一鍵啟動見 §3.2（待補）。
+控制器還沒接上時機器人只會軟倒在地上（沒有力矩）；`tests/test_g23.py` 用一個假控制器（PD 撐住預設姿勢）驗證協定、站立和事件。站立序列要等到收到第一筆力矩指令（`connected`）才開始計時，所以控制器慢慢起來也沒關係。
+
+### 3.2 控制器：建置與一鍵啟動
+
+控制器（`g2_deploy_rs`，Rust）在**容器裡編、容器裡跑**，host 不需要 Rust 或 OCS2。第二個映像 `quadsim-g23:latest`（`docker/Dockerfile.g23`，FROM quadsim:latest 加 Rust 工具鏈、cmake / ninja / Eigen、python3-venv）由 `docker/build_g23.sh` 建；控制器 repo 以 volume 掛在容器的 `/g2`（host 路徑 `G2_DEPLOY_RS`，預設本 repo 旁邊的 `../g2_deploy_rs/g2_deploy_rs`），編譯產物（`target/`、`onnxruntime-linux-*`、`.venv_lma`、`build/lma_bridge`）留在那個目錄、屬於你。
+
+```bash
+docker/build_g23.sh            # 映像（沒有才建）+ ONNX Runtime 下載 + cargo build --release（RL policy 用；幾分鐘）
+docker/build_g23.sh --lma      # 再加 LMA：cmeel 的 Pinocchio / Boost venv + OCS2 C++ bridge 從原始碼編（很久，每個 job 約 3 GB RAM）
+docker/build_g23.sh --image    # 只重建映像
+scripts/run_sim.sh             # 之後照常啟動：偵測到 quadsim-g23 映像就用它並掛 /g2，sim_node 自己把控制器當子行程帶起來
+```
+
+`scripts/run_sim.sh` 的規則：命令列沒有 `robot.type=ideal` 且 `quadsim-g23` 映像存在 → `QUADSIM_G23=1`（`docker/run.sh` 選那個映像、掛 `/g2`）；否則用 `quadsim:latest` 並印警告（機器人會沒有控制器）。sim_node 在 g23 模式且 `robot.controller.spawn`（預設 true）時，找 `/g2/target/release/g2_deploy_rs`（或 `robot.controller.exec`）以 `sim ros` 參數、工作目錄 `/g2` 啟動它，環境變數預設 `G2_LMA_STATE_SOURCE=ground_truth`（`robot.controller.env` 可加），`ORT_DYLIB_PATH` 自動指到 repo 裡下載好的 onnxruntime；它的輸出以 `[g2]` 前綴併進 sim 的 log，Ctrl-C 一起關；它自己掛掉會發 `controller` 事件（`state: exited`）並讓 sim 以 exit code 1 結束。找不到 binary 時只印警告，你可以在另一個終端自己跑控制器（它連 localhost UDP 即可，容器是 `--net=host`）。
+
+即時性：g23 模式下 LiDAR 射線在工作執行緒跑（物理迴圈只記錄位姿），每 10 秒的 log 多印達成的 `rtf` 和 LiDAR 執行緒佔用；達成的 rtf 低於設定值的 98% 會印警告，因為控制器是 wall-clock 1 kHz，模擬變慢它就收到遲到的 telemetry。
 
 出生點：`config/sim.yaml` 的 `spawn: [x, y, yaw, z_floor]`（目前 `[0, 0, 0, -0.5]`，dp_1008 1F 原點地板 −0.45；dp_1012 用 −0.4）；設成 `null` 會用 `meta.json` 裡 build_scene 算出的點。`z_floor` 要給**目標樓層的地板高度**（會從它上方 0.5 m 往下找到下方 1 m）；給到兩層之間會站在雜物或牆緣上。出生點或 `set_pose` 和地圖重疊時，機身會自動移到 1 m 內最近的空位（最多轉 90°）。
 

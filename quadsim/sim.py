@@ -136,7 +136,8 @@ class Simulator:
             self.gyro_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")]
             self.g23 = None
 
-        self.lidar = RollingLidar(cfg["lidar"], self.rays, self.voxels, self.meta["voxel"])
+        # legged mode: Embree runs on a worker thread so the 1 kHz loop never waits for a frame
+        self.lidar = RollingLidar(cfg["lidar"], self.rays, self.voxels, self.meta["voxel"], threaded=self.legged)
         ph = cfg["physics"]
         self.dt = ph["timestep"]
         self.ctrl_steps = self._steps_per(ph["control_hz"], "physics.control_hz")

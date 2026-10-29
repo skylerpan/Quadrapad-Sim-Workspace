@@ -32,6 +32,7 @@ from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 from pcd2sim.pcd_io import read_pcd
 
 from .config import load_config
+from .controller_proc import ControllerProcess
 from .ros_io import lidar_pointcloud2, serialize_custom_msg, stamp_parts, xyzi_pointcloud2
 from .sim import Simulator
 
@@ -260,6 +261,21 @@ def main(argv=None):
     spin = threading.Thread(target=_spin, args=(node, stop, failed), daemon=True)
     spin.start()
 
+    # legged mode: the controller runs as our child (robot.controller.spawn, default true) when its binary
+    # exists in the mounted controller repo (docker/run.sh QUADSIM_G23=1, docker/build_g23.sh)
+    ctl = None
+    ctl_cfg = cfg["robot"].get("controller", {}) or {}
+    if sim.legged and ctl_cfg.get("spawn", True):
+        ctl = ControllerProcess(ctl_cfg, lambda msg: node.get_logger().info(msg))
+        if ctl.available:
+            ctl.start()
+        else:
+            node.get_logger().warn(
+                f"controller binary not found at {ctl.exe}: start it yourself (g2_deploy_rs sim ros) or build "
+                f"it with docker/build_g23.sh; the robot lies still until torque commands arrive on "
+                f"udp:{sim.g23.cmd_port}")
+            ctl = None
+
     viewer = None
     viewer_cfg = cfg.get("viewer", {})
     sync_period = 1.0 / max(1.0, float(viewer_cfg.get("sync_hz", 30)))
@@ -280,11 +296,17 @@ def main(argv=None):
     rtf = cfg["physics"]["rtf"]
     wall0, sim0 = time.perf_counter(), sim.d.time
     last_report = wall0
+    report_sim = sim.d.time
     code = 0
     try:
         while not stop.is_set() and rclpy.ok() and (a.duration <= 0 or sim.d.time < a.duration):
             node.step()
             now = time.perf_counter()
+            if ctl is not None and ctl.poll() is not None:
+                node._event({"type": "controller", "state": "exited", "code": ctl.poll(), "t": sim.d.time})
+                node.get_logger().error(f"controller exited with code {ctl.poll()}: stopping the sim")
+                code = 1
+                break
             if viewer is not None:
                 if not viewer.is_running():          # viewer window closed: stop the sim too
                     break
@@ -301,12 +323,22 @@ def main(argv=None):
                 elif ahead < -1.0:                       # fell behind: don't try to catch up
                     wall0, sim0 = now, sim.d.time
             if now - last_report > 10.0:
-                msg = f"sim t={sim.d.time:.1f}s pose={np.round(sim.d.qpos[:3], 2).tolist()}"
+                achieved = (sim.d.time - report_sim) / (now - last_report)
+                msg = f"sim t={sim.d.time:.1f}s pose={np.round(sim.d.qpos[:3], 2).tolist()}, rtf {achieved:.2f}"
+                if sim.legged:
+                    msg += f", lidar worker {100.0 * sim.lidar.busy_s / (now - last_report):.0f}% of wall"
+                    sim.lidar.busy_s = 0.0
                 if viewer is not None:
                     msg += f", viewer.sync {100.0 * sync_wall / (now - last_report):.0f}% of wall"
                     sync_wall = 0.0
                 node.get_logger().info(msg)
+                if sim.legged and rtf > 0 and achieved < 0.98 * rtf:
+                    # the controller is a wall-clock 1 kHz loop: a slow sim starves it of telemetry
+                    node.get_logger().warn(f"real-time factor {achieved:.2f} < {rtf} in legged mode: the "
+                                           f"controller sees late telemetry (reduce lidar.points_per_sec, "
+                                           f"robot.collision_pool, or close the viewer)")
                 last_report = now
+                report_sim = sim.d.time
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         code = 1
@@ -317,6 +349,8 @@ def main(argv=None):
             code = 1
         if viewer is not None:
             viewer.close()
+        if ctl is not None:
+            ctl.stop()
         sim.close()
         sys.stdout.flush()
         sys.stderr.flush()

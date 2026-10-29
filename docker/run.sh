@@ -10,9 +10,21 @@
 #           fallback draws no rviz2 point clouds or grids.
 # DDS matches ../WebRvizLite: CycloneDDS, ROS_DOMAIN_ID=1, conf/cyclonedds.xml (override the file with
 # CYCLONEDDS_CONFIG=<name under conf/>).
+# QUADSIM_G23=1: the quadsim-g23 image (docker/build_g23.sh) with the G23 controller repo mounted at /g2
+# (G2_DEPLOY_RS, default ../g2_deploy_rs/g2_deploy_rs) so sim_node can spawn the controller.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${QUADSIM_IMAGE:-quadsim:latest}"
+G2_ARGS=()
+if [[ "${QUADSIM_G23:-0}" == "1" ]]; then
+  IMAGE="${QUADSIM_IMAGE:-quadsim-g23:latest}"
+  G2="${G2_DEPLOY_RS:-$REPO/../g2_deploy_rs/g2_deploy_rs}"
+  if [[ -d "$G2" ]]; then
+    G2_ARGS=(-v "$(cd "$G2" && pwd)":/g2 -e G2_DEPLOY_RS=/g2)
+  else
+    echo "QUADSIM_G23=1 but the controller repo is not at $G2 (set G2_DEPLOY_RS)" >&2
+  fi
+fi
 GUI_ARGS=()
 if [[ "${QUADSIM_GUI:-0}" == "1" && -n "${DISPLAY:-}" ]]; then
   GUI_ARGS=(-e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix)
@@ -47,6 +59,6 @@ exec docker run --rm --init "${TTY_ARGS[@]}" --net=host --ipc=host \
   -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
   -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}" \
   -e CYCLONEDDS_URI="file:///ws/conf/${CYCLONEDDS_CONFIG:-cyclonedds.xml}" \
-  "${GUI_ARGS[@]}" \
+  "${GUI_ARGS[@]}" "${G2_ARGS[@]}" \
   -v "$REPO":/ws -w /ws "$IMAGE" \
   bash -c "source /opt/ros/humble/setup.bash; source /opt/livox_ws/install/setup.bash 2>/dev/null; ${*:-exec bash}"

@@ -105,6 +105,7 @@ class G23Backend:
         self.last_cmd_wall = None
         self.n_cmd = 0
         self.connected = False
+        self.t_connected = None                    # sim time of the first torque command
         self.lost = False
         ctl = robot_cfg.get("controller", {}) or {}
         self.cmd_port = int(ctl.get("cmd_port", 20001))
@@ -212,21 +213,26 @@ class G23Backend:
     def tick(self, t: float, cmd: np.ndarray) -> list[dict]:
         """Per control tick: advance the sequence, forward cmd_vel, watch the controller link."""
         events = []
-        if self.stage == "idle" and t - self.t0 >= self.start_delay:
+        with self.lock:
+            last, n = self.last_cmd_wall, self.n_cmd
+        if n > 0 and not self.connected:
+            self.connected = True
+            self.t_connected = t
+            events.append({"type": "controller", "state": "connected", "t": t})
+        # the sequence starts once the controller talks (its first LMA start can take minutes) and after
+        # start_delay s past the spawn / set_pose
+        ready = self.connected and t - max(self.t0, self.t_connected) >= self.start_delay
+        if self.stage == "idle" and ready:
             self.send_command("MODE STAND")
             self.stage = "stand"
+            self.t_stand = t
             events.append({"type": "controller", "state": "stand", "t": t})
-        elif self.stage == "stand" and t - self.t0 >= self.start_delay + self.stand_delay:
+        elif self.stage == "stand" and t - self.t_stand >= self.stand_delay:
             self.send_command(f"MODE {self.gait}")
             self.stage = "gait"
             events.append({"type": "controller", "state": self.gait.lower(), "t": t})
         if self.stage in ("gait", "manual"):
             self.send_command(f"AXES {cmd[0]:.3f} {cmd[1]:.3f} {cmd[2]:.3f}")
-        with self.lock:
-            last, n = self.last_cmd_wall, self.n_cmd
-        if n > 0 and not self.connected:
-            self.connected = True
-            events.append({"type": "controller", "state": "connected", "t": t})
         if self.connected and last is not None:
             silent = time.monotonic() - last > 1.0
             if silent and not self.lost:
