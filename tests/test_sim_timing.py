@@ -13,7 +13,7 @@ pytestmark = pytest.mark.skipif(not os.path.exists(os.path.join(SCENE, "meta.jso
 def _sim():
     from quadsim.config import load_config
     from quadsim.sim import Simulator
-    cfg = load_config(None, ["lidar.range_noise=0.0", "imu.acc_noise=0.0", "imu.gyro_noise=0.0",
+    cfg = load_config(None, ["robot.type=ideal", "lidar.range_noise=0.0", "imu.acc_noise=0.0", "imu.gyro_noise=0.0",
                              "imu.acc_bias_rw=0.0", "imu.gyro_bias_rw=0.0"])
     cfg["scene"] = SCENE
     return Simulator(cfg)

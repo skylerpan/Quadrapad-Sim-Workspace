@@ -13,6 +13,7 @@ from pcd2sim import SCENE_FORMAT
 
 from .base import IdealBase, body_lift, rot_zyx
 from .config import load_scene_meta
+from .g23 import G23Backend, build_g23_spec
 from .lidar import LidarFrame, RollingLidar
 from .model import add_map_mesh, build_mjcf
 from .proxies import BoxIndex, ProxyPool
@@ -82,8 +83,14 @@ class Simulator:
         self.index = BoxIndex(boxes)
 
         r = cfg["robot"]
+        self.robot_type = str(r.get("type", "ideal"))
+        if self.robot_type not in ("ideal", "g23"):
+            raise ValueError(f"robot.type={self.robot_type!r}: expected 'g23' (legged) or 'ideal' (floating base)")
+        self.legged = self.robot_type == "g23"
         self.half = np.asarray(r["body_size"]) / 2.0
         spawn = self._spawn_pose()
+        # The ideal base is the terrain probe in both modes: it finds the floor under a pose and the free
+        # pose nearest a blocked one (spawn, set_pose); in g23 mode it then just tracks the torso pose.
         self.base = IdealBase(r, self.rays, self.voxels, blocked=self._blocked)
         # Kept for the ROS front-end: the requested spawn can differ from where the base ends up
         # (no ground near z_floor, or the body overlapped the map and was moved to a free pose).
@@ -92,26 +99,42 @@ class Simulator:
         self.spawn_floor_z = self.base.ground.z0
         pos, quat = self.base.target_pose()
 
-        xml = build_mjcf(cfg, self.meta["gravity"], pos, r["collision_pool"])
-        if visual_map:                      # only for the viewer: headless runs keep the 130-geom model
-            spec = mujoco.MjSpec.from_string(xml)
+        if self.legged:
+            if self.contact is None:
+                raise RuntimeError(f"scene {scene_dir} has no contact.npy: a legged robot needs a format "
+                                   f"{SCENE_FORMAT} scene (rebuild with pcd2sim.build_scene)")
+            self.contact_index = BoxIndex(boxes[self.contact])       # floors included: the feet stand on them
+            pos = np.array([pos[0], pos[1], self.base.ground.z0 + float(r.get("spawn_height", 0.40))])
+            spec = build_g23_spec(cfg, self.meta["gravity"], pos, r["collision_pool"])
+        else:
+            self.contact_index = self.index
+            spec = mujoco.MjSpec.from_string(build_mjcf(cfg, self.meta["gravity"], pos, r["collision_pool"]))
+        if visual_map:                      # only for the viewer: headless runs keep the small model
             max_vis = int(cfg.get("viewer", {}).get("max_map_boxes", 400_000))
             vis_boxes = boxes
             if len(boxes) > max_vis:        # draw the boxes nearest the spawn (a 0.03 m map has millions)
                 d2 = ((boxes[:, :2] - pos[:2]) ** 2).sum(axis=1)
                 vis_boxes = boxes[np.argpartition(d2, max_vis)[:max_vis]]
             add_map_mesh(spec, vis_boxes, slabs, max_boxes=max_vis)
-            self.m = spec.compile()
-        else:
-            self.m = mujoco.MjModel.from_xml_string(xml)
+        self.m = spec.compile()
         self.d = mujoco.MjData(self.m)
-        self.proxies = ProxyPool(self.m, self.d, self.index, r["collision_pool"])
-        self.base_body = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, "base")
-        self.base_geom = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_GEOM, "base_geom")
+        self.proxies = ProxyPool(self.m, self.d, self.contact_index, r["collision_pool"])
         self.lidar_site = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "lidar")
-        self.mocap_target = self.m.body_mocapid[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, "target")]
-        self.acc_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "imu_acc")]
-        self.gyro_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")]
+        if self.legged:
+            self.base_body = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, "TORSO")
+            self.base_geom = -1
+            self.mocap_target = None
+            self.acc_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "lidar_acc")]
+            self.gyro_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "lidar_gyro")]
+            self.g23 = G23Backend(self.m, self.d, r, self.base_body)
+            self.fallen = False
+        else:
+            self.base_body = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, "base")
+            self.base_geom = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_GEOM, "base_geom")
+            self.mocap_target = self.m.body_mocapid[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, "target")]
+            self.acc_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "imu_acc")]
+            self.gyro_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")]
+            self.g23 = None
 
         self.lidar = RollingLidar(cfg["lidar"], self.rays, self.voxels, self.meta["voxel"])
         ph = cfg["physics"]
@@ -150,11 +173,17 @@ class Simulator:
         return float(meta_spawn[0]), float(meta_spawn[1]), 0.0, float(meta_spawn[2])
 
     def _place(self, pos, quat):
-        self.d.qpos[0:3] = pos
-        self.d.qpos[3:7] = quat
-        self.d.qvel[:] = 0.0
-        self.d.mocap_pos[self.mocap_target] = pos
-        self.d.mocap_quat[self.mocap_target] = quat
+        if self.legged:
+            pos = np.array([pos[0], pos[1], self.base.ground.z0 + float(self.cfg["robot"].get("spawn_height", 0.40))])
+            self.g23.place(pos, quat)
+            self.g23.restart(self.d.time)
+            self.fallen = False
+        else:
+            self.d.qpos[0:3] = pos
+            self.d.qpos[3:7] = quat
+            self.d.qvel[:] = 0.0
+            self.d.mocap_pos[self.mocap_target] = pos
+            self.d.mocap_quat[self.mocap_target] = quat
         self._refresh_proxies(pos)
         mujoco.mj_forward(self.m, self.d)
         self.lidar.reset(self.d.time)
@@ -199,6 +228,9 @@ class Simulator:
     # -- stepping --------------------------------------------------------------
     def _refresh_proxies(self, pos):
         r = self.cfg["robot"]
+        if self.legged:                     # torso centre; the window reaches the feet and a step below them
+            self.proxies.update(pos, 0.35, pos[2] - 0.75, pos[2] + 0.4, r["collision_margin"])
+            return
         half_xy = float(np.hypot(self.half[0], self.half[1]))
         z_lo = pos[2] - self.half[2] - 0.05
         z_hi = pos[2] + self.half[2] + 0.3
@@ -239,6 +271,8 @@ class Simulator:
 
     def control_tick(self) -> TickOutput:
         """Advance one control period (ctrl_steps physics steps)."""
+        if self.legged:
+            return self._control_tick_g23()
         out = TickOutput(t=self.d.time)
         t0 = time.perf_counter()
         reason = self.base.update(self.ctrl_steps * self.dt, self.cmd, self.d.time - self.cmd_time)
@@ -281,6 +315,51 @@ class Simulator:
         out.t = self.d.time
         return out
 
+    def _control_tick_g23(self) -> TickOutput:
+        """Legged robot: the controller drives the joints over UDP; quadsim steps, senses and reports."""
+        out = TickOutput(t=self.d.time)
+        r = self.cfg["robot"]
+        t0 = time.perf_counter()
+        fresh = self.d.time - self.cmd_time <= r["cmd_timeout"]
+        out.events += self.g23.tick(self.d.time, self.cmd if fresh else np.zeros(3))
+        self._refresh_proxies(self.d.qpos[0:3])
+        t1 = time.perf_counter()
+        self.timing["control"] += t1 - t0
+
+        imu_cfg = self.cfg["imu"]
+        for _ in range(self.ctrl_steps):
+            t_state = self.d.time
+            self.g23.apply_torque()
+            mujoco.mj_step(self.m, self.d)
+            self.step_count += 1
+            self.g23.send_telemetry(self.d.time)
+            self.lidar.record_pose(t_state, self.d.site_xpos[self.lidar_site],
+                                   self.d.site_xmat[self.lidar_site].reshape(3, 3))
+            if self.step_count % self.imu_steps == 0:
+                out.imu.append(self._imu_sample(imu_cfg, t_state))
+            if self.step_count % self.clock_steps == 0:
+                out.clock.append(self.d.time)
+        t2 = time.perf_counter()
+        self.timing["physics"] += t2 - t1
+
+        out.frames = self.lidar.process()
+        self.timing["lidar"] += time.perf_counter() - t2
+
+        q = self.d.qpos
+        self.base.x, self.base.y = float(q[0]), float(q[1])
+        self.base.yaw = float(np.arctan2(2.0 * (q[3] * q[6] + q[4] * q[5]), 1.0 - 2.0 * (q[5] ** 2 + q[6] ** 2)))
+        up = float(self.d.xmat[self.base_body].reshape(3, 3)[2, 2])
+        if up < 0.5 and not self.fallen:
+            self.fallen = True
+            out.events.append({"type": "fall", "t": self.d.time, "pose": [self.base.x, self.base.y, self.base.yaw],
+                               "z": float(q[2]), "up": round(up, 3)})
+        out.t = self.d.time
+        return out
+
+    def close(self):
+        if self.g23 is not None:
+            self.g23.close()
+
     def _imu_sample(self, c, t: float) -> ImuSample:
         dt = self.imu_steps * self.dt
         acc = self.d.sensordata[self.acc_adr:self.acc_adr + 3].copy()
@@ -293,6 +372,8 @@ class Simulator:
         return ImuSample(t, acc, gyro)
 
     def _base_contact(self):
+        if self.base_geom < 0:
+            return None
         for i in range(self.d.ncon):
             con = self.d.contact[i]
             if con.geom1 == self.base_geom or con.geom2 == self.base_geom:

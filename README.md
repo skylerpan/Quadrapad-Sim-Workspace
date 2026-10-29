@@ -4,11 +4,11 @@ English | [繁體中文](README.zh-TW.md)
 
 **quadsim** turns a merged LiDAR SLAM point cloud (PCD) into a navigation test environment for quadruped robots.
 - **Scene builder (`pcd2sim`)**: voxelizes the map, merges voxels into collision boxes, and flattens noisy floors into planar slabs. Builds in seconds.
-- **Simulator (`quadsim`)**: runs an ideal-base quadruped in MuJoCo. A Mid-360-style rolling LiDAR with per-point timestamps is ray-cast with Embree. Also provides an IMU and ground truth.
+- **Simulator (`quadsim`)**: runs the G23 legged robot in MuJoCo at 1 kHz, driven by its own Rust controller over UDP (`robot.type: g23`, the default), or an ideal floating base that follows `/cmd_vel` (`robot.type: ideal`). A Mid-360-style rolling LiDAR with per-point timestamps is ray-cast with Embree. Also provides an IMU and ground truth.
 - **ROS 2 interface**: publishes `livox_ros_driver2/CustomMsg`, `PointCloud2`, IMU, `/clock`, ground-truth odometry and events; takes `/cmd_vel` and `/sim/set_pose`.
 - Designed to plug straight into Point-LIO / FAST-LIO and a Nav2-based 3D navigation stack. Runs in Docker on ROS 2 Humble.
 
-The robot is an **ideal base** (no legs are simulated): it follows `/cmd_vel` and hugs the terrain.
+The map enters MuJoCo as a small pool of proxy boxes moved onto the scene boxes around the robot (floors included for the legged robot, from `contact.npy`); the full map lives in Embree for the LiDAR. In `g23` mode quadsim plays the controller's own simulation process: torque commands in, 1 kHz telemetry out, `MODE STAND` / `MODE RL|LMA` / `AXES` text commands to the controller, with `/cmd_vel` forwarded as `AXES` (`quadsim/g23.py`, docs/usage.md section 3.1). In `ideal` mode no legs are simulated: the base follows `/cmd_vel` and hugs the terrain.
 
 **Usage guide** with every command, flag and environment variable, organised by task: [`docs/usage.md`](docs/usage.md) (Traditional Chinese). Design background: [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md) (Traditional Chinese, §12–§13). Navigation goal-loop test record on dp_1008 with the failure analysis: [`docs/archive/nav-goal-loop-test-2026-10-13.md`](docs/archive/nav-goal-loop-test-2026-10-13.md) (Traditional Chinese).
 

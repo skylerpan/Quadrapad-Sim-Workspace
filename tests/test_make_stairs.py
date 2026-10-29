@@ -100,7 +100,7 @@ def test_base_climbs_with_exact_rises(built):
     from quadsim.config import load_config
     from quadsim.sim import Simulator
     _, out, _, _ = built
-    cfg = load_config(None, [])
+    cfg = load_config(None, ["robot.type=ideal"])
     cfg["scene"] = out
     cfg["spawn"] = [0.0, -2.0, math.pi / 2, 0.0]
     sim = Simulator(cfg)
@@ -212,7 +212,7 @@ def test_base_climbs_exact_coarse_stairs(coarse):
     from quadsim.config import load_config
     from quadsim.sim import Simulator
     _, out, _, _, _ = coarse
-    cfg = load_config(None, [])
+    cfg = load_config(None, ["robot.type=ideal"])
     cfg["scene"] = out
     cfg["spawn"] = [0.0, -2.0, math.pi / 2, 0.0]
     sim = Simulator(cfg)

@@ -14,7 +14,7 @@ def test_low_obstacle_just_above_body_bottom_blocks():
     from quadsim.config import load_config
     from quadsim.proxies import BoxIndex
     from quadsim.sim import Simulator
-    cfg = load_config(None, [])
+    cfg = load_config(None, ["robot.type=ideal"])
     cfg["scene"] = SCENE
     s = Simulator(cfg)
     x, y, z_floor = 0.0, 0.0, 0.0
@@ -31,7 +31,7 @@ def test_set_pose_into_an_obstacle_moves_to_a_free_pose():
     from quadsim.config import load_config
     from quadsim.proxies import BoxIndex
     from quadsim.sim import Simulator
-    cfg = load_config(None, [])
+    cfg = load_config(None, ["robot.type=ideal"])
     cfg["scene"] = SCENE
     s = Simulator(cfg)
     x, y, z_floor = s.base.x, s.base.y, s.base.ground.z0

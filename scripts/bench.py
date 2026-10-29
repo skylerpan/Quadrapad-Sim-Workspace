@@ -31,7 +31,7 @@ def main():
     ap.add_argument("--seconds", type=float, default=30.0)
     ap.add_argument("overrides", nargs="*")
     a = ap.parse_args()
-    cfg = load_config(a.config, a.overrides)
+    cfg = load_config(a.config, ["robot.type=ideal"] + list(a.overrides))
     if a.scene:
         cfg["scene"] = a.scene
     t_load = time.time()

@@ -561,7 +561,7 @@ def main(argv=None):
     ap.add_argument("overrides", nargs="*", help="key=value config overrides")
     a = ap.parse_args(argv)
 
-    cfg = load_config(a.config, a.overrides)
+    cfg = load_config(a.config, ["robot.type=ideal"] + list(a.overrides))     # the ideal base is the instrument here
     cfg["scene"] = a.scene
     if a.spawn:
         cfg["spawn"] = [float(t) for t in a.spawn.split(",")]

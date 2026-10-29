@@ -299,6 +299,17 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 | `--viewer` | 開 MuJoCo viewer（需要 `QUADSIM_GUI=1`，見第 4 章） |
 | `key=value ...` | 任何設定檔欄位的覆寫（見第 9 章） |
 
+### 3.1 機器人類型（`robot.type`）
+
+| `robot.type` | 內容 |
+|---|---|
+| `g23`（預設） | `robot/g23/` 的 G23 機器狗模型（來源見 `provenance.json`），物理 1 kHz。腿由 `g2_deploy_rs` 的 Rust 控制器驅動：quadsim 扮演它自帶的 `mujoco_simulation_G23.py`，在 `robot.controller.cmd_port`（20001）收 240 bytes 的力矩指令（kp / q / kd / dq / tau 各 12 個 float32，力矩 = kp(q−q) + kd(dq−dq) + tau，套 J60 速度-力矩包絡），每個物理步對 `robot.controller.telemetry`（30010 控制器、30011 web GUI）送 228 bytes 的狀態（t、rpy、加速度、角速度、12 關節位置 / 速度 / 力矩、機身位置 / 速度、四腳接觸）。出生後 `start_delay` 秒送 `MODE STAND`、再 `stand_delay` 秒送 `MODE RL` 或 `MODE LMA`（`robot.gait`），之後每個控制週期把 `/cmd_vel` 轉成 `AXES vx vy wz`（m/s、m/s、rad/s）送到 `robot.controller.command_addr`（50051，和他們 ROS bridge 同一個埠）。`robot.auto_stand: false` 就不自動送 MODE，自己用 GUI / 鍵盤操作。代理池從場景的 `contact.npy`（含地板）取 box，機器人站在體素地板上；場景必須是格式 3 |
+| `ideal` | 浮動底盤，不模擬腿：跟隨 `/cmd_vel`、腳下射線貼合地形、太高的台階 / 太陡 / 撞牆會拒絕並發事件。`eval_scene.py` 和 `bench.py` 固定用這個 |
+
+兩種模式對 ROS 的介面完全一樣（第 5 章）。`g23` 模式多兩種事件：`controller`（`state`：`connected` 第一次收到力矩指令、`stand` / `rl` / `lma` 送出模式指令、`lost` 超過 1 秒沒收到指令）和 `fall`（機身法線的 z 分量 < 0.5，每次出生 / set_pose 後只報一次）。`/sim/set_pose` 在 g23 模式會把機器人以預設關節角放到新位置、重新跑站立序列。
+
+控制器還沒接上時機器人只會軟倒在地上（沒有力矩）；`tests/test_g23.py` 用一個假控制器（PD 撐住預設姿勢）驗證協定、站立和事件。控制器本身的建置與一鍵啟動見 §3.2（待補）。
+
 出生點：`config/sim.yaml` 的 `spawn: [x, y, yaw, z_floor]`（目前 `[0, 0, 0, -0.5]`，dp_1008 1F 原點地板 −0.45；dp_1012 用 −0.4）；設成 `null` 會用 `meta.json` 裡 build_scene 算出的點。`z_floor` 要給**目標樓層的地板高度**（會從它上方 0.5 m 往下找到下方 1 m）；給到兩層之間會站在雜物或牆緣上。出生點或 `set_pose` 和地圖重疊時，機身會自動移到 1 m 內最近的空位（最多轉 90°）。
 
 啟動 log 要看的幾行：

@@ -37,7 +37,7 @@ def _drive(sim, x, y, yaw, z_floor, vx, seconds):
 def sim():
     from quadsim.config import load_config
     from quadsim.sim import Simulator
-    cfg = load_config(None, ["robot.collision_pool=512", "robot.collision_margin=0.4"])
+    cfg = load_config(None, ["robot.type=ideal", "robot.collision_pool=512", "robot.collision_margin=0.4"])
     cfg["scene"] = SCENE
     cfg["spawn"] = [6.35, -12.8, math.pi / 2, -0.2]
     return Simulator(cfg)
