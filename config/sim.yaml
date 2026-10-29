@@ -13,8 +13,9 @@ robot:
                               # from starting the controller (run it yourself)
                               # ideal: floating base that follows /cmd_vel and hugs the terrain (no legs, no controller)
   gait: rl                    # g23: locomotion mode sent after standing, rl (ONNX policy) or lma (OCS2 NMPC + WBC)
-  policy_mode: 1              # g23 rl: policy slot sent before MODE RL. 0 = PPO flat-terrain walk (trips its posture guard on
-                              # 0.1 m voxel bumps), 1 = HIMLoco rough terrain (walked 38 m of dp_1008's SLAM path on 2026-10-29)
+  policy_mode: 0              # g23 rl: RL policy at start, 0 = PPO flat-terrain walk (default), 1 = HIMLoco stairs / rough terrain,
+                              # 4 = IsaacSim. Switch at run time (before stairs) with an Int32 on ros.topics.policy_mode; the
+                              # controller takes MODE <n> live. PPO trips its posture guard on 0.1 m bumps the floor fixes remove
   fall_height: 0.18           # g23: torso lower than this over the floor for 1 s while walking = `fall` (collapsed)
   auto_stand: true            # g23: send MODE STAND start_delay s after spawn / set_pose, MODE <gait> stand_delay s later
   start_delay: 1.0
@@ -88,3 +89,4 @@ ros:
     map_cloud: /sim/map_cloud
     cmd_vel: /robot01/cmd_vel
     set_pose: /robot01/set_pose
+    policy_mode: /robot01/policy_mode   # std_msgs/Int32 (g23 rl): 0 PPO, 1 HIMLoco, 4 IsaacSim; forwarded as MODE <n>

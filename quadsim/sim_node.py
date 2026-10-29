@@ -26,7 +26,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import Imu, PointCloud2
-from std_msgs.msg import String
+from std_msgs.msg import Int32, String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 from pcd2sim.pcd_io import read_pcd
@@ -82,8 +82,11 @@ class SimNode(Node):
         self.lock = threading.Lock()
         self.pending_cmd = None
         self.pending_pose = None
+        self.pending_policy = None
         self.create_subscription(Twist, tp["cmd_vel"], self._on_cmd, 10)
         self.create_subscription(PoseStamped, tp["set_pose"], self._on_set_pose, 10)
+        if sim.legged and tp.get("policy_mode"):
+            self.create_subscription(Int32, tp["policy_mode"], self._on_policy_mode, 10)
         self.odom_every = max(1, int(round(cfg["physics"]["control_hz"] / ros["odom_hz"])))
         self.tick = 0
         self._report_spawn()
@@ -124,14 +127,22 @@ class SimNode(Node):
         with self.lock:
             self.pending_pose = (p.x, p.y, _yaw_from_quat(msg.pose.orientation), p.z)
 
+    def _on_policy_mode(self, msg: Int32):
+        with self.lock:
+            self.pending_policy = int(msg.data)
+
     # -- main-thread stepping ---------------------------------------------------
     def step(self):
         with self.lock:
-            cmd, pose = self.pending_cmd, self.pending_pose
-            self.pending_cmd = self.pending_pose = None
+            cmd, pose, policy = self.pending_cmd, self.pending_pose, self.pending_policy
+            self.pending_cmd = self.pending_pose = self.pending_policy = None
         if pose is not None:
             ok, moved = self.sim.set_pose(*pose)
             self._event(self._pose_event("set_pose", pose, ok, moved))
+        if policy is not None:
+            e = self.sim.set_policy_mode(policy)
+            if e is not None:
+                self._event(e)
         if cmd is not None:
             self.sim.set_cmd(*cmd)
         out = self.sim.control_tick()

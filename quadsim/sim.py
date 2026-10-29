@@ -224,6 +224,10 @@ class Simulator:
         warnings.warn(f"pose ({x:.2f}, {y:.2f}) overlaps the map and no free pose within 1 m", stacklevel=3)
         return ok, False
 
+    def set_policy_mode(self, mode: int) -> dict | None:
+        """g23 RL policy switch (0 PPO, 1 HIMLoco ...); None in ideal mode."""
+        return self.g23.set_policy_mode(mode, self.d.time) if self.legged else None
+
     def set_cmd(self, vx: float, vy: float, wz: float):
         self.cmd = np.array([vx, vy, wz], dtype=np.float64)
         self.cmd_time = self.d.time

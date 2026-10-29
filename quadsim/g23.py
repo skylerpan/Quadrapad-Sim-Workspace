@@ -248,6 +248,15 @@ class G23Backend:
                 events.append({"type": "controller", "state": "connected", "t": t})
         return events
 
+    def set_policy_mode(self, mode: int, t: float) -> dict:
+        """Choose the RL policy (0 PPO, 1 HIMLoco, 4 IsaacSim): sent now when the gait is on (the controller
+        switches live), otherwise before MODE RL in the start sequence."""
+        self.policy_mode = int(mode)
+        if self.stage == "gait" and self.gait == "RL":
+            self.send_command(f"MODE {self.policy_mode}")
+        return {"type": "controller", "state": "policy", "policy_mode": self.policy_mode, "t": t,
+                "live": self.stage == "gait" and self.gait == "RL"}
+
     def place(self, pos, quat):
         """Torso pose + the default joint angles, at rest."""
         d = self.d

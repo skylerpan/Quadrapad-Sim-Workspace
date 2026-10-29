@@ -56,6 +56,7 @@ The container uses `--net=host` and the same DDS settings as WebRvizLite: Cyclon
 | Pub | `/sim/map_cloud` | PointCloud2 (latched, voxelized map) | once |
 | Sub | `/cmd_vel` | geometry_msgs/Twist (vx, vy, wz) | — |
 | Sub | `/sim/set_pose` | geometry_msgs/PoseStamped (x, y, yaw; **z is a floor-height hint**) | — |
+| Sub | `/policy_mode` | std_msgs/Int32 (`g23` only): RL policy 0 PPO (default), 1 HIMLoco for stairs, switched live and forwarded to the controller as `MODE n` | — |
 
 **TF**: the static `base_link → livox_frame` is always published. With `publish_gt_tf: true` (default), `map → odom` (identity) and `odom → base_link` (ground truth) are added. With `ros.publish_gt_tf=false`, your localization stack publishes those two.
 

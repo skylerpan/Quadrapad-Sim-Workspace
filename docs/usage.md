@@ -308,7 +308,7 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 
 兩種模式對 ROS 的介面完全一樣（第 5 章）。`g23` 模式多兩種事件：`controller`（`state`：`connected` 第一次收到力矩指令、`stand` / `rl` / `lma` 送出模式指令、`lost` 超過 1 秒沒收到指令）和 `fall`（機身法線的 z 分量 < 0.5，每次出生 / set_pose 後只報一次）。`/sim/set_pose` 在 g23 模式會把機器人以預設關節角放到新位置、重新跑站立序列。
 
-`robot.policy_mode`（RL 用）在 `MODE RL` 前先送 `MODE <n>` 選 policy：0 = PPO 平地（實測 dp_1008 上 2 m 內就被 0.1 m 的地板凸起觸發 safety），1 = HIMLoco 崎嶇地形（預設；2026-10-29 沿 dp_1008 SLAM 軌跡走 38 m、0.4 m/s、機身 0.37 m、pitch p95 2.8°，才在 (17.9, −4.2) 觸發 safety）。
+`robot.policy_mode`（RL 用）是起步時的 policy：0 = PPO 平地（**預設**），1 = HIMLoco 爬梯 / 崎嶇地形，4 = IsaacSim。要上下樓梯時由導航端切換：對 `ros.topics.policy_mode`（預設 `/robot01/policy_mode`，`std_msgs/Int32`）發 1，quadsim 轉成 `MODE 1` 送給控制器，它在 RL 模式中每個控制步都讀這個值所以立刻生效，下完樓梯再發 0 切回 PPO（事件 `controller` / `state: policy`，`live: true`）。對應實機 SDK 的 `/set_policy_mode` 服務。PPO 在地板修補前 2 m 內就被 0.1 m 凸起觸發 safety，修補後正常；HIMLoco 2026-10-29 沿 dp_1008 SLAM 軌跡走 81 m 無事。
 
 控制器還沒接上時機器人只會軟倒在地上（沒有力矩）；`tests/test_g23.py` 用一個假控制器（PD 撐住預設姿勢）驗證協定、站立和事件。站立序列要等到收到第一筆力矩指令（`connected`）才開始計時，所以控制器慢慢起來也沒關係。
 
@@ -336,7 +336,7 @@ QUADSIM_G23=1 docker/run.sh "python3 scripts/walk_g23.py --line 3 --vx 0.3"     
 QUADSIM_G23=1 docker/run.sh "python3 scripts/walk_g23.py --poses ... robot.policy_mode=0"  # 換 policy
 ```
 
-2026-10-29 的紀錄（dp_1008、RL、`lidar.points_per_sec=100000`，RTF 全程 1.00）：直走 3 m 無事；沿軌跡 PPO 在 1.8 m 觸發 safety（地板凸起），加凸起過濾後 2.4 m（更大的一片 0.1 m 凸起），換 HIMLoco 走到 38 m 在走廊的 0.4 × 0.2 m 掃描破洞踩空，加補洞後 **81 m / 240 秒沒有任何 safety 或跌倒**（時間到才停，機身 0.39 m、pitch p95 7°、腳力尖峰 p99 123 N）。
+2026-10-29 的紀錄（dp_1008、RL、`lidar.points_per_sec=100000`，RTF 全程 1.00）：直走 3 m 無事；沿軌跡 PPO 在 1.8 m 觸發 safety（地板凸起），加凸起過濾後 2.4 m（更大的一片 0.1 m 凸起），換 HIMLoco 走到 38 m 在走廊的 0.4 × 0.2 m 掃描破洞踩空，加補洞後 **81 m / 240 秒沒有任何 safety 或跌倒**（時間到才停，機身 0.39 m、pitch p95 7°、腳力尖峰 p99 123 N）。即時切換驗證（`--switch 1:1 --switch 7:0`）：PPO 起步、1.2 m 切 HIMLoco、7.2 m 切回 PPO，控制器都即時換 runner；但 PPO 在修補後的地板上還是會踩到 0.1 m 的雜物（出生點附近 (1.2, −0.6) 一片 0.8 × 0.3 m、走廊 (2.7, −6.9)）就觸發姿態保護，HIMLoco 走得過。所以 PPO 當預設時，導航端要在這類地形前切 1，或等 PPO policy 改善。
 
 即時性：g23 模式下 LiDAR 射線在工作執行緒跑（物理迴圈只記錄位姿），每 10 秒的 log 多印達成的 `rtf` 和 LiDAR 執行緒佔用；達成的 rtf 低於設定值的 98% 會印警告，因為控制器是 wall-clock 1 kHz，模擬變慢它就收到遲到的 telemetry。
 

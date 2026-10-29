@@ -93,6 +93,10 @@ def test_model_stands_on_the_map_with_a_fake_controller():
         sim.set_cmd(0.5, 0.0, -0.2)
         sim.control_tick()
         assert sim.g23.sent[-1] == "AXES 0.500 0.000 -0.200"
+        # the start sequence used the configured policy (0 = PPO) before MODE RL; a switch is sent live
+        assert sim.g23.sent[sim.g23.sent.index("MODE RL") - 1] == "MODE 0"
+        e = sim.set_policy_mode(1)
+        assert e["live"] and sim.g23.sent[-1] == "MODE 1" and e["policy_mode"] == 1
         # fall detection: lay the torso on its side
         sim.d.qpos[3:7] = [np.cos(np.pi / 4), np.sin(np.pi / 4), 0, 0]
         out = sim.control_tick()

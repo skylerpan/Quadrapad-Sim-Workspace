@@ -71,6 +71,9 @@ def main(argv=None):
     ap.add_argument("--vx", type=float, default=0.4, help="forward speed (m/s); the RL policy wants >= 0.3")
     ap.add_argument("--wz", type=float, default=0.6, help="turn rate when turning (rad/s); the policy wants 0.5-1.0")
     ap.add_argument("--lookahead", type=float, default=0.6)
+    ap.add_argument("--switch", action="append", default=[], metavar="DIST:MODE",
+                    help="switch the RL policy (0 PPO, 1 HIMLoco) once the progress passes DIST metres, e.g. 12:1 "
+                         "(what a nav stack would do before stairs); repeatable")
     ap.add_argument("--seconds", type=float, default=120.0, help="stop after this much sim time (0 = to the end)")
     ap.add_argument("--rtf", type=float, default=1.0, help="real-time factor; the controller needs 1.0")
     ap.add_argument("--no-controller", action="store_true", help="do not spawn the controller (it runs elsewhere)")
@@ -122,6 +125,7 @@ def main(argv=None):
     gait_on = False
     turning = False
     done = False
+    switches = sorted((float(v.split(":")[0]), int(v.split(":")[1])) for v in a.switch)
     last_log = 0.0
     try:
         while not done and (a.seconds <= 0 or sim.d.time - sim0 < a.seconds):
@@ -173,6 +177,11 @@ def main(argv=None):
             rec["height"].append(float(sim.d.qpos[2] - z_floor))
             rec["pitch"].append(float(math.degrees(math.asin(-R[2, 0]))))
             rec["progress_m"] = round(float(seg[i0 + min(target, len(path) - 1)] - seg[i0]), 2)
+            while switches and gait_on and rec["progress_m"] >= switches[0][0]:
+                dist, mode = switches.pop(0)
+                e = sim.set_policy_mode(mode)
+                rec["events"].append(e)
+                log(f"policy -> {mode} at {rec['progress_m']} m (switch {dist}:{mode})")
             if sim.d.time - last_log >= 5.0:
                 last_log = sim.d.time
                 log(f"pose ({x:.2f}, {y:.2f}) yaw {yaw:.2f}, target {target}/{len(path) - 1}, "

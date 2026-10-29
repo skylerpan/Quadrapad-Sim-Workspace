@@ -56,6 +56,7 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 | 發布 | `/sim/map_cloud` | PointCloud2（latched，體素化後的地圖） | 一次 |
 | 訂閱 | `/cmd_vel` | geometry_msgs/Twist（vx、vy、wz） | — |
 | 訂閱 | `/sim/set_pose` | geometry_msgs/PoseStamped（x、y、yaw；**z 是地板高度的提示值**） | — |
+| 訂閱 | `/policy_mode` | std_msgs/Int32（只有 `g23`）：RL policy，0 PPO（預設）、1 HIMLoco 上下樓梯用，即時切換並以 `MODE n` 轉給控制器 | — |
 
 **TF**：一律發布靜態的 `base_link → livox_frame`。`publish_gt_tf: true`（預設）時，再加上 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。用 `ros.publish_gt_tf=false` 關掉之後，這兩段交給你們的定位堆疊發布。
 
