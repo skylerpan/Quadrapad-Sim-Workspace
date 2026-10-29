@@ -328,7 +328,7 @@ class Simulator:
         r = self.cfg["robot"]
         t0 = time.perf_counter()
         fresh = self.d.time - self.cmd_time <= r["cmd_timeout"]
-        out.events += self.g23.tick(self.d.time, self.cmd if fresh else np.zeros(3))
+        out.events += self.g23.tick(self.d.time, self.cmd if fresh else np.zeros(3), cmd_fresh=fresh)
         self._refresh_proxies(self.d.qpos[0:3])
         t1 = time.perf_counter()
         self.timing["control"] += t1 - t0

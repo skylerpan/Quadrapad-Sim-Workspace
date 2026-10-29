@@ -88,11 +88,17 @@ def test_model_stands_on_the_map_with_a_fake_controller():
                 lines.append(txt.recv(256).decode().strip())
         except socket.timeout:
             pass
-        assert "MODE STAND" in lines and "MODE RL" in lines and any(l.startswith("AXES ") for l in lines)
-        # cmd_vel is forwarded as AXES once the gait is on
+        assert "MODE STAND" in lines and "MODE RL" in lines
+        assert not any(l.startswith("AXES ") for l in lines)             # no /cmd_vel yet: nothing forwarded
+        # cmd_vel is forwarded as AXES once the gait is on; when it goes stale one zero is sent, then nothing
         sim.set_cmd(0.5, 0.0, -0.2)
         sim.control_tick()
         assert sim.g23.sent[-1] == "AXES 0.500 0.000 -0.200"
+        n_sent = len(sim.g23.sent)
+        for _ in range(40):                                             # 0.8 s > cmd_timeout 0.5 s
+            sim.control_tick()
+        axes = [l for l in sim.g23.sent[n_sent:] if l.startswith("AXES")]
+        assert axes[-1] == "AXES 0.000 0.000 0.000" and len(axes) < 40
         # the start sequence used the configured policy (0 = PPO) before MODE RL; a switch is sent live
         assert sim.g23.sent[sim.g23.sent.index("MODE RL") - 1] == "MODE 0"
         e = sim.set_policy_mode(1)

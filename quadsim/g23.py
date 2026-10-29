@@ -127,6 +127,7 @@ class G23Backend:
         self.start_delay = float(robot_cfg.get("start_delay", 1.0))
         self.stand_delay = float(robot_cfg.get("stand_delay", 4.0))
         self.sent = []                             # text commands sent (for tests / logs)
+        self.axes_active = False
         self.restart(0.0)
 
     # -- controller link --------------------------------------------------------------------------
@@ -212,8 +213,9 @@ class G23Backend:
         self.t_gait = None
         self.stage = "idle" if self.auto else "manual"
 
-    def tick(self, t: float, cmd: np.ndarray) -> list[dict]:
-        """Per control tick: advance the sequence, forward cmd_vel, watch the controller link."""
+    def tick(self, t: float, cmd: np.ndarray, cmd_fresh: bool = True) -> list[dict]:
+        """Per control tick: advance the sequence, forward cmd_vel (cmd_fresh: a /cmd_vel arrived within the
+        timeout), watch the controller link."""
         events = []
         with self.lock:
             last, n = self.last_cmd_wall, self.n_cmd
@@ -237,7 +239,13 @@ class G23Backend:
             self.t_gait = t
             events.append({"type": "controller", "state": self.gait.lower(), "t": t})
         if self.stage in ("gait", "manual"):
-            self.send_command(f"AXES {cmd[0]:.3f} {cmd[1]:.3f} {cmd[2]:.3f}")
+            # forward a live /cmd_vel every tick; when it has gone stale send one zero and then nothing, so
+            # the controller's own watchdog marks the command inactive (a stream of zero AXES keeps the RL
+            # policy stepping in place)
+            active = cmd_fresh
+            if active or self.axes_active:
+                self.send_command(f"AXES {cmd[0]:.3f} {cmd[1]:.3f} {cmd[2]:.3f}" if active else "AXES 0.000 0.000 0.000")
+            self.axes_active = active
         if self.connected and last is not None:
             silent = time.monotonic() - last > 1.0
             if silent and not self.lost:
