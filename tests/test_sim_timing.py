@@ -3,9 +3,11 @@ import os
 import numpy as np
 import pytest
 
-SCENE = os.path.join(os.path.dirname(__file__), "..", "scenes", "dp_1012")
+from quadsim.config import load_config
+
+SCENE = os.path.join(os.path.dirname(__file__), "..", load_config(None, [])["scene"])   # the config default scene
 pytestmark = pytest.mark.skipif(not os.path.exists(os.path.join(SCENE, "meta.json")),
-                                reason="scenes/dp_1012 not built")
+                                reason=f"{os.path.relpath(SCENE)} (config/sim.yaml scene) not built")
 
 
 def _sim():

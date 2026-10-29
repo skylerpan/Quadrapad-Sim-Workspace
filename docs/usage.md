@@ -48,6 +48,12 @@ DDS 條件：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、domain 1�
 
 把 `Maps/<name>.pcd`（或 OctoMap `.bt` / `.ot`，見 §2.3）轉成模擬用的場景目錄 `scenes/<name>/`。`Maps/*.pcd` 和 `scenes/` 都在 `.gitignore` 裡，要自己放。
 
+**目前的預設配方**（2026-10-29，四足機器人為預設機器人之後）：`--no-flatten --close-rounds 1`，0.1 m。地板保留原始體素、只把 1–2 格的縫補起來，不平面化（有腳的機器人跨得過 ±5 cm 的掃描雜訊，平面化反而會造出假地板），輸出 `contact.npy` 給腳的碰撞用。dp_1008 用這個配方 27 秒、22 萬個 box，六種配方的幾何比較在 [2.2](#22-評估場景scriptseval_scenepy)。樓梯另外用 [2.5](#25-人工樓梯scriptsmake_stairspy) 的 `make_stairs.py` 換成精確 box。
+
+```bash
+docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008 --no-flatten --close-rounds 1"
+```
+
 ```bash
 docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008"   # PCD，預設參數（0.1 m、地面平面化）
 docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008 --voxel 0.1 --ground-fill 12"
@@ -274,7 +280,7 @@ docker/run.sh "python3 scripts/make_stairs.py --scene scenes/dp_bt --draft scene
 ## 3. 跑模擬
 
 ```bash
-scripts/run_sim.sh                                   # 用 config/sim.yaml（預設 scene: scenes/dp_1012、rtf 1.0）
+scripts/run_sim.sh                                   # 用 config/sim.yaml（預設 scene: scenes/dp_1008、rtf 1.0）
 scripts/run_sim.sh --scene scenes/dp                 # 換場景
 scripts/run_sim.sh --rtf 0 --duration 60             # 全速跑 60 秒 sim time 後結束
 scripts/run_sim.sh ros.publish_gt_tf=false           # 不發真值 map→odom→base_link TF（交給 Point-LIO / 定位 stack）
@@ -293,12 +299,12 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 | `--viewer` | 開 MuJoCo viewer（需要 `QUADSIM_GUI=1`，見第 4 章） |
 | `key=value ...` | 任何設定檔欄位的覆寫（見第 9 章） |
 
-出生點：`config/sim.yaml` 的 `spawn: [x, y, yaw, z_floor]`（目前 `[0, 0, 0, -0.4]`，dp_1012 1F）；設成 `null` 會用 `meta.json` 裡 build_scene 算出的點。`z_floor` 要給**目標樓層的地板高度**（會從它上方 0.5 m 往下找到下方 1 m）；給到兩層之間會站在雜物或牆緣上。出生點或 `set_pose` 和地圖重疊時，機身會自動移到 1 m 內最近的空位（最多轉 90°）。
+出生點：`config/sim.yaml` 的 `spawn: [x, y, yaw, z_floor]`（目前 `[0, 0, 0, -0.5]`，dp_1008 1F 原點地板 −0.45；dp_1012 用 −0.4）；設成 `null` 會用 `meta.json` 裡 build_scene 算出的點。`z_floor` 要給**目標樓層的地板高度**（會從它上方 0.5 m 往下找到下方 1 m）；給到兩層之間會站在雜物或牆緣上。出生點或 `set_pose` 和地圖重疊時，機身會自動移到 1 m 內最近的空位（最多轉 90°）。
 
 啟動 log 要看的幾行：
 
 ```
-scene scenes/dp_1012 (44116 boxes), spawn requested [x, y, yaw, z_floor] [0.0, 0.0, 0.0, -0.4] -> base at [0.0, 0.0, 0.1] yaw 0.00 (floor z -0.2, moved False), rtf 1.0, gt_tf True, custom_msg True
+scene scenes/dp_1008 (220128 boxes), spawn requested [x, y, yaw, z_floor] [0.0, 0.0, 0.0, -0.5] -> base at [0.0, 0.0, -0.15] yaw 0.00 (floor z -0.45, moved False), rtf 1.0, gt_tf False, custom_msg True
 viewer: gl=nvidia (docker/run.sh QUADSIM_GL), map mesh 3100000 faces, shadows False, sync <= 30 Hz   # 只有 --viewer 時出現
 event: {'type': 'spawn', ...}                   # 同一筆也會發到 /sim/events
 sim t=10.0s pose=[...]                          # 每 10 sim 秒一行

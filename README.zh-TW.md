@@ -17,11 +17,12 @@
 # 1. 建 Docker 映像檔（以 syncai-robot-base 為基底，加裝 mujoco 和 livox CustomMsg）
 docker build -t quadsim:latest docker/
 
-# 2. 建預設場景：手修 OctoMap 的純 1:1 轉換（約 2 秒）
-docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0"
-#    PCD 地圖：python3 -m pcd2sim.build_scene --pcd Maps/<name>.pcd --out scenes/<name>（預設開地面平面化；docs/usage.md §2）
+# 2. 建預設場景：dp_1008 的 PCD、0.1 m、原始體素地板只補小縫（約 27 秒）
+docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008 --no-flatten --close-rounds 1"
+#    手修 OctoMap（1:1，2 秒）：--map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0
+#    要平面化地板（slab 取代體素）就拿掉 --no-flatten；所有配方見 docs/usage.md §2
 
-# 3. 啟動模擬（預設 scenes/dp_1012，即時速度）
+# 3. 啟動模擬（預設 scenes/dp_1008，即時速度）
 scripts/run_sim.sh
 scripts/run_sim.sh --scene scenes/dp ros.publish_gt_tf=false   # 換場景；不發布真值 TF，交給 Point-LIO 和全域定位
 
@@ -97,7 +98,7 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
     - 地板旁邊的雜訊突起、小破洞、浮在地面上的小團塊都會清掉
     - 平面上方第一層、只有 1–2 個點、上面也沒有東西的體素（地板雜訊的上緣）也會清掉
   - **縫隙**：Mid-360 看不到機器人腳邊的地板，所以 SLAM 地圖的地板本來就有整欄沒點的格子，平面化的接縫又會多出一些。有至少 3 個地板鄰居、上面沒有東西的格子會被補成地板（`--ground-fill 12 --ground-fill-nb 3`；dp_1008 1F 沿建圖路徑的無地面取樣從 0.37% 降到 0.17%）。機身另外允許一隻腳踩在剩下的縫隙上（`robot.max_feet_over_gap: 1`，那隻腳的高度取其他三隻腳的平面），不再發 `stuck/no_ground` 拒絕移動
-  - **樓梯**：一片踏板只有 24–36 格，預設的 `--ground-min-cells 30` 會把它丟掉，平台的長 / 補又把它埋起來；豎板的點和頂上的雜訊體素也會讓踏板格子的高度變成一道斜坡、沿著豎板的欄位和平台連成一區。樓梯配方 `--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100`：保留小區、上方 0.1–0.3 m 有實心體素的欄位不補、格高用加權中位數而不是平均、不是單一平面的區先剝出主平面再分剩下的、100 格以下的區直接壓成水平面（自由擬合會把 2–3 格深的踏板變成斜坡）。全部預設關閉（舊場景重建結果不變）；`scripts/eval_scene.py --stairs-box` 量結果（層數、階高、覆蓋率、ASCII 側面圖）。目前在用的場景（`scenes/dp_1012`、`scenes/dp`）完全不走這套：它們是手修 OctoMap 的純 1:1 建置（`--no-flatten --min-neighbors 0`）。掃描紀錄見  [`docs/archive/scene-tuning-dp_1012-2026-10-16.md`](docs/archive/scene-tuning-dp_1012-2026-10-16.md)
+  - **樓梯**：一片踏板只有 24–36 格，預設的 `--ground-min-cells 30` 會把它丟掉，平台的長 / 補又把它埋起來；豎板的點和頂上的雜訊體素也會讓踏板格子的高度變成一道斜坡、沿著豎板的欄位和平台連成一區。樓梯配方 `--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100`：保留小區、上方 0.1–0.3 m 有實心體素的欄位不補、格高用加權中位數而不是平均、不是單一平面的區先剝出主平面再分剩下的、100 格以下的區直接壓成水平面（自由擬合會把 2–3 格深的踏板變成斜坡）。全部預設關閉（舊場景重建結果不變）；`scripts/eval_scene.py --stairs-box` 量結果（層數、階高、覆蓋率、ASCII 側面圖）。預設場景（`scenes/dp_1008`，`--no-flatten --close-rounds 1`）和手修 OctoMap 的場景（`scenes/dp_1012`、`scenes/dp`，`--no-flatten --min-neighbors 0`）完全不走這套：地板保留原始體素（有腳的機器人跨得過掃描雜訊，平面化反而可能造出假地板），`contact.npy` 標出機器人碰得到的 box（地板下 0.3 m 到上 1.2 m）。掃描紀錄見  [`docs/archive/scene-tuning-dp_1012-2026-10-16.md`](docs/archive/scene-tuning-dp_1012-2026-10-16.md)
   - **合成地面層**：匯出的 PCD 可能帶一層產生出來、完全平的地面在真地板下面（dp_1012：z = −0.95，佔 25% 的點），真地板的每個掃描破洞都會變成坑。`scripts/fix_pcd_plane.py` 只在真地板沒點的地方保留那層、抬到旁邊地板的高度，其他全部丟掉
   - 用 `build_scene --no-flatten` 可以關掉，保留原始的體素地板
 - **出生點和 `/sim/set_pose` 會檢查機身有沒有和地圖重疊**：重疊時，會在 1 m 內找最近的空位（最多轉 90°），TF/odom 跟著*移動後*的位姿走。啟動 log 會印 `spawn requested [x, y, yaw, z_floor] -> base at [...]`，有被移動時另外印一行 ROS warning，並在 `/sim/events` 發一筆 `spawn` 事件（`requested`、`pose`、`floor_z`、`moved`）；`set_pose` 事件也帶同樣欄位

@@ -1,6 +1,6 @@
 # Quadruped navigation sim (MuJoCo, ideal base). All units SI unless noted.
-scene: scenes/dp_1012            # directory produced by pcd2sim.build_scene (dp_1012: pure 1:1 build of Maps/dp_1012_handmade.bt, --no-flatten --min-neighbors 0; stair-tuned PCD recipe in docs/archive/scene-tuning-dp_1012-2026-10-16.md)
-spawn: [0.0, 0.0, 0.0, -0.4]  # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0. z_floor = floor height of that storey (dp_1012 1F at (0,0): -0.40)
+scene: scenes/dp_1008            # directory produced by pcd2sim.build_scene (dp_1008: Maps/dp_1008.pcd, 0.1 m, --no-flatten --close-rounds 1: raw voxel floor with 1-2 cell gaps closed, contact.npy for a legged robot; docs/usage.md section 2). scenes/dp_1012 = 1:1 build of the hand-edited octree (--no-flatten --min-neighbors 0), 2F nav tests use scenes/dp
+spawn: [0.0, 0.0, 0.0, -0.5]  # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0. z_floor = floor height of that storey (dp_1008 1F at (0,0): -0.45; dp_1012: -0.40)
 
 physics:
   timestep: 0.0025            # s (400 Hz; IMU/clock 200 Hz and control 50 Hz divide evenly)
