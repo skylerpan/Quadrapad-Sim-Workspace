@@ -1,7 +1,7 @@
 import numpy as np
 
-from pcd2sim.voxel import (boxes_to_world, components_26, remove_small_clusters, fit_floor_normal, merge_boxes, remove_isolated, smooth_surface_z,
-                           voxelize)
+from pcd2sim.voxel import (VoxelGrid, boxes_to_world, components_26, contact_mask, encode, remove_small_clusters, fit_floor_normal,
+                           merge_boxes, remove_isolated, smooth_surface_z, standable_mask, voxelize)
 
 
 def _expand(boxes):
@@ -144,3 +144,34 @@ def test_close_holes_rounds_zero_and_chunking_invisible(tmp_path):
     b, nb = close_holes(g, rounds=2, workers=3, tmp_dir=str(tmp_path / "b"), chunk=97)
     assert na == nb > 0
     assert np.array_equal(a.keys, b.keys) and np.allclose(a.intensity, b.intensity)
+
+
+def _grid(keys, voxel=0.1, dims=(60, 60, 40)):
+    """VoxelGrid over `keys`, sorted by code as the real pipeline guarantees (contains() bisects the codes)."""
+    keys = np.asarray(keys, dtype=np.int32)
+    dims = np.array(dims)
+    keys = keys[np.argsort(encode(keys, dims), kind="stable")]
+    n = len(keys)
+    return VoxelGrid(keys, np.ones(n, np.int32), np.zeros(n, np.float32), np.zeros(n, np.float32),
+                     np.zeros(3), voxel, dims)
+
+
+def test_contact_mask_keeps_floor_and_low_walls_drops_ceiling():
+    floor = np.mgrid[0:30, 0:30, 0:1].reshape(3, -1).T                 # z=0 layer, top at 0.1 m
+    wall = np.mgrid[0:30, 30:31, 0:27].reshape(3, -1).T                # y=30 wall, floor to ceiling
+    ceil = np.mgrid[0:30, 0:30, 26:27].reshape(3, -1).T                # 2.6 m
+    pillar = np.mgrid[50:51, 50:51, 5:30].reshape(3, -1).T             # no floor anywhere near: keep all
+    g = _grid(np.concatenate([floor, wall, ceil, pillar]))
+    k = g.keys
+    is_floor = (k[:, 2] == 0) & (k[:, 1] < 30)
+    is_wall = k[:, 1] == 30
+    is_ceil = (k[:, 2] == 26) & (k[:, 1] < 30)
+    is_pillar = k[:, 0] == 50
+    stand = standable_mask(g)
+    assert stand[is_floor].all() and not stand[~is_floor].any()
+    c = contact_mask(g, stand, below=0.3, above=1.2, xy=0.3)
+    assert c[is_floor].all()                                           # the floor itself
+    assert not c[is_ceil].any()                                        # ceiling is 2.5 m over the floor top
+    assert c[is_wall & (k[:, 2] <= 12)].all()                          # up to 1.2 m above the floor top (0.1 m)
+    assert not c[is_wall & (k[:, 2] >= 14)].any()
+    assert c[is_pillar].all()                                          # no standable voxel within 0.3 m: kept

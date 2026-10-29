@@ -188,6 +188,7 @@ def test_build_from_bt_room(tmp_path):
     assert meta["noise_filter"] == {"isolated_removed": 0, "small_clusters_removed": 0,
                                         "closed_added": 0}
     assert os.path.exists(tmp_path / "scene" / "boxes.npy") and not os.path.exists(tmp_path / "scene" / "ground.npz")
+    assert len(np.load(tmp_path / "scene" / "contact.npy")) == meta["boxes"] and meta["format_version"] == 3
     vox = np.load(tmp_path / "scene" / "voxels.npz")
     assert vox["voxel"] == RES and len(vox["keys"]) == len(cells)
     got = {tuple(c) for c in np.round(vox["origin"] + (vox["keys"] + 0.5) * RES, 6)}

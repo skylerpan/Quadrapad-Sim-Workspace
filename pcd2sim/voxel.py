@@ -253,6 +253,45 @@ def standable_mask(grid: VoxelGrid, clearance: float = 0.8, roof_min: float = 1.
     return free & roofed
 
 
+def contact_mask(grid: VoxelGrid, stand: np.ndarray, below: float = 0.3, above: float = 1.2,
+                 xy: float = 0.3) -> np.ndarray:
+    """Voxels a ground robot can touch: those within [floor - below, floor + above] of a standable voxel's
+    top, where the floor is looked up in the voxel's own xy column or any column within `xy` metres.
+
+    Ceilings and the upper parts of walls drop out (nothing standable within `above` below them), floors,
+    stairs, furniture bottoms and the lower `above` metres of walls stay. Columns with no standable voxel
+    anywhere within the radius (no roof, outdoor, unscanned floor) keep everything, so nothing a robot could
+    hit is ever dropped for lack of floor information. Returns a bool mask over grid.keys.
+    """
+    k = grid.keys.astype(np.int64)
+    sk = k[stand]
+    if len(sk) == 0:
+        return np.ones(len(k), dtype=bool)
+    v = grid.voxel
+    d0, d1, d2 = int(grid.dims[0]), int(grid.dims[1]), int(grid.dims[2])
+    na, nb, r = int(np.ceil(above / v)), int(np.ceil(below / v)), int(round(xy / v))
+    s_codes = np.sort((sk[:, 0] * d1 + sk[:, 1]) * d2 + sk[:, 2])      # standable voxels by (column, z)
+    n = len(s_codes)
+    keep = np.zeros(len(k), dtype=bool)
+    seen = np.zeros(len(k), dtype=bool)                                  # a standable voxel in the window
+    for dx in range(-r, r + 1):
+        for dy in range(-r, r + 1):
+            if dx * dx + dy * dy > r * r:
+                continue
+            cx, cy = k[:, 0] + dx, k[:, 1] + dy
+            inb = (cx >= 0) & (cx < d0) & (cy >= 0) & (cy < d1)
+            col = (cx * d1 + cy) * d2
+            # standable z_s with z - na <= z_s <= z + nb: the voxel is at most `above` over the floor top
+            # and at most `below` under it
+            lo = col + np.clip(k[:, 2] - na, 0, d2 - 1)
+            hi = col + np.clip(k[:, 2] + nb, 0, d2 - 1)
+            i = np.minimum(np.searchsorted(s_codes, lo), n - 1)
+            keep |= inb & (s_codes[i] >= lo) & (s_codes[i] <= hi)
+            j = np.minimum(np.searchsorted(s_codes, col), n - 1)
+            seen |= inb & (s_codes[j] >= col) & (s_codes[j] < col + d2)
+    return keep | ~seen
+
+
 def find_spawn(grid: VoxelGrid, stand: np.ndarray, radius: float = 0.4) -> np.ndarray | None:
     """Pick a flat, clear standable voxel near the centroid of all standable voxels.
 

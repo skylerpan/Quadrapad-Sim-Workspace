@@ -22,12 +22,19 @@ cluster (--ground-float-max) assume 10 cm voxels and must be lowered / raised wi
 recipe is in docs/usage.md section 2. Stage results (voxels, closed voxels, ground) are checkpointed in
 <out>/.tmp (removed when the build succeeds; --keep-tmp keeps it, --resume reuses the stages found there).
 
+Contact set: a legged robot only ever touches what lies within --contact-below .. --contact-above of a floor
+(voxel.contact_mask: the floor is the nearest standable voxel in the same or a neighbouring column; columns
+without any floor keep everything). Boxes are merged separately inside and outside that band, so a wall box
+never spans both, and contact.npy flags the inside ones. boxes.npy still holds the whole map for the LiDAR.
+
 Outputs (in --out):
   boxes.npy     float32 [M,6] (cx, cy, cz, hx, hy, hz) collision/LiDAR boxes, world = map frame
+  contact.npy   bool [M] boxes inside the contact band (quadsim collision proxies for a legged robot)
   ground.npz    float32 [K,8,3] flattened floor slabs (LiDAR + terrain rays, viewer); see ground.py
   voxels.npz    voxel keys + mean intensity (LiDAR reflectivity) + mean z (terrain height, NaN under slabs)
+                + contact (bool per voxel, the band test before merging)
   map_ds.pcd    voxel centres + intensity (RViz / localization tests)
-  meta.json     stats, floor tilt, gravity vector, spawn pose
+  meta.json     stats, floor tilt, gravity vector, spawn pose, format_version (pcd2sim.SCENE_FORMAT)
 """
 from __future__ import annotations
 
@@ -40,14 +47,15 @@ import time
 
 import numpy as np
 
+from . import SCENE_FORMAT
 from .ground import Ground, extract_ground
 from .octomap_io import read_map_points, voxel_grid_from_cells
 from .pcd_io import write_pcd
-from .voxel import (VoxelGrid, boxes_to_world, close_holes, crop_percentile, find_spawn, fit_floor_normal,
-                    merge_boxes, remove_isolated, remove_small_clusters, smooth_surface_z, standable_mask, voxelize)
+from .voxel import (VoxelGrid, boxes_to_world, close_holes, contact_mask, crop_percentile, find_spawn,
+                    fit_floor_normal, merge_boxes, remove_isolated, remove_small_clusters, smooth_surface_z,
+                    standable_mask, voxelize)
 
 
-SCENE_FORMAT = 2          # 2: ground.npz + NaN zmean under slabs; keep in sync with quadsim.sim.SCENE_FORMAT
 DEFAULT_VOXEL = 0.1       # PCD input; an octree defaults to its own resolution
 CROP_PCT = 0.05           # per-axis percentile crop of PCD input (octree input is not cropped)
 
@@ -59,7 +67,8 @@ def build(source: str, out: str, voxel: float | None = None, min_neighbors: int 
           ground_small_flat: int = 0, min_cluster: int = 0, close_rounds: int = 0, ground_spike_pts: int = 3,
           ground_sheet_pts: int = 2, ground_float_max: int = 4, ground_column_gap: float = 0.0,
           ground_roof_cell: float | None = None, workers: int | None = None,
-          keep_tmp: bool = False, resume: bool = False) -> dict:
+          keep_tmp: bool = False, resume: bool = False, contact_below: float = 0.3, contact_above: float = 1.2,
+          contact_xy: float = 0.3) -> dict:
     build_args = {k: v for k, v in locals().items()}       # recorded in meta.json (scenes are a cache)
     os.makedirs(out, exist_ok=True)
     tmp_dir = os.path.join(out, ".tmp")
@@ -92,11 +101,27 @@ def _load_grid(path: str) -> tuple[VoxelGrid, dict]:
     return grid, json.loads(str(d["extra"]))
 
 
+def merge_split(grid: VoxelGrid, solid: np.ndarray, contact: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Merge the solid voxels into world boxes, inside and outside the contact band separately.
+
+    Returns (boxes float32 [M,6], contact bool [M]). A box never spans the band edge, so contact.npy can be a
+    flag per box; make_stairs rebuilds boxes the same way from the surviving voxels.
+    """
+    parts, flags = [], []
+    for mask, flag in ((solid & contact, True), (solid & ~contact, False)):
+        if mask.any():
+            parts.append(boxes_to_world(merge_boxes(grid.keys[mask]), grid))
+            flags.append(np.full(len(parts[-1]), flag, dtype=bool))
+    if not parts:
+        return np.zeros((0, 6), np.float32), np.zeros(0, dtype=bool)
+    return np.concatenate(parts).astype(np.float32), np.concatenate(flags)
+
+
 def _build(source, out, voxel, min_neighbors, z_min, flatten, ground_tol, ground_fill, ground_max_above,
            ground_min_cells, ground_layers, ground_grow, ground_fill_guard, ground_surface, ground_peel,
            ground_small_flat, min_cluster, close_rounds, ground_spike_pts, ground_sheet_pts, ground_float_max,
-           ground_column_gap, ground_roof_cell, workers, keep_tmp, resume, build_args, tmp_dir, stage_voxels,
-           stage_closed, stage_ground, t, log) -> dict:
+           ground_column_gap, ground_roof_cell, workers, keep_tmp, resume, contact_below, contact_above,
+           contact_xy, build_args, tmp_dir, stage_voxels, stage_closed, stage_ground, t, log) -> dict:
     # Stage order: voxels (read + voxelize + noise filters) -> closed (hole closing) -> ground. With --resume
     # the latest stage file present is loaded and the earlier stages are skipped; every stage file carries
     # what meta.json needs from the stages before it.
@@ -197,11 +222,13 @@ def _build(source, out, voxel, min_neighbors, z_min, flatten, ground_tol, ground
     log(f"floor plane: normal={np.round(normal, 4).tolist()} tilt={tilt_deg:.2f} deg ({n_inl} inliers)")
 
     solid = ~ground.remove if flatten else np.ones(len(grid.keys), dtype=bool)
-    boxes_idx = merge_boxes(grid.keys[solid])
-    boxes = boxes_to_world(boxes_idx, grid).astype(np.float32)
-    log(f"merged {int(solid.sum())} voxels into {len(boxes)} boxes")
+    contact = contact_mask(grid, stand, below=contact_below, above=contact_above, xy=contact_xy)
+    boxes, contact_boxes = merge_split(grid, solid, contact)
+    log(f"merged {int(solid.sum())} voxels into {len(boxes)} boxes ({int(contact_boxes.sum())} in the contact band "
+        f"[-{contact_below}, +{contact_above}] m of a floor; {int((solid & contact).sum())} of the voxels)")
 
     np.save(os.path.join(out, "boxes.npy"), boxes)
+    np.save(os.path.join(out, "contact.npy"), contact_boxes)
     ground_path = os.path.join(out, "ground.npz")
     zmean = grid.zmean.copy()
     map_xyz, map_i = centers[solid], grid.intensity[solid]
@@ -219,7 +246,7 @@ def _build(source, out, voxel, min_neighbors, z_min, flatten, ground_tol, ground
     elif os.path.exists(ground_path):
         os.remove(ground_path)
     np.savez_compressed(os.path.join(out, "voxels.npz"), keys=grid.keys, intensity=grid.intensity, zmean=zmean,
-                        origin=grid.origin, voxel=grid.voxel, dims=grid.dims)
+                        origin=grid.origin, voxel=grid.voxel, dims=grid.dims, contact=contact)
     write_pcd(os.path.join(out, "map_ds.pcd"), map_xyz.astype(np.float32), map_i)
 
     lo, hi = centers.min(axis=0), centers.max(axis=0)
@@ -238,6 +265,8 @@ def _build(source, out, voxel, min_neighbors, z_min, flatten, ground_tol, ground
         "voxels": int(len(grid.keys)),
         "noise_filter": noise_filter,
         "boxes": int(len(boxes)),
+        "contact": {"below": contact_below, "above": contact_above, "xy": contact_xy,
+                    "voxels": int((solid & contact).sum()), "boxes": int(contact_boxes.sum())},
         "ground": ground.stats if flatten else None,
         "bbox_min": lo.tolist(),
         "bbox_max": hi.tolist(),
@@ -315,6 +344,13 @@ def main(argv=None):
                          "become contiguous (2 rounds close gaps up to 2 voxels wide)")
     ap.add_argument("--workers", type=int, default=None,
                     help="processes for the chunked hole closing (default: all CPUs)")
+    ap.add_argument("--contact-below", type=float, default=0.3,
+                    help="contact band: boxes down to this far below a floor top are robot-touchable (m)")
+    ap.add_argument("--contact-above", type=float, default=1.2,
+                    help="contact band: boxes up to this far above a floor top are robot-touchable (m); ceilings "
+                         "and the upper walls above it are LiDAR-only")
+    ap.add_argument("--contact-xy", type=float, default=0.3,
+                    help="contact band: radius (m) around a column in which a floor is looked for")
     ap.add_argument("--keep-tmp", action="store_true", help="keep the stage files (<out>/.tmp) after a successful build")
     ap.add_argument("--resume", action="store_true",
                     help="reuse the stage files found in <out>/.tmp (closed voxels, ground) instead of recomputing")
@@ -326,7 +362,8 @@ def main(argv=None):
           ground_small_flat=a.ground_small_flat, min_cluster=a.min_cluster, close_rounds=a.close_rounds,
           ground_spike_pts=a.ground_spike_pts, ground_sheet_pts=a.ground_sheet_pts,
           ground_float_max=a.ground_float_max, ground_column_gap=a.ground_column_gap,
-          ground_roof_cell=a.ground_roof_cell, workers=a.workers, keep_tmp=a.keep_tmp, resume=a.resume)
+          ground_roof_cell=a.ground_roof_cell, workers=a.workers, keep_tmp=a.keep_tmp, resume=a.resume,
+          contact_below=a.contact_below, contact_above=a.contact_above, contact_xy=a.contact_xy)
 
 
 if __name__ == "__main__":

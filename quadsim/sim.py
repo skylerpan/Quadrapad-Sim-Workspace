@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 import mujoco
 import numpy as np
 
+from pcd2sim import SCENE_FORMAT
+
 from .base import IdealBase, body_lift, rot_zyx
 from .config import load_scene_meta
 from .lidar import LidarFrame, RollingLidar
@@ -17,7 +19,21 @@ from .proxies import BoxIndex, ProxyPool
 from .raycast import RayScene, VoxelLookup
 
 G = 9.81
-SCENE_FORMAT = 2          # bump with pcd2sim.build_scene.SCENE_FORMAT when scene outputs change
+
+
+def _check_scene_format(scene_dir: str, meta: dict) -> None:
+    """meta.json format_version against pcd2sim.SCENE_FORMAT. Format 2 (no contact set) still loads for the
+    ideal base, with a warning; anything else must be rebuilt."""
+    v = meta.get("format_version")
+    if v == SCENE_FORMAT:
+        return
+    if v == 2:
+        warnings.warn(f"scene {scene_dir} is format 2 (no contact.npy): fine for the ideal base, a legged robot "
+                      f"needs format {SCENE_FORMAT}; rebuild with pcd2sim.build_scene", stacklevel=3)
+        return
+    raise RuntimeError(f"scene {scene_dir} has format_version {v!r}; this quadsim reads format {SCENE_FORMAT} "
+                       f"(and 2 for the ideal base). Rebuild it with pcd2sim.build_scene "
+                       f"(flags in meta.json build_args) or make_stairs")
 
 
 def _warn_stale_scene(scene_dir: str, meta: dict):
@@ -54,8 +70,11 @@ class Simulator:
         self.cfg = cfg
         scene_dir = cfg["scene"]
         self.meta = load_scene_meta(scene_dir)
+        _check_scene_format(scene_dir, self.meta)
         _warn_stale_scene(scene_dir, self.meta)
         boxes = np.load(os.path.join(scene_dir, "boxes.npy"))
+        contact_path = os.path.join(scene_dir, "contact.npy")   # format 3: boxes a legged robot can touch
+        self.contact = np.load(contact_path) if os.path.exists(contact_path) else None
         ground = os.path.join(scene_dir, "ground.npz")      # flattened floor slabs (absent in --no-flatten scenes)
         slabs = np.load(ground)["slabs"] if os.path.exists(ground) else None
         self.rays = RayScene(boxes, slabs)

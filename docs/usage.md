@@ -90,10 +90,11 @@ docker/run.sh "python3 -m pcd2sim.build_scene --help"
 | 檔案 | 內容 |
 |---|---|
 | `boxes.npy` | float32 [M,6]（cx, cy, cz, hx, hy, hz）碰撞 / LiDAR box，map frame |
+| `contact.npy` | bool [M]：機器人碰得到的 box（地板上方 `--contact-above` 1.2 m、下方 `--contact-below` 0.3 m 的帶內；地板 = 同欄位或 `--contact-xy` 0.3 m 內鄰欄位最近的可站立體素，附近完全沒地板的欄位整欄保留）。帶內 / 帶外分開合併，所以一個 box 不會跨帶。天花板和高處的牆只給 LiDAR 看 |
 | `ground.npz` | 平面化後的地板平板（LiDAR、腳下地形射線、viewer 用） |
 | `voxels.npz` | 體素 key + 平均 intensity（反射率）+ 平均 z |
 | `map_ds.pcd` | 體素中心 + intensity（RViz、定位測試用） |
-| `meta.json` | 統計、地板傾角、重力向量、出生點。**是 build cache，不要手改**，下次建置會蓋掉 |
+| `meta.json` | 統計、地板傾角、重力向量、出生點、`format_version`（`pcd2sim.SCENE_FORMAT`，目前 3；quadsim 載入時比對，2 只能給理想底盤用並印警告，其他版本拒絕）。**是 build cache，不要手改**，下次建置會蓋掉 |
 
 dp_1008（1,420 萬點）在 Jetson 上約 22 s、峰值記憶體 1.5 GB。`meta.json` 的 `build_args` 記著這個場景用了哪些參數。
 
