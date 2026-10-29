@@ -3,6 +3,11 @@
 Usage (inside the container):
   python3 scripts/make_stairs.py --scene scenes/dp_full_003 --out scenes/dp_full_003_s16 --spec config/stairs_dp_full.yaml
   python3 scripts/make_stairs.py --scene scenes/dp_full_003_s16 --spec config/stairs_dp_full.yaml --map east   # inspect only
+  python3 scripts/make_stairs.py --scene scenes/dp_bt --draft scenes/dp_bt/draft.yaml         # spec draft from the floor
+
+--draft writes a spec draft found in the scene's own floor (pcd2sim.stairs: flights from the local floor gradient,
+landings from the levels at their ends, every number with its evidence as a comment and weak spots marked CHECK);
+a human checks it against the map before running make_stairs on it.
 
 The spec (YAML) lists staircases made of flights and landings:
   riser: 0.16            target riser; a flight with rise R gets n = round(R / riser) steps of R / n
@@ -40,7 +45,7 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from pcd2sim import SCENE_FORMAT  # noqa: E402
+from pcd2sim import SCENE_FORMAT, geometry, stairs as stairs_draft  # noqa: E402
 from pcd2sim.build_scene import merge_split  # noqa: E402
 from pcd2sim.pcd_io import read_pcd, write_pcd  # noqa: E402
 from pcd2sim.voxel import (VoxelGrid, _merge_axis, boxes_to_world, contact_mask, encode, merge_boxes,  # noqa: E402
@@ -532,10 +537,32 @@ def apply(scene: str, out: str, spec: dict, log=print, exact: bool | None = None
     return meta
 
 
+def draft_spec(scene: str, out: str) -> None:
+    t0 = time.time()
+    grid = geometry.load_grid(scene)
+    gp = os.path.join(scene, "ground.npz")
+    if os.path.exists(gp):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from eval_scene import SlabCells  # noqa: E402  (slab rasteriser lives with the evaluator)
+        sc = SlabCells(np.load(gp)["slabs"], grid.origin, grid.voxel)
+        cells = geometry.slab_floor_cells(grid, np.column_stack([sc.ix, sc.iy]), sc.z)
+    else:
+        cells = geometry.floor_cells(grid)
+    drafts = stairs_draft.draft(cells)
+    text = stairs_draft.to_yaml(drafts, scene)
+    with open(out, "w") as f:
+        f.write(text)
+    print(text)
+    print(f"{len(drafts)} staircase(s), {sum(len(s['flights']) for s in drafts)} flights -> {out} ({time.time() - t0:.1f}s)")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scene", required=True, help="source scene directory")
-    ap.add_argument("--spec", required=True, help="stairs spec yaml")
+    ap.add_argument("--spec", help="stairs spec yaml (required unless --draft)")
+    ap.add_argument("--draft", metavar="OUT.yaml",
+                    help="find the staircases in the scene's floor and write a spec draft to check by hand "
+                         "(pcd2sim.stairs); exits without building")
     ap.add_argument("--out", help="output scene directory (required unless --map)")
     ap.add_argument("--map", metavar="STAIR", help="print height maps (slab tops, or voxel tops when the scene has no "
                                                    "ground.npz) around every element of this stair (name, or * for all) "
@@ -544,6 +571,11 @@ def main(argv=None):
                     help="exact AABB per tread, original boxes re-merged from the surviving voxels "
                          "(default for scenes without ground.npz; refused for flattened scenes)")
     a = ap.parse_args(argv)
+    if a.draft:
+        draft_spec(a.scene, a.draft)
+        return
+    if not a.spec:
+        ap.error("--spec is required (or use --draft)")
     spec = load_spec(a.spec)
     for el in spec["elements"]:
         print(el.describe())
