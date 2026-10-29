@@ -17,6 +17,8 @@ robot:
                               # 4 = IsaacSim. Switch at run time (before stairs) with an Int32 on ros.topics.policy_mode; the
                               # controller takes MODE <n> live. PPO trips its posture guard on 0.1 m bumps the floor fixes remove
   fall_height: 0.18           # g23: torso lower than this over the floor for 1 s while walking = `fall` (collapsed)
+  motor_model: j60            # g23: J60 joint armature / dry friction / damping as in the controller's own sim (ideal = none)
+  level_gravity: true         # g23: gravity straight down (the controller's sim); false = along the scene's fitted floor normal
   auto_stand: true            # g23: send MODE STAND start_delay s after spawn / set_pose, MODE <gait> stand_delay s later
   start_delay: 1.0
   stand_delay: 4.0

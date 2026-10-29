@@ -39,6 +39,11 @@ TELEMETRY_FMT = "<d55f"                       # 228 bytes
 # with speed, braking torque stays at the peak (mujoco_simulation_G23.j60_torque_limits)
 J60_PEAK = np.tile([19.94, 19.94, 30.50], 4)
 J60_WMAX = np.tile([24.18, 24.18, 15.49], 4)
+# J60 joint model their sim puts on the 12 leg DOFs (mujoco_simulation_G23._apply_motor_model): rotor inertia
+# through the gear ratio (6 on the hips, 9 on the knee), dry friction and viscous damping per (HipX, HipY, Knee)
+J60_ARMATURE = [1.1e-4 * 6 ** 2, 1.1e-4 * 6 ** 2, 1.1e-4 * 9 ** 2]
+J60_FRICTION = [0.40, 0.40, 0.45]
+J60_DAMPING = [(0.81 - 0.40) / 24.6, (0.81 - 0.40) / 24.6, (0.92 - 0.45) / 15.5]
 
 
 def j60_limits(dq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -60,7 +65,16 @@ def build_g23_spec(cfg: dict, gravity, spawn_pos, n_proxies: int) -> mujoco.MjSp
     r, li, ph = cfg["robot"], cfg["lidar"], cfg["physics"]
     spec = mujoco.MjSpec.from_file(G23_XML)
     spec.option.timestep = ph["timestep"]
-    spec.option.gravity = list(gravity)
+    # The scene's gravity follows the fitted floor normal (the ideal base's map frame is level). The controller
+    # was built against a sim with gravity straight down: a tilted gravity gives the policy an accelerometer
+    # 0.5-1 deg off the quaternion's rpy, a constant tilt it keeps correcting (it turned in place).
+    spec.option.gravity = [0.0, 0.0, -9.81] if r.get("level_gravity", True) else list(gravity)
+    if str(r.get("motor_model", "j60")).lower() == "j60":
+        for i, name in enumerate(JOINTS):
+            j = spec.joint(name)
+            j.armature = J60_ARMATURE[i % 3]
+            j.frictionloss = J60_FRICTION[i % 3]
+            j.damping = [J60_DAMPING[i % 3], 0.0, 0.0]        # MjsJoint.damping takes a 3-vector (hinge uses [0])
     spec.delete(spec.geom("floor"))
     torso = spec.body("TORSO")
     torso.pos = [spawn_pos[0], spawn_pos[1], spawn_pos[2]]

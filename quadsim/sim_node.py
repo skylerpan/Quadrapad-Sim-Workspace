@@ -267,8 +267,10 @@ def main(argv=None):
         f"yaw {sim.base.yaw:.2f} (floor z {sim.spawn_floor_z:.2f}, moved {sim.spawn_moved}), "
         f"rtf {cfg['physics']['rtf']}, gt_tf {cfg['ros']['publish_gt_tf']}, "
         f"custom_msg {node.pub_custom is not None}, robot {sim.robot_type}"
-        + (f" (gait {cfg['robot'].get('gait', 'rl')}, torque cmds on udp:{sim.g23.cmd_port}, telemetry -> "
-           f"{sim.g23.telemetry_to}, commands -> {sim.g23.command_to})" if sim.legged else ""))
+        + (f" (gait {cfg['robot'].get('gait', 'rl')}, policy {cfg['robot'].get('policy_mode')}, motor model "
+           f"{cfg['robot'].get('motor_model', 'j60')}, gravity {np.round(sim.m.opt.gravity, 3).tolist()}, torque cmds "
+           f"on udp:{sim.g23.cmd_port}, telemetry -> {sim.g23.telemetry_to}, commands -> {sim.g23.command_to})"
+           if sim.legged else ""))
     spin = threading.Thread(target=_spin, args=(node, stop, failed), daemon=True)
     spin.start()
 

@@ -66,6 +66,7 @@ def main(argv=None):
     ap.add_argument("--poses", help="poses.txt to follow (x, y from the keyframes)")
     ap.add_argument("--waypoints", help="waypoint yaml to follow as straight legs")
     ap.add_argument("--line", type=float, default=None, help="walk this many metres straight ahead instead")
+    ap.add_argument("--idle", action="store_true", help="send no velocity at all: measure the drift of the standing robot")
     ap.add_argument("--sample", type=float, default=0.3, help="polyline resampling (m)")
     ap.add_argument("--start-at", type=float, default=0.0, help="start this many metres along the trajectory")
     ap.add_argument("--vx", type=float, default=0.4, help="forward speed (m/s); the RL policy wants >= 0.3")
@@ -119,7 +120,8 @@ def main(argv=None):
 
     rec = {"scene": cfg["scene"], "path_m": round(total, 2), "gait": cfg["robot"].get("gait"), "events": [],
            "force_peaks": [], "height": [], "pitch": [], "t_gait": None, "t_fall": None, "t_safety": None,
-           "progress_m": 0.0}
+           "progress_m": 0.0, "idle": bool(a.idle), "t_idle": None}
+    yaw_unwrapped, yaw_prev = 0.0, None
     wall0, sim0 = time.perf_counter(), sim.d.time
     target = 0
     gait_on = False
@@ -140,7 +142,13 @@ def main(argv=None):
                 log(f"controller safety lock at ({sim.base.x:.2f}, {sim.base.y:.2f}): stopping")
                 done = True
             x, y, yaw = sim.base.x, sim.base.y, sim.base.yaw
-            if gait_on:
+            if yaw_prev is not None:
+                yaw_unwrapped += (yaw - yaw_prev + math.pi) % (2 * math.pi) - math.pi
+            yaw_prev = yaw
+            if gait_on and a.idle:
+                if rec["t_idle"] is None:
+                    rec["t_idle"], rec["idle_start"] = sim.d.time, [x, y, yaw_unwrapped]
+            elif gait_on:
                 # pure pursuit: advance the target to the first point at least `lookahead` ahead
                 while target < len(path) - 1 and np.hypot(*(path[target] - [x, y])) < a.lookahead:
                     target += 1
@@ -174,6 +182,9 @@ def main(argv=None):
             z_floor = sim.base.ground.z0
             R = sim.d.xmat[sim.base_body].reshape(3, 3)
             rec["force_peaks"].append(foot_force_peak(sim))
+            if a.idle and rec.get("t_idle") is not None:
+                rec.setdefault("idle_dq", []).append(float(np.abs(sim.d.qvel[sim.g23.jv]).mean()))
+                rec.setdefault("idle_contacts", []).append(float(sim.g23.foot_contacts().sum()))
             rec["height"].append(float(sim.d.qpos[2] - z_floor))
             rec["pitch"].append(float(math.degrees(math.asin(-R[2, 0]))))
             rec["progress_m"] = round(float(seg[i0 + min(target, len(path) - 1)] - seg[i0]), 2)
@@ -199,6 +210,17 @@ def main(argv=None):
         sim.close()
     fp = np.array(rec["force_peaks"])
     h = np.array(rec["height"])
+    if a.idle and rec.get("t_idle") is not None:
+        x0_, y0_, yaw0_ = rec["idle_start"]
+        dt_ = sim.d.time - rec["t_idle"]
+        rec["idle_seconds"] = round(dt_, 1)
+        rec["idle_yaw_deg"] = round(math.degrees(yaw_unwrapped - yaw0_), 2)
+        rec["idle_yaw_rate_deg_s"] = round(math.degrees(yaw_unwrapped - yaw0_) / max(dt_, 1e-6), 3)
+        rec["idle_drift_m"] = round(float(np.hypot(sim.base.x - x0_, sim.base.y - y0_)), 3)
+        if rec.get("idle_dq"):
+            rec["idle_joint_speed_rad_s"] = round(float(np.mean(rec["idle_dq"])), 3)
+            rec["idle_feet_down_mean"] = round(float(np.mean(rec["idle_contacts"])), 2)
+        rec.pop("idle_dq", None); rec.pop("idle_contacts", None)
     rec.update(sim_seconds=round(sim.d.time - sim0, 2), wall_seconds=round(time.perf_counter() - wall0, 2),
                fell=rec["t_fall"] is not None, safety=rec["t_safety"] is not None,
                reached_end=done and rec["t_fall"] is None and rec["t_safety"] is None,

@@ -41,6 +41,13 @@ def test_model_stands_on_the_map_with_a_fake_controller():
     sim = Simulator(cfg)
     try:
         assert sim.legged and sim.m.nu == 12 and sim.base_geom < 0
+        # the controller's J60 joint model and vertical gravity (its own sim's conditions) by default
+        import mujoco
+        knee = mujoco.mj_name2id(sim.m, mujoco.mjtObj.mjOBJ_JOINT, "FL_Knee_joint")
+        dof = sim.m.jnt_dofadr[knee]
+        assert abs(sim.m.dof_armature[dof] - 1.1e-4 * 81) < 1e-9 and abs(sim.m.dof_frictionloss[dof] - 0.45) < 1e-9
+        assert abs(sim.m.dof_damping[dof] - (0.92 - 0.45) / 15.5) < 1e-9
+        assert np.allclose(sim.m.opt.gravity, [0, 0, -9.81])
         assert sim.proxies.index is sim.contact_index and sim.contact_index is not sim.index
         z_floor = sim.base.ground.z0
         assert abs(sim.d.qpos[2] - (z_floor + 0.40)) < 1e-6 and np.allclose(sim.d.qpos[sim.g23.jq], DEFAULT_Q)
@@ -123,3 +130,16 @@ def test_ideal_base_still_runs_at_1khz():
         sim.control_tick()
     assert sim.base.x > 0.15
     sim.close()
+
+
+@needs_scene
+def test_motor_model_and_gravity_can_be_switched_off():
+    import mujoco
+    from quadsim.sim import Simulator
+    sim = Simulator(_cfg(**{"robot.motor_model": "ideal", "robot.level_gravity": "false"}))
+    try:
+        dof = sim.m.jnt_dofadr[mujoco.mj_name2id(sim.m, mujoco.mjtObj.mjOBJ_JOINT, "FL_Knee_joint")]
+        assert sim.m.dof_frictionloss[dof] == 0.0 and sim.m.dof_armature[dof] == 0.0
+        assert np.allclose(sim.m.opt.gravity, sim.meta["gravity"])          # the scene's tilted gravity
+    finally:
+        sim.close()
