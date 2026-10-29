@@ -1,8 +1,8 @@
 """ROS 2 front-end for the quadruped navigation sim.
 
 Usage (inside the container):
-  python3 -m quadsim.sim_node [--config config/sim.yaml] [--scene scenes/dp2f] [--rtf 1.0]
-                              [--no-gt-tf] [--viewer] [key=value ...]
+  python3 -m quadsim.sim_node [--config config/sim.yaml] [--scene scenes/dp_1012] [--rtf 1.0]
+                              [--viewer] [key=value ...]
 
 The sim owns /clock: run every other node with use_sim_time:=true.
 """
@@ -219,7 +219,6 @@ def main(argv=None):
     ap.add_argument("--config", default=None)
     ap.add_argument("--scene", default=None)
     ap.add_argument("--rtf", type=float, default=None, help="real-time factor (0 = as fast as possible)")
-    ap.add_argument("--no-gt-tf", action="store_true", help="do not publish map->odom->base_link")
     ap.add_argument("--duration", type=float, default=0.0, help="stop after this much sim time (0 = forever)")
     ap.add_argument("--viewer", action="store_true", help="open the MuJoCo passive viewer (needs a display)")
     ap.add_argument("overrides", nargs="*", help="dotted config overrides, e.g. lidar.range_noise=0.0")
@@ -229,8 +228,6 @@ def main(argv=None):
         cfg["scene"] = a.scene
     if a.rtf is not None:
         cfg["physics"]["rtf"] = a.rtf
-    if a.no_gt_tf:
-        cfg["ros"]["publish_gt_tf"] = False
 
     # Own SIGINT/SIGTERM handling: rclpy's handler races with the background spin thread and
     # destroy_node, which could leave the process hanging after Ctrl+C. 2nd Ctrl+C exits at once.

@@ -1,0 +1,36 @@
+# Synthetic staircases for scenes built from Maps/dp_full_original.pcd (scenes/dp_full_003 -> scenes/dp_full_003_s16).
+# scripts/make_stairs.py replaces the scanned stairs inside these footprints with clean steps.
+#
+# Coordinates are the map frame of dp_full_original / dp.pcd (same as scenes/dp). Footprints and heights were read
+# off the raw point cloud (per-0.1 m-cell median height in z bands, vertical slices along each flight) and checked
+# against the flattened slabs of scenes/dp_full_003 (`make_stairs.py --map`). Both staircases are axis-aligned.
+riser: 0.16            # target; each flight uses n = round(rise / riser) steps of rise / n (0.155-0.169 here)
+thickness: 0.30        # solid depth below each tread top (> riser: the risers are solid, the soffit is stepped)
+clear: [0.35, 1.0]     # original geometry in [h - 0.35, h + 1.0] of the target height is removed (boxes only when
+                       # they lie entirely inside the band, so walls survive); an element can override it
+
+stairs:
+  - name: east                                    # two straight flights with a landing, 1F -0.35 -> 2F 5.00
+    flights:
+      # start/end: axis from the foot (first riser) to the head (top riser), rectangle centred on it, `width` across
+      # E1: scanned 15 risers x 0.17 between x 5.55 and 6.85 (a push-ramp runs beside it at x 5.3-5.5, left alone)
+      - {name: E1, start: [6.20, -11.95], end: [6.20, -7.60],  width: 1.3, z0: -0.35, z1: 2.20,   # north, 16 x 0.159
+         clear: [0.35, 1.3]}   # also drops the handrail tops (1.0-1.1 m above the treads)
+      # E2: scanned 16 risers x 0.1625 between x 3.65 and 5.05, handrails at x 3.5 and 5.2 stay outside
+      - {name: E2, start: [4.35, -7.65],  end: [4.35, -12.45], width: 1.4, z0: 2.20,  z1: 5.00}   # south, 18 x 0.156
+    landings:
+      - {name: EL, rect: [3.6, 6.9, -7.60, -6.30], z: 2.20}
+      # approach pad: the flattening grew a 0.15 m plate over the 1F floor at the foot of E1 (not in the raw scan)
+      - {name: E0, rect: [5.55, 6.85, -12.90, -11.95], z: -0.35}
+
+  - name: west                                    # switchback stairwell (west wall at x -11.55), 1F -0.30 -> 2F 5.00
+    flights:
+      - {name: W1, start: [-10.7, -12.20], end: [-10.7, -10.40], width: 1.6,  z0: -0.30, z1: 1.10}   # north, 9 x 0.156
+      - {name: W2, start: [-9.1,  -10.10], end: [-9.1,  -12.60], width: 1.25, z0: 1.10,  z1: 2.35}   # south, 8 x 0.156
+      - {name: W3, start: [-10.7, -12.00], end: [-10.7, -10.10], width: 1.5,  z0: 2.35,  z1: 3.70}   # north, 8 x 0.169
+      - {name: W4, start: [-9.1,  -10.30], end: [-9.1,  -12.55], width: 1.2,  z0: 3.70,  z1: 5.00}   # south, 8 x 0.1625
+    landings:
+      - {name: L1,  rect: [-11.5, -8.45, -10.40, -8.90], z: 1.10}   # north half-landing, W1 head / W2 foot
+      - {name: L2,  rect: [-11.5, -8.45, -13.80, -12.60], z: 2.35}  # south half-landing, W2 head
+      - {name: L2w, rect: [-11.5, -9.90, -12.60, -12.00], z: 2.35}  # its west extension where W3 starts
+      - {name: L3,  rect: [-11.5, -8.45, -10.30, -9.15], z: 3.70}   # north half-landing, W3 head / W4 foot

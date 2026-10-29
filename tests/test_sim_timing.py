@@ -3,9 +3,9 @@ import os
 import numpy as np
 import pytest
 
-SCENE = os.path.join(os.path.dirname(__file__), "..", "scenes", "dp2f")
+SCENE = os.path.join(os.path.dirname(__file__), "..", "scenes", "dp_1012")
 pytestmark = pytest.mark.skipif(not os.path.exists(os.path.join(SCENE, "meta.json")),
-                                reason="scenes/dp2f not built")
+                                reason="scenes/dp_1012 not built")
 
 
 def _sim():

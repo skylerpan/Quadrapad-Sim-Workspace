@@ -41,9 +41,18 @@ class Ground:
         return bool(np.isfinite(self.feet_h).all())
 
 
+def body_lift(cfg: dict, roll: float, pitch: float) -> float:
+    """Height of the body centre above the feet-plane point under it, such that the centre is
+    `stand_height` from the plane measured along the plane normal. The body bottom then stays
+    parallel to the feet plane at the same clearance on a slope or a flight of stairs; lifting straight
+    up by stand_height swings the front-bottom corner of a pitched body into the next riser."""
+    return cfg["stand_height"] * float(np.sqrt(1.0 + np.tan(pitch) ** 2 + np.tan(roll) ** 2))
+
+
 class IdealBase:
     def __init__(self, cfg: dict, ray_scene, voxel_lookup=None,
-                 blocked: Callable[[float, float, float, float], bool] | None = None):
+                 blocked: Callable[..., bool] | None = None):
+        """`blocked(x, y, yaw, z_center, roll, pitch) -> bool`: would the body box overlap the map."""
         self.c = cfg
         self.scene = ray_scene
         self.lookup = voxel_lookup
@@ -53,6 +62,7 @@ class IdealBase:
         g = np.array([-s, 0.0, s])
         self.patch = np.array([(a, b) for a in g for b in g])                    # [9,2]
         self.local = (self.feet[:, None, :] + self.patch[None, :, :]).reshape(-1, 2)  # [36,2]
+        self.feet_A = np.column_stack([self.feet, np.ones(len(self.feet))])        # plane fit through the feet
         self.vel_lim = np.asarray(cfg["vel_limits"], dtype=np.float64)
         self.acc_lim = np.asarray(cfg["acc_limits"], dtype=np.float64)
         self.x = self.y = self.yaw = 0.0
@@ -78,8 +88,12 @@ class IdealBase:
             z[hit] = self.lookup.surface_z(inside, z[hit])
         per_foot = z.reshape(4, -1)
         n_ok = np.isfinite(per_foot).sum(axis=1)
-        feet_h = np.where(n_ok >= 3, np.nanmedian(np.where(n_ok[:, None] >= 3, per_foot, 0.0), axis=1), np.nan)
-        if not np.isfinite(feet_h).all():
+        supported = n_ok >= 3
+        feet_h = np.where(supported, np.nanmedian(np.where(supported[:, None], per_foot, 0.0), axis=1), np.nan)
+        # SLAM floors have small gaps (sparse returns, flattening seams). A quadruped keeps standing with
+        # one foot over a gap, so up to `max_feet_over_gap` unsupported feet take the height of the plane
+        # through the other feet instead of rejecting the pose.
+        if (~supported).sum() > self.c.get("max_feet_over_gap", 1) or np.isfinite(z).sum() < 6:
             return Ground(feet_h, np.nan, 0.0, 0.0)
         # robust least-squares plane z = a*lx + b*ly + z0 in the body frame:
         # refit after dropping samples > 3 cm off the plane (clutter, map noise)
@@ -91,6 +105,14 @@ class IdealBase:
             if inl.sum() < 6 or (inl == ok).all():
                 break
             ok = inl
+        a, b, z0 = coef
+        if not supported.all():
+            feet_h = np.where(supported, feet_h, a * self.feet[:, 0] + b * self.feet[:, 1] + z0)
+        # Body attitude = plane through the four foot heights (the body follows the feet). The ray plane
+        # above only fills a foot over a gap: its outlier refit collapses onto one tread on stairs (36
+        # rays on two levels 0.2 m apart keep a single level), which left the body level and 0.22 m
+        # above the lower tread while the front feet were already a tread up.
+        coef, *_ = np.linalg.lstsq(self.feet_A, feet_h, rcond=None)
         a, b, z0 = coef
         return Ground(feet_h, float(z0), float(np.arctan(b)), float(-np.arctan(a)))
 
@@ -144,7 +166,8 @@ class IdealBase:
             return "step_down"
         if np.degrees(np.arccos(np.cos(g.roll) * np.cos(g.pitch))) > c["max_slope_deg"]:
             return "slope"
-        if self.blocked is not None and self.blocked(x, y, yaw, g.z0 + c["stand_height"]):
+        if self.blocked is not None and \
+                self.blocked(x, y, yaw, g.z0 + body_lift(c, g.roll, g.pitch), g.roll, g.pitch):
             return "collision"
         self.ground = g
         return None
@@ -153,4 +176,4 @@ class IdealBase:
         """Body-centre position and wxyz quaternion for the mocap target."""
         z0, roll, pitch = self.smooth
         R = rot_zyx(self.yaw, pitch, roll)
-        return np.array([self.x, self.y, z0 + self.c["stand_height"]]), quat_wxyz(R)
+        return np.array([self.x, self.y, z0 + body_lift(self.c, roll, pitch)]), quat_wxyz(R)

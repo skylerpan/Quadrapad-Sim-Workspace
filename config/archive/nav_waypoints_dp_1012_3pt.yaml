@@ -1,0 +1,19 @@
+# Three test points recorded by hand on dp_1012: the robot was driven there with teleop and
+# /robot01/tracked_pose (Point-LIO localization, map frame) was read at each stop, 2026-10-14.
+# z is the tracked-pose height; yaw in radians. Same keys as syncai_waypoint_sequencer's YAML.
+# The base was confirmed stationary (ground-truth speed 0.000 m/s) at every read.
+# Localization vs sim ground truth at the reads: p01 1.57 m, p02 1.92 m, p03 0.37 m. Cause found
+# 2026-10-14 16:30: robot01's global_localization / map_server_3d were loading dp_1008.pcd (the
+# container's bind-mounted config/system.ini was a stale inode), so the localization frame is the
+# dp_1008 map, offset ~0.45 m / ~3.7 deg from the dp_1012 scene at the origin. Re-read these points
+# once localization runs on dp_1012 (launch with system_config:=config/instances/robot01.ini).
+# Planner dry-run (matrix, 2026-10-14): all 6 ordered pairs solvable. Loop p01 -> p02 -> p03 -> p01 =
+# 25.0 + 29.8 + 30.8 = 85.6 m; p01 <-> p02 25.0 / 25.1 m, p01 <-> p03 31.0 / 30.8 m, p02 <-> p03 29.8 / 29.9 m.
+# 2026-10-14 17:06 localization relaunched on dp_1012 (system_config:=config/instances/robot01.ini); points re-read
+# from /robot01/tracked_pose at the same three stops, localization vs ground truth ~0.1 m. Previous values:
+# p01 (-11.27, -16.15, -0.03), p02 (-27.92, -1.58, -0.17), p03 (1.63, 1.46, -0.10).
+frame_id: map
+waypoints:
+  - {name: p01, x: -12.62, y: -15.52, z: 0.04, yaw: -0.04}
+  - {name: p02, x: -28.30, y: 0.13, z: -0.24, yaw: -2.55}
+  - {name: p03, x: 1.27, y: 1.49, z: -0.15, yaw: -0.67}

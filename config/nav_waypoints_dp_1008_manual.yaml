@@ -1,0 +1,17 @@
+# Five test points recorded by hand on dp_1008 (1F): the robot was driven there with teleop and
+# /robot01/tracked_pose (Point-LIO localization, map frame) was read at each stop, 2026-10-13.
+# z is the tracked-pose height; yaw in radians. Same keys as syncai_waypoint_sequencer's YAML.
+# p04 was read while the robot was still moving (ground truth was 1.6 m further along); the
+# other four agree with ground truth within 0.11 m.
+#
+# Order = the longest route over the planner's own path lengths (dry-run matrix, 20 pairs):
+#   p05 -> p02 -> p04 -> p01 -> p03 = 32.5 + 36.1 + 34.0 + 25.7 = 128.3 m (one pass, starting
+#   where the robot was parked). The absolute maximum is p03 -> p02 -> p04 -> p01 -> p05 (129.2 m).
+#   Each further loop adds p03 -> p05 (5.7 m) before repeating.
+frame_id: map
+waypoints:
+  - {name: p05, x: -34.87, y: 0.42, z: -0.28, yaw: -2.68}
+  - {name: p02, x: -11.09, y: -16.56, z: 0.02, yaw: -0.72}
+  - {name: p04, x: -37.92, y: -2.10, z: -0.25, yaw: 1.40}
+  - {name: p01, x: -4.38, y: 2.07, z: -0.11, yaw: -2.90}
+  - {name: p03, x: -30.20, y: 1.24, z: -0.26, yaw: -1.47}

@@ -18,7 +18,7 @@ def stamp_parts(t: float) -> tuple[int, int]:
     return ns // 1_000_000_000, ns % 1_000_000_000
 
 
-def serialize_custom_msg(t_stamp: float, frame_id: str, frame, lidar_id: int = 0) -> bytes:
+def serialize_custom_msg(t_stamp: float, frame_id: str, frame) -> bytes:
     """CDR bytes of livox_ros_driver2/msg/CustomMsg for a LidarFrame (publish via publish_raw)."""
     sec, nsec = stamp_parts(t_stamp)
     body = bytearray()
@@ -27,7 +27,7 @@ def serialize_custom_msg(t_stamp: float, frame_id: str, frame, lidar_id: int = 0
     body += struct.pack("<I", len(fid)) + fid
     body += b"\x00" * (-len(body) % 8)
     n = len(frame.xyz)
-    body += struct.pack("<QIB3x", int(round(t_stamp * 1e9)), n, lidar_id)
+    body += struct.pack("<QIB3x", int(round(t_stamp * 1e9)), n, 0)          # lidar_id 0 (single sensor)
     body += b"\x00" * (-len(body) % 4)
     body += struct.pack("<I", n)
     if n:

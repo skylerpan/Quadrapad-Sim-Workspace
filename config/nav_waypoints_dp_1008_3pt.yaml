@@ -1,0 +1,8 @@
+# Three of the five hand-recorded dp_1008 test points (see nav_waypoints_dp_1008_manual.yaml):
+# p04/p05 sit next to a patch of floor gaps in the sim scene, so this file keeps the triangle
+# p03 -> p01 -> p02 (planner path lengths 25.7 + 25.4 + 28.4 = 79.5 m per loop).
+frame_id: map
+waypoints:
+  - {name: p03, x: -30.20, y: 1.24, z: -0.26, yaw: -1.47}
+  - {name: p01, x: -4.38, y: 2.07, z: -0.11, yaw: -2.90}
+  - {name: p02, x: -11.09, y: -16.56, z: 0.02, yaw: -0.72}

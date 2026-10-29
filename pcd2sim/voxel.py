@@ -88,6 +88,39 @@ def remove_isolated(grid: VoxelGrid, min_neighbors: int = 2) -> VoxelGrid:
     return grid.subset(nb >= min_neighbors)
 
 
+_NEIGHBORS_13 = _NEIGHBORS_26[[i for i, (dx, dy, dz) in enumerate(_NEIGHBORS_26)
+                               if dx > 0 or (dx == 0 and (dy > 0 or (dy == 0 and dz > 0)))]]   # each pair once
+
+
+def components_26(grid: VoxelGrid) -> tuple[int, np.ndarray]:
+    """26-connected component labels of the occupied voxels: (n_components, label per voxel)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    codes = grid.codes
+    n = len(codes)
+    rows, cols = [], []
+    for off in _NEIGHBORS_13:
+        k2 = grid.keys + off
+        hit = contains(codes, k2, grid.dims)
+        if hit.any():
+            rows.append(np.flatnonzero(hit))
+            cols.append(np.searchsorted(codes, encode(k2[hit], grid.dims)))
+    if not rows:
+        return n, np.arange(n)
+    rows, cols = np.concatenate(rows), np.concatenate(cols)
+    adj = coo_matrix((np.ones(len(rows), dtype=np.int8), (rows, cols)), shape=(n, n))
+    return connected_components(adj, directed=False)
+
+
+def remove_small_clusters(grid: VoxelGrid, min_voxels: int) -> VoxelGrid:
+    """Drop 26-connected clusters with fewer than min_voxels voxels (specks, ghosts). <= 1 is a no-op."""
+    if min_voxels <= 1 or len(grid.keys) == 0:
+        return grid
+    _, lab = components_26(grid)
+    size = np.bincount(lab)[lab]
+    return grid.subset(size >= min_voxels)
+
+
 def smooth_surface_z(grid: VoxelGrid, radius: int = 1, tol: float = 0.06) -> np.ndarray:
     """Bilateral xy-smoothing of per-voxel mean z.
 
@@ -194,18 +227,22 @@ def fit_floor_normal(points: np.ndarray, iters: int = 300, thresh: float = 0.03,
     return n, float(d), len(inl_pts)
 
 
-def standable_mask(grid: VoxelGrid, clearance: float = 0.8, roof_min: float = 1.5) -> np.ndarray:
+def standable_mask(grid: VoxelGrid, clearance: float = 0.8, roof_min: float = 1.5,
+                   roof_cell: float | None = None) -> np.ndarray:
     """Voxels whose top is free for `clearance` metres and that have structure (a roof) above.
 
-    The roof test rejects the upper side of ceilings, which are also free above.
+    The roof test rejects the upper side of ceilings, which are also free above. It looks at the highest
+    voxel in the `roof_cell` x `roof_cell` column around the voxel (default: the voxel's own column); a
+    ceiling scanned sparsely has no point in most 3 cm columns, so fine builds pass 0.1-0.2 m.
     """
     codes = grid.codes
     k = grid.keys
     free = np.ones(len(k), dtype=bool)
     for dz in range(1, int(np.ceil(clearance / grid.voxel)) + 1):
         free &= ~contains(codes, k + np.array([0, 0, dz], dtype=np.int32), grid.dims)
-    # highest occupied z per (x,y) column
-    col = k[:, 0].astype(np.int64) * int(grid.dims[1]) + k[:, 1]
+    # highest occupied z per (x,y) column (coarsened to roof_cell)
+    n = max(1, int(round((roof_cell or grid.voxel) / grid.voxel)))
+    col = (k[:, 0].astype(np.int64) // n) * (int(grid.dims[1]) // n + 1) + k[:, 1] // n
     order = np.argsort(col, kind="stable")
     col_s = col[order]
     starts = np.flatnonzero(np.r_[True, col_s[1:] != col_s[:-1]])
@@ -243,3 +280,142 @@ def find_spawn(grid: VoxelGrid, stand: np.ndarray, radius: float = 0.4) -> np.nd
     pos = grid.origin + (best + 0.5) * grid.voxel
     pos[2] = grid.origin[2] + (best[2] + 1) * grid.voxel
     return pos
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Hole closing: a SLAM surface voxelized at 2-3 cm is a sieve (most voxels hold one point), so walls and
+# floors are scattered over 2-3 layers with gaps between the boxes. A closing pass fills an empty cell when
+# it sits inside a surface: >= min_plane of its 8 neighbours in one axis plane (xy, xz or yz) are occupied
+# (a hole in a floor or wall), or >= min_nb of all 26 are (a hole in a thick, noisy surface, or an inside
+# corner). A cell lying flat against a complete sheet sees only the 9 cells of that sheet, none in its own
+# planes, so sheets do not thicken and edges do not grow. Big maps (30 M candidates) are processed in chunks
+# by forked worker processes with the per-chunk results parked on disk, to bound the peak RSS.
+# ---------------------------------------------------------------------------------------------------------
+
+_FACES_6 = np.array([(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)], dtype=np.int32)
+_CLOSE_SHARED: dict = {}        # read-only arrays the forked workers inherit (no pickling, no copies)
+
+
+def _decode(codes: np.ndarray, dims: np.ndarray) -> np.ndarray:
+    d1, d2 = int(dims[1]), int(dims[2])
+    return np.stack([codes // (d1 * d2), (codes // d2) % d1, codes % d2], axis=1).astype(np.int32)
+
+
+def _count_neighbors(keys: np.ndarray, codes: np.ndarray, intensity: np.ndarray, dims: np.ndarray):
+    """Per key: occupied 26-neighbour count, the largest occupied 8-neighbour count over the three axis
+    planes through the cell, and the summed neighbour intensity."""
+    n = np.zeros(len(keys), dtype=np.int32)
+    n_plane = np.zeros((3, len(keys)), dtype=np.int32)       # xy (dz=0), xz (dy=0), yz (dx=0)
+    isum = np.zeros(len(keys), dtype=np.float64)
+    for off in _NEIGHBORS_26:
+        nk = keys + off
+        inb = np.all((nk >= 0) & (nk < dims), axis=1)
+        if not inb.any():
+            continue
+        c = encode(nk[inb], dims)
+        i = np.clip(np.searchsorted(codes, c), 0, len(codes) - 1)
+        hit = codes[i] == c
+        where = np.flatnonzero(inb)[hit]
+        n[where] += 1
+        isum[where] += intensity[i[hit]]
+        for ax, p in ((2, 0), (1, 1), (0, 2)):
+            if off[ax] == 0:
+                n_plane[p, where] += 1
+    return n, n_plane.max(axis=0), isum
+
+
+def _close_chunk(job):
+    """Worker: neighbour-count one chunk of candidate keys, save the accepted cells, return (path, n)."""
+    cand_path, start, stop, min_nb, min_plane, out_path = job
+    keys = np.load(cand_path, mmap_mode="r")[start:stop]
+    keys = np.ascontiguousarray(keys)
+    s = _CLOSE_SHARED
+    n, n_plane, isum = _count_neighbors(keys, s["codes"], s["intensity"], s["dims"])
+    ok = (n >= min_nb) | (n_plane >= min_plane)
+    np.savez(out_path, keys=keys[ok], intensity=(isum[ok] / np.maximum(n[ok], 1)).astype(np.float32))
+    return out_path, int(ok.sum())
+
+
+def close_holes(grid: VoxelGrid, min_nb: int = 12, min_plane: int = 6, rounds: int = 2,
+                workers: int | None = None, tmp_dir: str | None = None,
+                chunk: int = 2_000_000) -> tuple[VoxelGrid, int]:
+    """Fill empty cells inside a surface, `rounds` times: >= min_plane of the 8 neighbours in one axis plane
+    occupied, or >= min_nb of all 26 (a cell against a complete flat sheet sees 9, so 12 never thickens it).
+
+    Candidates are the empty 6-face neighbours of occupied voxels. An added voxel gets counts 1, the mean
+    intensity of its occupied neighbours and zmean at its centre. Returns (grid, voxels added). rounds <= 0
+    returns the input grid. Work is chunked (`chunk` keys per job) over `workers` forked processes
+    (default os.cpu_count()); candidate and per-chunk files live in `tmp_dir` (a fresh temporary
+    directory by default) and are removed before the function returns.
+    """
+    import multiprocessing as mp
+    import os
+    import shutil
+    import tempfile
+
+    if rounds <= 0 or len(grid.keys) == 0:
+        return grid, 0
+    workers = max(1, workers or os.cpu_count() or 1)
+    own_tmp = tmp_dir is None or not os.path.isdir(tmp_dir)     # created here -> removed here
+    tmp_dir = tempfile.mkdtemp(prefix="close_") if tmp_dir is None else tmp_dir
+    os.makedirs(tmp_dir, exist_ok=True)
+    total_added = 0
+    try:
+        for rnd in range(rounds):
+            codes = grid.codes
+            dims = grid.dims
+            # 1) candidates: empty face neighbours, built one face at a time, parked on disk
+            cand_files = []
+            for f, off in enumerate(_FACES_6):
+                nk = grid.keys + off
+                inb = np.all((nk >= 0) & (nk < dims), axis=1)
+                c = np.unique(encode(nk[inb], dims))
+                p = os.path.join(tmp_dir, f"cand_{f}.npy")
+                np.save(p, c)
+                cand_files.append(p)
+                del nk, inb, c
+            cc = np.unique(np.concatenate([np.load(p) for p in cand_files]))
+            for p in cand_files:
+                os.remove(p)
+            cc = cc[~np.isin(cc, codes, assume_unique=True)]
+            cand_path = os.path.join(tmp_dir, "cand.npy")
+            np.save(cand_path, _decode(cc, dims))
+            n_cand = len(cc)
+            del cc
+            # 2) neighbour counts per chunk, in forked workers sharing the sorted codes read-only
+            _CLOSE_SHARED.update(codes=codes, intensity=grid.intensity, dims=dims)
+            jobs = [(cand_path, s, min(s + chunk, n_cand), min_nb, min_plane, os.path.join(tmp_dir, f"add_{i}.npz"))
+                    for i, s in enumerate(range(0, n_cand, chunk))]
+            results = []
+            try:
+                if workers == 1 or len(jobs) <= 1:
+                    results = [_close_chunk(j) for j in jobs]
+                else:
+                    with mp.get_context("fork").Pool(min(workers, len(jobs))) as pool:
+                        results = pool.map(_close_chunk, jobs)
+                added_keys = [np.load(p)["keys"] for p, _ in results]
+                added_int = [np.load(p)["intensity"] for p, _ in results]
+            finally:
+                _CLOSE_SHARED.clear()
+                for p, _ in results:
+                    if os.path.exists(p):
+                        os.remove(p)
+                os.remove(cand_path)
+            n_add = sum(n for _, n in results)
+            if n_add == 0:
+                break
+            ak = np.concatenate(added_keys).astype(np.int32)
+            ai = np.concatenate(added_int).astype(np.float32)
+            az = (grid.origin[2] + (ak[:, 2] + 0.5) * grid.voxel).astype(np.float32)
+            keys = np.vstack([grid.keys, ak])
+            order = np.argsort(encode(keys, dims), kind="stable")
+            grid = VoxelGrid(keys[order],
+                             np.concatenate([grid.counts, np.ones(n_add, np.int32)])[order],
+                             np.concatenate([grid.intensity, ai])[order],
+                             np.concatenate([grid.zmean, az])[order],
+                             grid.origin, grid.voxel, dims)
+            total_added += n_add
+    finally:
+        if own_tmp:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    return grid, total_added

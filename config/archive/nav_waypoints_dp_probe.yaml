@@ -1,0 +1,13 @@
+# Probe points around the robot's spawn in scenes/dp (robot at map -0.32,-0.77 on 2026-10-22).
+# Used with --dry-run --dry-run-from robot to find a reachable short goal for costmap checks.
+frame_id: map
+waypoints:
+  - {name: px4,  x:  3.7, y: -0.8, z: 0.02, yaw: 0.0}
+  - {name: px8,  x:  7.7, y: -0.8, z: 0.02, yaw: 0.0}
+  - {name: nx4,  x: -4.3, y: -0.8, z: 0.02, yaw: 3.14}
+  - {name: nx8,  x: -8.3, y: -0.8, z: 0.02, yaw: 3.14}
+  - {name: py4,  x: -0.3, y:  3.2, z: 0.02, yaw: 1.57}
+  - {name: py8,  x:  2.7, y:  8.2, z: 0.02, yaw: 1.57}   # 2026-10-22: was (-0.3, 7.2), inside the wall block x -1.5..1.9 / y 7.1..8.7 (SNAPPED_FAR); open floor east of it
+  - {name: ny4,  x: -0.3, y: -4.8, z: 0.02, yaw: -1.57}
+  - {name: ny8,  x: -0.3, y: -8.8, z: 0.02, yaw: -1.57}
+  - {name: home, x: -0.3, y: -0.8, z: 0.02, yaw: 3.14}

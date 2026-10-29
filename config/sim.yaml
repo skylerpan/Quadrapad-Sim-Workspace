@@ -1,6 +1,6 @@
 # Quadruped navigation sim (MuJoCo, ideal base). All units SI unless noted.
-scene: scenes/dp_1008            # directory produced by pcd2sim.build_scene
-spawn: [0.0, 0.0, 0.0, 0.0]   # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0. z_floor = floor height of that storey
+scene: scenes/dp_1012            # directory produced by pcd2sim.build_scene (dp_1012: pure 1:1 build of Maps/dp_1012_handmade.bt, --no-flatten --min-neighbors 0; stair-tuned PCD recipe in docs/archive/scene-tuning-dp_1012-2026-10-16.md)
+spawn: [0.0, 0.0, 0.0, -0.4]  # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0. z_floor = floor height of that storey (dp_1012 1F at (0,0): -0.40)
 
 physics:
   timestep: 0.0025            # s (400 Hz; IMU/clock 200 Hz and control 50 Hz divide evenly)
@@ -10,13 +10,14 @@ physics:
 robot:                        # Go2-like ideal base (legs are not simulated)
   body_size: [0.70, 0.31, 0.16]   # collision box full extents (x, y, z)
   mass: 15.0
-  stand_height: 0.30          # floor -> body centre
+  stand_height: 0.30          # feet plane -> body centre, measured along the plane normal (body bottom stays parallel to the feet plane on stairs)
   foot_offsets: [[0.19, 0.13], [0.19, -0.13], [-0.19, 0.13], [-0.19, -0.13]]
   foot_patch: 0.08            # spacing of the 3x3 ray patch under each foot
-  attitude_tau: 0.15          # low-pass of height/roll/pitch (s); SLAM floors are noisy
-  max_step_up: 0.18           # largest per-foot height change accepted per control tick
+  attitude_tau: 0.05          # low-pass of height/roll/pitch (s). 0.15 lagged the pitch ~13 deg at 0.5 m/s on stairs and the body touched the risers; flattened / 1:1 floors are not noisy
+  max_step_up: 0.22           # largest per-foot height change accepted per control tick (stairs rise 0.17-0.20: 0.18 left no margin)
   max_step_down: 0.25
-  max_slope_deg: 30.0
+  max_feet_over_gap: 1        # feet allowed over a gap in the floor (height taken from the other feet's plane)
+  max_slope_deg: 50.0         # plane through the 4 feet: 31-42 deg on real flights, 46 deg on hand-drawn 0.2 m deep treads (0.2 m octree); 30 refused every staircase
   vel_limits: [1.5, 0.8, 2.0]     # |vx|, |vy|, |wz|
   acc_limits: [2.0, 2.0, 4.0]
   cmd_tau: 0.15               # first-order lag of the gait controller (s)
@@ -36,12 +37,10 @@ lidar:                        # Livox Mid-360-like, rolling (per-point time)
   range_noise: 0.02           # sigma (m)
   dropout: 0.0                # random drop probability
   grazing_cos: 0.08           # drop returns with |cos(incidence)| below this
-  pattern: synthetic          # "synthetic" or a CSV path with columns t,azimuth_deg,elevation_deg[,line]
   seed: 0
 
 imu:                          # co-located with the LiDAR (Mid-360 internal IMU)
   rate_hz: 200
-  acc_unit: g                 # "g" (livox_ros_driver2) or "mps2"
   acc_noise: 0.02             # m/s^2 white noise sigma
   gyro_noise: 0.002           # rad/s
   acc_bias_rw: 0.0005         # m/s^2/sqrt(s)
@@ -50,12 +49,13 @@ imu:                          # co-located with the LiDAR (Mid-360 internal IMU)
 viewer:                       # MuJoCo viewer (--viewer) only; the map mesh has millions of triangles
   shadows: false              # the map casting shadows on itself doubles the render cost for little gain
   sync_hz: 30                 # max rate (wall clock) at which the sim pushes its state to the viewer window
+  max_map_boxes: 400000       # boxes drawn in the viewer mesh, nearest to the spawn first (0.1-0.2 m scenes have fewer; a 0.03 m scene has ~3.4 M, 12 triangles each: 1500000 shows ~the whole storey)
 
 ros:
-  frames: {map: map, odom: odom, base: base_link, lidar: livox_frame}
-  publish_gt_tf: true         # map->odom (identity) + odom->base_link ground truth; false = leave to Point-LIO/localization
+  frames: {map: map, odom: robot01/odom, base: robot01/base_link, lidar: robot01/laser}
+  publish_gt_tf: false        # map->odom (identity) + odom->base_link ground truth; false = leave to Point-LIO/localization
   publish_custom_msg: true    # /livox/lidar as livox_ros_driver2/CustomMsg (if the msg package is installed)
-  publish_pointcloud2: true
+  publish_pointcloud2: false
   pointcloud2_format: livox   # livox: x y z intensity tag line timestamp | velodyne: x y z intensity ring time
   publish_map_cloud: true
   clock_hz: 200
@@ -64,7 +64,7 @@ ros:
     clock: /clock
     lidar_custom: /robot01/livox/lidar
     lidar_points: /robot01/livox/points
-    imu: /robot/livox/imu
+    imu: /robot01/livox/imu
     gt_odom: /sim/ground_truth/odom
     events: /sim/events
     map_cloud: /sim/map_cloud
