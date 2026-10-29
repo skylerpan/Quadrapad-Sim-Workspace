@@ -128,6 +128,7 @@ class Simulator:
             self.gyro_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "lidar_gyro")]
             self.g23 = G23Backend(self.m, self.d, r, self.base_body)
             self.fallen = False
+            self.low_since = None
         else:
             self.base_body = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, "base")
             self.base_geom = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_GEOM, "base_geom")
@@ -179,6 +180,7 @@ class Simulator:
             self.g23.place(pos, quat)
             self.g23.restart(self.d.time)
             self.fallen = False
+            self.low_since = None
         else:
             self.d.qpos[0:3] = pos
             self.d.qpos[3:7] = quat
@@ -349,11 +351,23 @@ class Simulator:
         q = self.d.qpos
         self.base.x, self.base.y = float(q[0]), float(q[1])
         self.base.yaw = float(np.arctan2(2.0 * (q[3] * q[6] + q[4] * q[5]), 1.0 - 2.0 * (q[5] ** 2 + q[6] ** 2)))
+        # floor under the torso (terrain rays, 50 Hz) so events and height carry the local floor on stairs
+        g = self.base._sample(self.base.x, self.base.y, self.base.yaw, np.full(4, float(q[2])), 1.5)
+        if g.valid:
+            self.base.ground = g
         up = float(self.d.xmat[self.base_body].reshape(3, 3)[2, 2])
-        if up < 0.5 and not self.fallen:
+        height = float(q[2]) - self.base.ground.z0
+        # "collapsed" only counts once the gait has been on for 2 s: before that the robot lies, stands up or
+        # settles on purpose
+        walking = self.g23.stage == "gait" and self.g23.t_gait is not None and self.d.time - self.g23.t_gait > 2.0
+        low = walking and height < float(r.get("fall_height", 0.18))
+        self.low_since = (self.low_since if low and self.low_since is not None else self.d.time) if low else None
+        collapsed = self.low_since is not None and self.d.time - self.low_since > 1.0
+        if (up < 0.5 or collapsed) and not self.fallen:
             self.fallen = True
-            out.events.append({"type": "fall", "t": self.d.time, "pose": [self.base.x, self.base.y, self.base.yaw],
-                               "z": float(q[2]), "up": round(up, 3)})
+            out.events.append({"type": "fall", "reason": "tipped" if up < 0.5 else "collapsed", "t": self.d.time,
+                               "pose": [self.base.x, self.base.y, self.base.yaw], "z": float(q[2]),
+                               "height": round(height, 3), "up": round(up, 3)})
         out.t = self.d.time
         return out
 

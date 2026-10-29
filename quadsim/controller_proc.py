@@ -33,6 +33,8 @@ class ControllerProcess:
                 self.env["ORT_DYLIB_PATH"] = lib
         self.proc: subprocess.Popen | None = None
         self.lines = 0
+        self.safety_locked = False                 # the controller printed its safety lock (damping, needs RESET_SAFETY)
+        self.state = None                          # last "[STATE] A ------------> B" target
 
     @property
     def available(self) -> bool:
@@ -48,7 +50,12 @@ class ControllerProcess:
         assert self.proc is not None and self.proc.stdout is not None
         for line in self.proc.stdout:
             self.lines += 1
-            self.log("[g2] " + line.rstrip())
+            text = line.rstrip()
+            if "[SAFETY]" in text and ("lock engaged" in text or "safety triggered" in text.lower()):
+                self.safety_locked = True
+            if "[STATE]" in text and "---->" in text:
+                self.state = text.split("---->")[-1].strip()
+            self.log("[g2] " + text)
 
     def poll(self) -> int | None:
         return None if self.proc is None else self.proc.poll()

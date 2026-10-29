@@ -68,7 +68,8 @@ def main(argv=None):
     ap.add_argument("--line", type=float, default=None, help="walk this many metres straight ahead instead")
     ap.add_argument("--sample", type=float, default=0.3, help="polyline resampling (m)")
     ap.add_argument("--start-at", type=float, default=0.0, help="start this many metres along the trajectory")
-    ap.add_argument("--vx", type=float, default=0.4, help="forward speed (m/s)")
+    ap.add_argument("--vx", type=float, default=0.4, help="forward speed (m/s); the RL policy wants >= 0.3")
+    ap.add_argument("--wz", type=float, default=0.6, help="turn rate when turning (rad/s); the policy wants 0.5-1.0")
     ap.add_argument("--lookahead", type=float, default=0.6)
     ap.add_argument("--seconds", type=float, default=120.0, help="stop after this much sim time (0 = to the end)")
     ap.add_argument("--rtf", type=float, default=1.0, help="real-time factor; the controller needs 1.0")
@@ -114,10 +115,12 @@ def main(argv=None):
     log(f"path: {len(path)} points, {total:.1f} m; scene {cfg['scene']}; controller {'child' if ctl else 'external'}")
 
     rec = {"scene": cfg["scene"], "path_m": round(total, 2), "gait": cfg["robot"].get("gait"), "events": [],
-           "force_peaks": [], "height": [], "pitch": [], "t_gait": None, "t_fall": None, "progress_m": 0.0}
+           "force_peaks": [], "height": [], "pitch": [], "t_gait": None, "t_fall": None, "t_safety": None,
+           "progress_m": 0.0}
     wall0, sim0 = time.perf_counter(), sim.d.time
     target = 0
     gait_on = False
+    turning = False
     done = False
     last_log = 0.0
     try:
@@ -126,6 +129,12 @@ def main(argv=None):
                 log(f"controller exited with code {ctl.poll()}")
                 rec["events"].append({"type": "controller", "state": "exited", "code": ctl.poll(), "t": sim.d.time})
                 break
+            if ctl is not None and ctl.safety_locked and rec.get("t_safety") is None:
+                rec["t_safety"] = sim.d.time
+                rec["events"].append({"type": "controller", "state": "safety", "t": sim.d.time,
+                                      "pose": [sim.base.x, sim.base.y, sim.base.yaw]})
+                log(f"controller safety lock at ({sim.base.x:.2f}, {sim.base.y:.2f}): stopping")
+                done = True
             x, y, yaw = sim.base.x, sim.base.y, sim.base.yaw
             if gait_on:
                 # pure pursuit: advance the target to the first point at least `lookahead` ahead
@@ -134,8 +143,14 @@ def main(argv=None):
                 dx, dy = path[target] - [x, y]
                 heading = math.atan2(dy, dx) - yaw
                 heading = (heading + math.pi) % (2 * math.pi) - math.pi
-                wz = float(np.clip(1.5 * heading, -1.0, 1.0))
-                vx = a.vx if abs(heading) < 1.0 else 0.1
+                # the RL policy is unstable at very small non-zero commands (G2 API spec section 7): steer
+                # bang-bang with hysteresis, walk at full --vx or not at all
+                if abs(heading) > 0.35:
+                    turning = True
+                elif abs(heading) < 0.12:
+                    turning = False
+                wz = math.copysign(a.wz, heading) if turning else 0.0
+                vx = 0.0 if abs(heading) > 1.0 else a.vx
                 sim.set_cmd(vx, 0.0, wz)
                 if target == len(path) - 1 and np.hypot(dx, dy) < 0.3:
                     log("reached the end of the path")
@@ -176,7 +191,8 @@ def main(argv=None):
     fp = np.array(rec["force_peaks"])
     h = np.array(rec["height"])
     rec.update(sim_seconds=round(sim.d.time - sim0, 2), wall_seconds=round(time.perf_counter() - wall0, 2),
-               fell=rec["t_fall"] is not None, reached_end=done and rec["t_fall"] is None,
+               fell=rec["t_fall"] is not None, safety=rec["t_safety"] is not None,
+               reached_end=done and rec["t_fall"] is None and rec["t_safety"] is None,
                force_peak_max=round(float(fp.max()), 1) if len(fp) else None,
                force_peak_p99=round(float(np.percentile(fp, 99)), 1) if len(fp) else None,
                height_mean=round(float(h.mean()), 3) if len(h) else None,

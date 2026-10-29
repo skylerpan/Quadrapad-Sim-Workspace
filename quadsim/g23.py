@@ -122,6 +122,7 @@ class G23Backend:
         self.rx.start()
         # stand / gait sequence (sim time)
         self.gait = str(robot_cfg.get("gait", "rl")).upper()
+        self.policy_mode = robot_cfg.get("policy_mode")      # g23 RL: integer policy slot sent before MODE RL
         self.auto = bool(robot_cfg.get("auto_stand", True))
         self.start_delay = float(robot_cfg.get("start_delay", 1.0))
         self.stand_delay = float(robot_cfg.get("stand_delay", 4.0))
@@ -208,6 +209,7 @@ class G23Backend:
     def restart(self, t: float):
         """(Re)start the stand -> gait sequence from sim time t (spawn, set_pose)."""
         self.t0 = t
+        self.t_gait = None
         self.stage = "idle" if self.auto else "manual"
 
     def tick(self, t: float, cmd: np.ndarray) -> list[dict]:
@@ -228,8 +230,11 @@ class G23Backend:
             self.t_stand = t
             events.append({"type": "controller", "state": "stand", "t": t})
         elif self.stage == "stand" and t - self.t_stand >= self.stand_delay:
+            if self.policy_mode is not None and self.gait == "RL":
+                self.send_command(f"MODE {int(self.policy_mode)}")     # RL policy slot (0 PPO flat, 1 HIMLoco, ...)
             self.send_command(f"MODE {self.gait}")
             self.stage = "gait"
+            self.t_gait = t
             events.append({"type": "controller", "state": self.gait.lower(), "t": t})
         if self.stage in ("gait", "manual"):
             self.send_command(f"AXES {cmd[0]:.3f} {cmd[1]:.3f} {cmd[2]:.3f}")

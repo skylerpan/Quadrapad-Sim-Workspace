@@ -186,7 +186,8 @@ def test_build_from_bt_room(tmp_path):
     assert meta["build_args"]["flatten"] is False and meta["ground"] is None
     assert meta["points_raw"] == len(cells) and meta["voxels"] == len(cells)       # filter off: pure 1:1
     assert meta["noise_filter"] == {"isolated_removed": 0, "small_clusters_removed": 0,
-                                        "closed_added": 0}
+                                        "closed_added": 0}                      # octree: no floor fixes, pure 1:1
+    assert meta["build_args"]["floor_spikes"] is False and meta["build_args"]["floor_holes"] == 0
     assert os.path.exists(tmp_path / "scene" / "boxes.npy") and not os.path.exists(tmp_path / "scene" / "ground.npz")
     assert len(np.load(tmp_path / "scene" / "contact.npy")) == meta["boxes"] and meta["format_version"] == 3
     vox = np.load(tmp_path / "scene" / "voxels.npz")

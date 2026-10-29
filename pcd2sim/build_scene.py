@@ -52,8 +52,8 @@ from .ground import Ground, extract_ground
 from .octomap_io import read_map_points, voxel_grid_from_cells
 from .pcd_io import write_pcd
 from .voxel import (VoxelGrid, boxes_to_world, close_holes, contact_mask, crop_percentile, find_spawn,
-                    fit_floor_normal, merge_boxes, remove_isolated, remove_small_clusters, smooth_surface_z,
-                    standable_mask, voxelize)
+                    fill_floor_holes, fit_floor_normal, merge_boxes, remove_floor_spikes, remove_isolated,
+                    remove_small_clusters, smooth_surface_z, standable_mask, voxelize)
 
 
 DEFAULT_VOXEL = 0.1       # PCD input; an octree defaults to its own resolution
@@ -68,7 +68,7 @@ def build(source: str, out: str, voxel: float | None = None, min_neighbors: int 
           ground_sheet_pts: int = 2, ground_float_max: int = 4, ground_column_gap: float = 0.0,
           ground_roof_cell: float | None = None, workers: int | None = None,
           keep_tmp: bool = False, resume: bool = False, contact_below: float = 0.3, contact_above: float = 1.2,
-          contact_xy: float = 0.3) -> dict:
+          contact_xy: float = 0.3, floor_spikes: bool | None = None, floor_holes: int | None = None) -> dict:
     build_args = {k: v for k, v in locals().items()}       # recorded in meta.json (scenes are a cache)
     os.makedirs(out, exist_ok=True)
     tmp_dir = os.path.join(out, ".tmp")
@@ -121,7 +121,8 @@ def _build(source, out, voxel, min_neighbors, z_min, flatten, ground_tol, ground
            ground_min_cells, ground_layers, ground_grow, ground_fill_guard, ground_surface, ground_peel,
            ground_small_flat, min_cluster, close_rounds, ground_spike_pts, ground_sheet_pts, ground_float_max,
            ground_column_gap, ground_roof_cell, workers, keep_tmp, resume, contact_below, contact_above,
-           contact_xy, build_args, tmp_dir, stage_voxels, stage_closed, stage_ground, t, log) -> dict:
+           contact_xy, floor_spikes, floor_holes, build_args, tmp_dir, stage_voxels, stage_closed, stage_ground, t,
+           log) -> dict:
     # Stage order: voxels (read + voxelize + noise filters) -> closed (hole closing) -> ground. With --resume
     # the latest stage file present is loaded and the earlier stages are skipped; every stage file carries
     # what meta.json needs from the stages before it.
@@ -193,6 +194,22 @@ def _build(source, out, voxel, min_neighbors, z_min, flatten, ground_tol, ground
         grid.counts = np.full(len(grid.keys), 4, dtype=np.int32)
 
     stand = standable_mask(grid, roof_cell=ground_roof_cell)
+    # raw-floor fixes default on for PCD input; an octree build stays the 1:1 copy of the (hand-edited) tree
+    if floor_spikes is None:
+        floor_spikes = not is_octomap
+    if floor_holes is None:
+        floor_holes = 0 if is_octomap else 20
+    build_args["floor_spikes"], build_args["floor_holes"] = floor_spikes, floor_holes
+    n_spikes = 0
+    if floor_spikes and not flatten:
+        # the flattening has its own spike / sheet / float noise removal; a raw voxel floor needs this one
+        grid, stand, n_spikes = remove_floor_spikes(grid, stand)
+        noise_filter["floor_spikes_removed"] = n_spikes
+        log(f"floor spikes: -{n_spikes} small bumps on the floor -> {len(grid.keys)} voxels")
+    if floor_holes > 0 and not flatten:
+        grid, stand, n_filled = fill_floor_holes(grid, stand, max_cells=floor_holes)
+        noise_filter["floor_holes_filled"] = n_filled
+        log(f"floor holes: +{n_filled} voxels in holes of <= {floor_holes} cells -> {len(grid.keys)} voxels")
     spawn = find_spawn(grid, stand)
     log(f"standable voxels: {int(stand.sum())}; spawn={None if spawn is None else np.round(spawn, 3).tolist()}")
     if flatten:                              # uses the raw per-voxel z, so run before smoothing
@@ -351,6 +368,13 @@ def main(argv=None):
                          "and the upper walls above it are LiDAR-only")
     ap.add_argument("--contact-xy", type=float, default=0.3,
                     help="contact band: radius (m) around a column in which a floor is looked for")
+    ap.add_argument("--floor-spikes", choices=["auto", "on", "off"], default="auto",
+                    help="--no-flatten builds drop small bumps (<= 3 voxels) sitting on a floor: a 0.1 m bump under one "
+                         "foot trips a legged robot's posture guard. auto = on for PCD input, off for an octree (1:1 copy)")
+    ap.add_argument("--floor-holes", type=int, default=None,
+                    help="--no-flatten builds fill holes in the floor of at most this many cells with floor voxels at the "
+                         "rim's height (0 = off; default 20 for PCD input, 0 for an octree). A 4-cell scan hole put a "
+                         "legged robot's foot through the floor")
     ap.add_argument("--keep-tmp", action="store_true", help="keep the stage files (<out>/.tmp) after a successful build")
     ap.add_argument("--resume", action="store_true",
                     help="reuse the stage files found in <out>/.tmp (closed voxels, ground) instead of recomputing")
@@ -363,7 +387,8 @@ def main(argv=None):
           ground_spike_pts=a.ground_spike_pts, ground_sheet_pts=a.ground_sheet_pts,
           ground_float_max=a.ground_float_max, ground_column_gap=a.ground_column_gap,
           ground_roof_cell=a.ground_roof_cell, workers=a.workers, keep_tmp=a.keep_tmp, resume=a.resume,
-          contact_below=a.contact_below, contact_above=a.contact_above, contact_xy=a.contact_xy)
+          contact_below=a.contact_below, contact_above=a.contact_above, contact_xy=a.contact_xy,
+          floor_spikes=None if a.floor_spikes == "auto" else a.floor_spikes == "on", floor_holes=a.floor_holes)
 
 
 if __name__ == "__main__":

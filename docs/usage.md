@@ -48,7 +48,7 @@ DDS 條件：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、domain 1�
 
 把 `Maps/<name>.pcd`（或 OctoMap `.bt` / `.ot`，見 §2.3）轉成模擬用的場景目錄 `scenes/<name>/`。`Maps/*.pcd` 和 `scenes/` 都在 `.gitignore` 裡，要自己放。
 
-**目前的預設配方**（2026-10-29，四足機器人為預設機器人之後）：`--no-flatten --close-rounds 1`，0.1 m。地板保留原始體素、只把 1–2 格的縫補起來，不平面化（有腳的機器人跨得過 ±5 cm 的掃描雜訊，平面化反而會造出假地板），輸出 `contact.npy` 給腳的碰撞用。dp_1008 用這個配方 27 秒、22 萬個 box，六種配方的幾何比較在 [2.2](#22-評估場景scriptseval_scenepy)。樓梯另外用 [2.5](#25-人工樓梯scriptsmake_stairspy) 的 `make_stairs.py` 換成精確 box。
+**目前的預設配方**（2026-10-29，四足機器人為預設機器人之後）：`--no-flatten --close-rounds 1`，0.1 m。地板保留原始體素、只把 1–2 格的縫補起來，不平面化（有腳的機器人跨得過 ±5 cm 的掃描雜訊，平面化反而會造出假地板），輸出 `contact.npy` 給腳的碰撞用。PCD 的 `--no-flatten` 建置另外做兩件地板修補（octree 輸入預設不做，維持手修樹的 1:1；`--floor-spikes on|off`、`--floor-holes N` 可改）：**刪地板上的小凸起**（坐在地板上、同層 8 連通叢集 ≤ 3 格的可站立體素，`voxel.remove_floor_spikes`）——dp_1008 有 1,406 個，G23 的 PPO 平地 policy 一腳踩上 0.1 m 的孤立凸起就觸發姿態保護；**補地板小破洞**（可達地板旁、整欄從 −0.2 到 +0.8 m 都空、8 連通 ≤ 20 格的洞，以周圍地板的高度補體素，`voxel.fill_floor_holes`，2.4 秒）——dp_1008 補 27,474 格，走廊裡一個 0.4 × 0.2 m 的掃描破洞曾讓 G23 一腳踩空。修補後 dp_1008：29 秒、220,399 個 box、可達 2,058 m²、洞 211 個 / 40 m²（修補前 913 / 87），軌跡 2,757 個取樣只剩 5 個沒地板。dp_1008 用這個配方 27 秒、22 萬個 box，六種配方的幾何比較在 [2.2](#22-評估場景scriptseval_scenepy)。樓梯另外用 [2.5](#25-人工樓梯scriptsmake_stairspy) 的 `make_stairs.py` 換成精確 box。
 
 ```bash
 docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008 --no-flatten --close-rounds 1"
@@ -308,6 +308,8 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 
 兩種模式對 ROS 的介面完全一樣（第 5 章）。`g23` 模式多兩種事件：`controller`（`state`：`connected` 第一次收到力矩指令、`stand` / `rl` / `lma` 送出模式指令、`lost` 超過 1 秒沒收到指令）和 `fall`（機身法線的 z 分量 < 0.5，每次出生 / set_pose 後只報一次）。`/sim/set_pose` 在 g23 模式會把機器人以預設關節角放到新位置、重新跑站立序列。
 
+`robot.policy_mode`（RL 用）在 `MODE RL` 前先送 `MODE <n>` 選 policy：0 = PPO 平地（實測 dp_1008 上 2 m 內就被 0.1 m 的地板凸起觸發 safety），1 = HIMLoco 崎嶇地形（預設；2026-10-29 沿 dp_1008 SLAM 軌跡走 38 m、0.4 m/s、機身 0.37 m、pitch p95 2.8°，才在 (17.9, −4.2) 觸發 safety）。
+
 控制器還沒接上時機器人只會軟倒在地上（沒有力矩）；`tests/test_g23.py` 用一個假控制器（PD 撐住預設姿勢）驗證協定、站立和事件。站立序列要等到收到第一筆力矩指令（`connected`）才開始計時，所以控制器慢慢起來也沒關係。
 
 ### 3.2 控制器：建置與一鍵啟動
@@ -322,6 +324,19 @@ scripts/run_sim.sh             # 之後照常啟動：偵測到 quadsim-g23 映�
 ```
 
 `scripts/run_sim.sh` 的規則：命令列沒有 `robot.type=ideal` 且 `quadsim-g23` 映像存在 → `QUADSIM_G23=1`（`docker/run.sh` 選那個映像、掛 `/g2`）；否則用 `quadsim:latest` 並印警告（機器人會沒有控制器）。sim_node 在 g23 模式且 `robot.controller.spawn`（預設 true）時，找 `/g2/target/release/g2_deploy_rs`（或 `robot.controller.exec`）以 `sim ros` 參數、工作目錄 `/g2` 啟動它，環境變數預設 `G2_LMA_STATE_SOURCE=ground_truth`（`robot.controller.env` 可加），`ORT_DYLIB_PATH` 自動指到 repo 裡下載好的 onnxruntime；它的輸出以 `[g2]` 前綴併進 sim 的 log，Ctrl-C 一起關；它自己掛掉會發 `controller` 事件（`state: exited`）並讓 sim 以 exit code 1 結束。找不到 binary 時只印警告，你可以在另一個終端自己跑控制器（它連 localhost UDP 即可，容器是 `--net=host`）。
+
+### 3.3 機器人層評估（`scripts/walk_g23.py`）
+
+headless、即時、不用 ROS 也不用導航堆疊：Simulator 開 g23 模式、自己帶起控制器，等站立 → 步態完成後，以 pure pursuit（對 sim 真值）沿 `Maps/<map>/poses.txt`、waypoint yaml 或直線送 cmd_vel（bang-bang：policy 對很小的非零指令不穩，所以 wz 只送 0 或 ±`--wz` 0.6、vx 只送 0 或 `--vx` 0.4）。記錄 `fall`（翻倒或步態開啟 2 秒後高度 < `robot.fall_height` 達 1 秒）、控制器的 `[SAFETY]` 鎖定（`safety`）、腳的接觸力尖峰、機身高度 / pitch、沿路徑的進度，寫到 `results/walk_g23/<時間>.json`，有跌倒或 safety 就停。這是 Phase 1 幾何指標之外的「機器人層」：機器人真的在哪裡倒、為什麼。
+
+```bash
+docker/build_g23.sh                                                                        # 一次
+QUADSIM_G23=1 docker/run.sh "python3 scripts/walk_g23.py --poses Maps/dp_1008/poses.txt --seconds 150"
+QUADSIM_G23=1 docker/run.sh "python3 scripts/walk_g23.py --line 3 --vx 0.3"              # 直走 3 m
+QUADSIM_G23=1 docker/run.sh "python3 scripts/walk_g23.py --poses ... robot.policy_mode=0"  # 換 policy
+```
+
+2026-10-29 的紀錄（dp_1008、RL、`lidar.points_per_sec=100000`，RTF 全程 1.00）：直走 3 m 無事；沿軌跡 PPO 在 1.8 m 觸發 safety（地板凸起），加凸起過濾後 2.4 m（更大的一片 0.1 m 凸起），換 HIMLoco 走到 38 m 在走廊的 0.4 × 0.2 m 掃描破洞踩空，加補洞後 **81 m / 240 秒沒有任何 safety 或跌倒**（時間到才停，機身 0.39 m、pitch p95 7°、腳力尖峰 p99 123 N）。
 
 即時性：g23 模式下 LiDAR 射線在工作執行緒跑（物理迴圈只記錄位姿），每 10 秒的 log 多印達成的 `rtf` 和 LiDAR 執行緒佔用；達成的 rtf 低於設定值的 98% 會印警告，因為控制器是 wall-clock 1 kHz，模擬變慢它就收到遲到的 telemetry。
 

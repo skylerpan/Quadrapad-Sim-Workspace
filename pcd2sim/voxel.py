@@ -253,6 +253,129 @@ def standable_mask(grid: VoxelGrid, clearance: float = 0.8, roof_min: float = 1.
     return free & roofed
 
 
+def remove_floor_spikes(grid: VoxelGrid, stand: np.ndarray, min_under: int = 5,
+                        max_cluster: int = 3) -> tuple[VoxelGrid, np.ndarray, int]:
+    """Drop small bumps on a floor: standable voxels that sit on an occupied voxel with at least `min_under`
+    occupied 8-neighbours one layer down (they stick one voxel up out of a floor) and whose 8-connected
+    cluster at that height has at most `max_cluster` voxels. SLAM floors carry such specks (a stray
+    return, a cable, a shoe); a legged robot stepping on a 0.1 m bump trips its posture limits, so they go.
+    Walls and steps (long same-height runs), furniture (a crate top has 9+ voxels) are untouched.
+    Returns (grid, stand) without the bumps and the number removed."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    codes = grid.codes
+    k = grid.keys
+    below = contains(codes, k + np.array([0, 0, -1], dtype=np.int32), grid.dims)
+    under = np.zeros(len(k), dtype=np.int32)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            if dx == 0 and dy == 0:
+                continue
+            under += contains(codes, k + np.array([dx, dy, -1], dtype=np.int32), grid.dims)
+    cand = np.flatnonzero(stand & below & (under >= min_under))
+    if len(cand) == 0:
+        return grid, stand, 0
+    # clusters over the candidates' same-height 8-neighbours (any occupied neighbour counts: a bump next to
+    # a wall or a step joins that run and survives)
+    ck = k[cand]
+    rows, cols = [], []
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            if dx == 0 and dy == 0:
+                continue
+            nk = ck + np.array([dx, dy, 0], dtype=np.int32)
+            hit = contains(codes, nk, grid.dims)
+            j = np.searchsorted(codes, grid.encode(nk[hit]))
+            rows.append(cand[hit])
+            cols.append(j)
+    rows, cols = np.concatenate(rows), np.concatenate(cols)
+    n = len(k)
+    _, lab = connected_components(coo_matrix((np.ones(len(rows), np.int8), (rows, cols)), shape=(n, n)),
+                                  directed=False)
+    size = np.bincount(lab, minlength=lab.max() + 1)
+    # a cluster is a bump only when every member is a candidate (all sit on the floor); a run touching a
+    # wall or step voxel (not a candidate) is not
+    is_cand = np.zeros(n, dtype=bool)
+    is_cand[cand] = True
+    members_ok = np.bincount(lab, weights=is_cand, minlength=len(size)) == size
+    spike = is_cand & (size[lab] <= max_cluster) & members_ok[lab]
+    keep = ~spike
+    return grid.subset(keep), stand[keep], int(spike.sum())
+
+
+def fill_floor_holes(grid: VoxelGrid, stand: np.ndarray, max_cells: int = 20,
+                     max_rounds: int = 4) -> tuple[VoxelGrid, np.ndarray, int]:
+    """Fill small holes in a raw voxel floor: empty columns next to standable voxels, grown over 8-neighbours
+    into clusters of at most `max_cells` cells (bigger ones are rooms the scan never saw, or real pits), get
+    a floor voxel at the height of the surrounding floor. A column counts as empty at height kz when it has
+    no voxel from kz - 2 to kz + 8 (nothing stands there); the fill height is the median kz of the
+    neighbouring floor voxels and every filled voxel is standable. Rounds repeat so a 3 x 3 hole closes from
+    the rim inward. Returns (grid, stand, number of voxels added). A 0.4 x 0.2 m scan hole in a corridor put
+    the G23's foot through the floor on 2026-10-29; the flattened builds filled these, the raw floor did not."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    added_total = 0
+    xy8 = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx, dy) != (0, 0)]
+    for _ in range(max_rounds):
+        codes = grid.codes
+        k = grid.keys
+        sk = k[stand]
+        # candidate columns: empty neighbours of standable voxels, at the floor voxel's height (only floor
+        # voxels with at least one empty 4-neighbour at their height seed candidates: the floor interior does not)
+        edge = np.zeros(len(sk), dtype=bool)
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            edge |= ~contains(codes, sk + np.array([dx, dy, 0], dtype=np.int32), grid.dims)
+        sk_edge = sk[edge]
+        cand = np.concatenate([sk_edge + np.array([dx, dy, 0], dtype=np.int32) for dx, dy in xy8])
+        cand = cand[np.all((cand >= 0) & (cand < grid.dims), axis=1)]
+        cand = cand[np.unique(grid.encode(cand), return_index=True)[1]]
+        empty = np.ones(len(cand), dtype=bool)
+        for dz in range(-2, 9):
+            empty &= ~contains(codes, cand + np.array([0, 0, dz], dtype=np.int32), grid.dims)
+        cand = cand[empty]
+        if len(cand) == 0:
+            break
+        # same-height floor neighbours per candidate (the rim); the hole clusters over candidates
+        s_codes = np.sort(grid.encode(sk))
+        rim = np.zeros(len(cand), dtype=np.int32)
+        for dx, dy in xy8:
+            rim += contains(s_codes, cand + np.array([dx, dy, 0], dtype=np.int32), grid.dims)
+        col = (cand[:, 0].astype(np.int64) * int(grid.dims[1]) + cand[:, 1]) * int(grid.dims[2]) + cand[:, 2]
+        order = np.argsort(col)
+        col_s = col[order]
+        rows, cols = [], []
+        for dx, dy in xy8:
+            q = ((cand[:, 0].astype(np.int64) + dx) * int(grid.dims[1]) + cand[:, 1] + dy) * int(grid.dims[2]) + cand[:, 2]
+            j = np.minimum(np.searchsorted(col_s, q), len(col_s) - 1)
+            hit = col_s[j] == q
+            rows.append(np.flatnonzero(hit))
+            cols.append(order[j[hit]])
+        rows, cols = np.concatenate(rows), np.concatenate(cols)
+        n, lab = connected_components(coo_matrix((np.ones(len(rows), np.int8), (rows, cols)),
+                                                 shape=(len(cand),) * 2), directed=False)
+        size = np.bincount(lab, minlength=n)
+        # fill the rim cells (>= 3 floor neighbours) of small clusters; the next round reaches further in
+        fill = (size[lab] <= max_cells) & (rim >= 3)
+        if not fill.any():
+            break
+        new_keys = cand[fill]
+        new_keys = new_keys[np.unique(grid.encode(new_keys), return_index=True)[1]]
+        n_new = len(new_keys)
+        fill_i = float(np.median(grid.intensity[stand])) if stand.any() else 0.0
+        zmean_new = (grid.origin[2] + (new_keys[:, 2] + 1) * grid.voxel).astype(grid.zmean.dtype)
+        keys = np.concatenate([grid.keys, new_keys.astype(np.int32)])
+        order = np.argsort(encode(keys, grid.dims), kind="stable")
+        counts = np.concatenate([grid.counts, np.full(n_new, 4, grid.counts.dtype)])
+        inten = np.concatenate([grid.intensity, np.full(n_new, fill_i, grid.intensity.dtype)])
+        zmean = np.concatenate([grid.zmean, zmean_new])
+        stand = np.concatenate([stand, np.ones(n_new, dtype=bool)])[order]
+        grid = VoxelGrid(keys[order], counts[order], inten[order], zmean[order], grid.origin, grid.voxel, grid.dims)
+        added_total += n_new
+    return grid, stand, added_total
+
+
 def contact_mask(grid: VoxelGrid, stand: np.ndarray, below: float = 0.3, above: float = 1.2,
                  xy: float = 0.3) -> np.ndarray:
     """Voxels a ground robot can touch: those within [floor - below, floor + above] of a standable voxel's
