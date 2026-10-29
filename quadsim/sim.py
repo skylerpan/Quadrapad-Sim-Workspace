@@ -178,8 +178,12 @@ class Simulator:
     def _place(self, pos, quat):
         if self.legged:
             pos = np.array([pos[0], pos[1], self.base.ground.z0 + float(self.cfg["robot"].get("spawn_height", 0.40))])
+            teleport = self.d.time > 0.0              # set_pose, not the spawn
+            if teleport:
+                self.g23.restart(self.d.time, teleport=True)   # MODE R first: the gait must not flail mid-air
             self.g23.place(pos, quat)
-            self.g23.restart(self.d.time)
+            if not teleport:
+                self.g23.restart(self.d.time)
             self.fallen = False
             self.low_since = None
         else:

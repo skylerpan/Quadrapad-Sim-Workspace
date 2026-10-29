@@ -110,6 +110,15 @@ def test_model_stands_on_the_map_with_a_fake_controller():
         assert sim.g23.sent[sim.g23.sent.index("MODE RL") - 1] == "MODE 0"
         e = sim.set_policy_mode(1)
         assert e["live"] and sim.g23.sent[-1] == "MODE 1" and e["policy_mode"] == 1
+        # a teleport while the gait runs: damping first, then RESET_SAFETY before the new stand sequence
+        n0 = len(sim.g23.sent)
+        sim.set_pose(sim.base.x + 0.3, sim.base.y, 0.0, None)
+        assert sim.g23.sent[n0] == "MODE R" and sim.g23.stage == "idle"
+        for _ in range(10):                                             # start_delay 0.1 s
+            cmd_sock.sendto(pd, ("127.0.0.1", 20101))
+            sim.control_tick()
+        seq = sim.g23.sent[n0:]
+        assert "RESET_SAFETY" in seq and seq.index("RESET_SAFETY") < seq.index("MODE STAND")
         # fall detection: lay the torso on its side
         sim.d.qpos[3:7] = [np.cos(np.pi / 4), np.sin(np.pi / 4), 0, 0]
         out = sim.control_tick()

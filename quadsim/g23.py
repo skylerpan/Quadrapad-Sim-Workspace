@@ -436,11 +436,16 @@ class G23Backend:
             pass
 
     # -- sequence ---------------------------------------------------------------------------------
-    def restart(self, t: float):
-        """(Re)start the stand -> gait sequence from sim time t (spawn, set_pose)."""
+    def restart(self, t: float, teleport: bool = False):
+        """(Re)start the stand -> gait sequence from sim time t (spawn, set_pose). A teleport while the
+        controller runs a gait trips its posture guard (safety lock), so before a set_pose the legs are put in
+        damping (MODE R) and the sequence then begins with RESET_SAFETY, as an operator would."""
         self.t0 = t
         self.t_gait = None
         self.stage = "idle" if self.auto else "manual"
+        self.reset_safety = teleport and self.connected
+        if self.reset_safety:
+            self.send_command("MODE R")
 
     def tick(self, t: float, cmd: np.ndarray, cmd_fresh: bool = True) -> list[dict]:
         """Per control tick: advance the sequence, forward cmd_vel (cmd_fresh: a /cmd_vel arrived within the
@@ -456,6 +461,9 @@ class G23Backend:
         # start_delay s past the spawn / set_pose
         ready = self.connected and t - max(self.t0, self.t_connected) >= self.start_delay
         if self.stage == "idle" and ready:
+            if getattr(self, "reset_safety", False):
+                self.send_command("RESET_SAFETY")
+                self.reset_safety = False
             self.send_command("MODE STAND")
             self.stage = "stand"
             self.t_stand = t
