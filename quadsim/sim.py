@@ -13,7 +13,7 @@ from pcd2sim import SCENE_FORMAT
 
 from .base import IdealBase, body_lift, rot_zyx
 from .config import load_scene_meta
-from .g23 import G23Backend, build_g23_spec
+from .g23 import G23Backend, RefSimOptions, build_g23_spec
 from .lidar import LidarFrame, RollingLidar
 from .model import add_map_mesh, build_mjcf
 from .proxies import BoxIndex, ProxyPool
@@ -105,7 +105,8 @@ class Simulator:
                                    f"{SCENE_FORMAT} scene (rebuild with pcd2sim.build_scene)")
             self.contact_index = BoxIndex(boxes[self.contact])       # floors included: the feet stand on them
             pos = np.array([pos[0], pos[1], self.base.ground.z0 + float(r.get("spawn_height", 0.40))])
-            spec = build_g23_spec(cfg, self.meta["gravity"], pos, r["collision_pool"])
+            self.ref_opts = RefSimOptions.from_env(r)          # the reference sim's G2_SIM_* switches
+            spec = build_g23_spec(cfg, self.meta["gravity"], pos, r["collision_pool"], self.ref_opts)
         else:
             self.contact_index = self.index
             spec = mujoco.MjSpec.from_string(build_mjcf(cfg, self.meta["gravity"], pos, r["collision_pool"]))
@@ -126,7 +127,7 @@ class Simulator:
             self.mocap_target = None
             self.acc_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "lidar_acc")]
             self.gyro_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "lidar_gyro")]
-            self.g23 = G23Backend(self.m, self.d, r, self.base_body)
+            self.g23 = G23Backend(self.m, self.d, r, self.base_body, self.ref_opts)
             self.fallen = False
             self.low_since = None
         else:
@@ -339,6 +340,7 @@ class Simulator:
             self.g23.apply_torque()
             mujoco.mj_step(self.m, self.d)
             self.step_count += 1
+            self.g23.update_imu()
             self.g23.send_telemetry(self.d.time)
             self.lidar.record_pose(t_state, self.d.site_xpos[self.lidar_site],
                                    self.d.site_xmat[self.lidar_site].reshape(3, 3))

@@ -17,7 +17,8 @@ robot:
                               # 4 = IsaacSim. Switch at run time (before stairs) with an Int32 on ros.topics.policy_mode; the
                               # controller takes MODE <n> live. PPO trips its posture guard on 0.1 m bumps the floor fixes remove
   fall_height: 0.18           # g23: torso lower than this over the floor for 1 s while walking = `fall` (collapsed)
-  motor_model: j60            # g23: J60 joint armature / dry friction / damping as in the controller's own sim (ideal = none)
+  motor_model: null           # g23: null = follow G2_SIM_MOTOR_MODEL like the controller's own sim (j60 default: armature /
+                              # dry friction / damping on the 12 joints + torque envelope); j60 | ideal here overrides it
   level_gravity: true         # g23: gravity straight down (the controller's sim); false = along the scene's fitted floor normal
   auto_stand: true            # g23: send MODE STAND start_delay s after spawn / set_pose, MODE <gait> stand_delay s later
   start_delay: 1.0
@@ -27,7 +28,9 @@ robot:
     cmd_port: 20001           # torque commands from the controller (240 bytes: kp | q | kd | dq | tau x 12)
     telemetry: [127.0.0.1:30010, 127.0.0.1:30011]   # 1 kHz state packets: controller, web GUI
     command_addr: 127.0.0.1:50051                   # text commands (MODE STAND / MODE RL / AXES vx vy wz)
-    gt_addr: null             # e.g. 127.0.0.1:30012 for the SIM_POSE ground-truth lines
+    gt_addr: null             # SIM_POSE ground-truth lines: null = G2_SIM_GT_IP/PORT (127.0.0.1:30012, as their sim), "" = off
+    ros_bridge_addr: null     # their ASCII state line for udp_ros_bridge: null = G2_SIM_ROS_BRIDGE_IP/PORT (127.0.0.1:50010)
+    ros_ascii_telemetry: null # null = G2_SIM_ROS_ASCII_TELEMETRY (on, as their sim); true / false overrides
   # ideal base (and the terrain probe / free-pose search used by both types)
   body_size: [0.70, 0.31, 0.16]   # collision box full extents (x, y, z)
   mass: 15.0

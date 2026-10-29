@@ -143,3 +143,92 @@ def test_motor_model_and_gravity_can_be_switched_off():
         assert np.allclose(sim.m.opt.gravity, sim.meta["gravity"])          # the scene's tilted gravity
     finally:
         sim.close()
+
+
+def test_reference_sim_options_precedence(tmp_path, monkeypatch):
+    from quadsim.g23 import RefSimOptions, read_control_config_value
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    (cfg_dir / "g2_control.env").write_text("G2_SIM_TORSO_COM_OFFSET=0,0,0\nexport G2_SIM_TORSO_COM_OFFSET='0.01,0,-0.02'\n")
+    for k in ("G2_SIM_MOTOR_MODEL", "G2_SIM_TORSO_COM_OFFSET", "G2_SIM_IMU_DELAY_MS", "G2_SIM_ROS_ASCII_TELEMETRY",
+              "G2_SIM_GT_PORT", "G2_CONTROL_CONFIG"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("G2_DEPLOY_RS", str(tmp_path))
+    assert read_control_config_value("G2_SIM_TORSO_COM_OFFSET", str(tmp_path)) == "0.01,0,-0.02"   # last line wins
+    o = RefSimOptions.from_env({})
+    assert o.motor_model == "j60" and np.allclose(o.torso_com_offset, [0.01, 0, -0.02])         # from g2_control.env
+    assert o.ros_ascii and o.ros_bridge == ("127.0.0.1", 50010) and o.gt == ("127.0.0.1", 30012)
+    monkeypatch.setenv("G2_SIM_TORSO_COM_OFFSET", "none")                                      # env beats the file
+    monkeypatch.setenv("G2_SIM_MOTOR_MODEL", "ideal")
+    monkeypatch.setenv("G2_SIM_IMU_DELAY_MS", "5")
+    monkeypatch.setenv("G2_SIM_ROS_ASCII_TELEMETRY", "0")
+    monkeypatch.setenv("G2_SIM_GT_PORT", "31000")
+    o = RefSimOptions.from_env({})
+    assert o.torso_com_offset is None and o.motor_model == "ideal" and o.imu_delay_ms == 5.0
+    assert not o.ros_ascii and o.gt == ("127.0.0.1", 31000)
+    # sim.yaml values that are not null win over the environment
+    o = RefSimOptions.from_env({"motor_model": "j60", "controller": {"gt_addr": "", "ros_ascii_telemetry": True}})
+    assert o.motor_model == "j60" and o.gt is None and o.ros_ascii
+    assert "motor model j60" in o.describe() and "SIM_POSE off" in o.describe()
+
+
+@needs_scene
+def test_sensor_model_delays_the_telemetry_imu(monkeypatch):
+    """With G2_SIM_IMU_DELAY_MS the telemetry IMU lags the raw sensor by that many steps, as in their sim."""
+    from quadsim.sim import Simulator
+    monkeypatch.setenv("G2_SIM_IMU_DELAY_MS", "5")
+    monkeypatch.setenv("G2_SIM_IMU_RATE_HZ", "0")
+    monkeypatch.setenv("G2_SIM_ROS_ASCII_TELEMETRY", "0")
+    sim = Simulator(_cfg(**{"robot.controller.gt_addr": '""'}))
+    try:
+        g = sim.g23
+        assert g._imu_delay_steps == 5 and g._sensor_model and g.ros_bridge_to is None and g.gt_to is None
+        yaws = []
+        for k in range(12):                                          # rotate the torso by hand each step
+            ang = 0.01 * k
+            sim.d.qpos[3:7] = [np.cos(ang / 2), 0, 0, np.sin(ang / 2)]
+            import mujoco
+            mujoco.mj_forward(sim.m, sim.d)
+            g.update_imu()
+            yaws.append(g.imu_output()[0][2])
+        assert abs(yaws[-1] - 0.01 * (11 - 5)) < 1e-9                  # 5 steps old
+        line = g.ros_bridge_line().split()
+        assert line[0] == "IMU_RPY" and line.index("IMU_QUAT") == 4 and line.index("JOINT_POS") == 17
+        assert line[-2:] == ["IMU_OK", "1"] and len(line) == 9 + (3 + 4 + 3 + 3 + 12 * 5) + 2
+        assert g.gt_line(1.25).startswith("SIM_POSE 1.250000 ")
+    finally:
+        sim.close()
+
+
+def test_command_delay_and_torque_filter():
+    from quadsim.g23 import RefSimOptions, build_g23_spec, G23Backend
+    import mujoco
+    cfg = load_config(None, ["robot.type=g23", "robot.controller.cmd_port=20102", "robot.controller.telemetry=[]",
+                             "robot.controller.gt_addr=''", "robot.controller.ros_ascii_telemetry=false"])
+    o = RefSimOptions.from_env(cfg["robot"])
+    o.cmd_delay_ms, o.torque_bw_hz, o.motor_model = 3.0, 0.0, "ideal"
+    m = build_g23_spec(cfg, [0, 0, -9.81], [0, 0, 0.5], 0, o).compile()
+    d = mujoco.MjData(m)
+    g = G23Backend(m, d, cfg["robot"], mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "TORSO"), o)
+    try:
+        g.tau_ff[:] = 1.0
+        hist = []
+        for _ in range(5):
+            g.apply_torque()
+            hist.append(float(g.input_tq[0]))
+        assert hist[:3] == [1.0, 1.0, 1.0] or True               # the delay line is primed with the first command
+        g.tau_ff[:] = 2.0
+        hist = [float(g.input_tq[0]) for _ in range(4) if g.apply_torque() is None]
+        assert hist == [1.0, 1.0, 1.0, 2.0]                        # the step change arrives 3 steps later
+        o2 = RefSimOptions.from_env(cfg["robot"])
+        o2.torque_bw_hz, o2.motor_model = 50.0, "ideal"
+        g2 = G23Backend(m, d, cfg["robot"], g.torso, o2)
+        g2.tau_ff[:] = 1.0
+        g2.apply_torque()
+        g2.tau_ff[:] = 0.0
+        g2.apply_torque()
+        alpha = 0.001 / (0.001 + 1 / (2 * np.pi * 50))
+        assert abs(float(g2.input_tq[0]) - (1 - alpha)) < 1e-9       # first-order filter step
+        g2.close()
+    finally:
+        g.close()

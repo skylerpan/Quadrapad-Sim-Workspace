@@ -312,6 +312,25 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 
 控制器還沒接上時機器人只會軟倒在地上（沒有力矩）；`tests/test_g23.py` 用一個假控制器（PD 撐住預設姿勢）驗證協定、站立和事件。站立序列要等到收到第一筆力矩指令（`connected`）才開始計時，所以控制器慢慢起來也沒關係。
 
+**和參考模擬器的對齊**（原則：quadsim 的 G23 要和 `g2_deploy_rs/interface/robot/simulation/mujoco_simulation_G23.py` 一樣，控制器才看到同一隻狗；有差異要寫在這張表，有疑問用 `scripts/idle_drift_theirs.py` 在同一個容器跑他們的 sim 對照，不要單方面「改好」機器人）：
+
+| 項目 | 他們的 sim | quadsim |
+|---|---|---|
+| 模型 | `robot/g23/mjcf/g23_mjcf.xml` | 同一份（`robot/g23/`，provenance.json 有 sha） |
+| 時間步 / 積分器 | 1 ms / xml 預設（Euler） | 同 |
+| 重力 | 垂直向下 | 同（`robot.level_gravity: true`；false 時沿場景地板法線，給理想底盤用） |
+| 地板 | 無限平面 | 場景 box 的代理池（含地板，`contact.npy`），摩擦同為 MuJoCo 預設、機器人碰撞 class 取最大 |
+| 關節模型 | `G2_SIM_MOTOR_MODEL` j60：armature 1.1e-4·減速比²、乾摩擦 0.40/0.40/0.45、黏滯阻尼；ideal = 無 | 同一個環境變數、同數值（`robot.motor_model` 非 null 時覆寫） |
+| 力矩 | kp(q−q)+kd(dq−dq)+tau，J60 速度-力矩包絡，可選 `G2_SIM_CMD_DELAY_MS` 延遲線、`G2_SIM_TORQUE_BW_HZ` 一階濾波 | 同 |
+| 機身 COM 偏移 / IMU 位置 | `G2_SIM_TORSO_COM_OFFSET`（也讀 g2_control.env，同一套優先序）、`G2_SIM_IMU_POS` | 同 |
+| IMU 模型 | `G2_SIM_IMU_AHRS_TAU`（互補濾波 roll/pitch）、`G2_SIM_IMU_RATE_HZ`（取樣保持）、`G2_SIM_IMU_DELAY_MS` | 同 |
+| telemetry | 1 kHz 228 bytes 到 30010 / 30011；ASCII 狀態行到 ROS bridge 50010（`G2_SIM_ROS_ASCII_TELEMETRY`，預設開）；`SIM_POSE` 到 30012 | 同（三個目的地都預設開；`robot.controller.*` 可覆寫） |
+| 馬達溫度 | `G2_SIM_MOTOR_TEMP=1` 熱模型，只影響 ASCII 行的 JOINT_TEMP | **沒做**，JOINT_TEMP 固定 0 |
+| 推力測試 | 鍵盤 Enter 側推 | 沒有（用 `/sim/set_pose` 或自己發力） |
+| 起始姿勢 | torso 在 xml 位置落下、關節預設角 | torso 在地板上 0.40 m 落下、關節預設角 |
+
+啟動 log 的 `reference sim options: ...` 會印解析後的設定。
+
 ### 3.2 控制器：建置與一鍵啟動
 
 控制器（`g2_deploy_rs`，Rust）在**容器裡編、容器裡跑**，host 不需要 Rust 或 OCS2。第二個映像 `quadsim-g23:latest`（`docker/Dockerfile.g23`，FROM quadsim:latest 加 Rust 工具鏈、cmake / ninja / Eigen、python3-venv）由 `docker/build_g23.sh` 建；控制器 repo 以 volume 掛在容器的 `/g2`（host 路徑 `G2_DEPLOY_RS`，預設本 repo 旁邊的 `../g2_deploy_rs/g2_deploy_rs`），編譯產物（`target/`、`onnxruntime-linux-*`、`.venv_lma`、`build/lma_bridge`）留在那個目錄、屬於你。
