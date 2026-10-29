@@ -19,7 +19,7 @@ docker build -t quadsim:latest docker/
 
 # 2. Build the default scene: a 1:1 conversion of the hand-edited OctoMap (about 2 s)
 docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0"
-#    PCD maps: scripts/build_scenes.sh builds every Maps/*.pcd with ground flattening (docs/usage.md section 2)
+#    PCD maps: python3 -m pcd2sim.build_scene --pcd Maps/<name>.pcd --out scenes/<name> (ground flattening on; docs/usage.md section 2)
 
 # 3. Start the sim (defaults to scenes/dp_1012, real time)
 scripts/run_sim.sh
@@ -140,7 +140,7 @@ Body roll / pitch standard deviation while walking, before → after ground flat
 | `config/sim.yaml` | all parameters |
 | `config/stairs_dp_full.yaml`, `config/stairs_dp_bt.yaml` | synthetic-stair specs for the dp_full (0.03 m PCD) and dp_bt (0.1 m 1:1 octree) scenes (`scripts/make_stairs.py`, docs/usage.md section 2.5) |
 | `config/nav_waypoints_*.yaml` | waypoint sets for the navigation goal-loop test (`dp_1008*`: 1F of dp_1008; `dp_2f`: 2F of `scenes/dp`); one-off probe sets live in `config/archive/` |
-| `scripts/` | `build_scenes.sh`, `run_sim.sh`, `bench.py`, `nav_goal_loop.sh` / `nav_goal_loop.py` (navigation goal-loop test), `make_waypoints_from_poses.py`, `fix_pcd_plane.py` (synthetic ground layer), `eval_scene.py` (scene quality), `make_stairs.py` (replace scanned stairs with clean 16 cm steps), `bt_to_pcd.py` / `deploy_octomap_surface.py` (hand-edited OctoMap -> surface PCD for the planner) |
+| `scripts/` | `run_sim.sh`, `bench.py`, `nav_goal_loop.sh` / `nav_goal_loop.py` (navigation goal-loop test), `make_waypoints_from_poses.py`, `fix_pcd_plane.py` (synthetic ground layer), `eval_scene.py` (scene quality), `make_stairs.py` (replace scanned stairs with clean 16 cm steps), `bt_to_pcd.py` / `deploy_octomap_surface.py` (hand-edited OctoMap -> surface PCD for the planner) |
 | `docker/` | Dockerfile, `run.sh`, minimal `livox_ros_driver2` message package |
 | `docs/` | `usage.md` (usage guide by task), `pcd-to-sim-architecture.md` (design); `archive/`: dated test records and the dp_1012 build parameter sweep |
 | `tests/` | unit tests (PCD, OctoMap parsing and octree builds, voxels and box merging, ground flattening, proxies, sensor timing, collision check, CustomMsg/PointCloud2 serialization, synthetic stairs) |

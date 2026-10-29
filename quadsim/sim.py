@@ -29,7 +29,7 @@ def _warn_stale_scene(scene_dir: str, meta: dict):
         if st.st_size != meta.get("source_pcd_size") or abs(st.st_mtime - meta["source_pcd_mtime"]) > 1e-3:
             why.append(f"{src} changed since the build")
     if why:
-        warnings.warn(f"scene {scene_dir} looks stale ({'; '.join(why)}); rebuild with scripts/build_scenes.sh",
+        warnings.warn(f"scene {scene_dir} looks stale ({'; '.join(why)}); rebuild with pcd2sim.build_scene (flags in meta.json build_args)",
                       stacklevel=3)
 
 

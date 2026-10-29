@@ -19,7 +19,7 @@ docker build -t quadsim:latest docker/
 
 # 2. 建預設場景：手修 OctoMap 的純 1:1 轉換（約 2 秒）
 docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0"
-#    PCD 地圖：scripts/build_scenes.sh 會把每個 Maps/*.pcd 建成帶地面平面化的場景（docs/usage.md §2）
+#    PCD 地圖：python3 -m pcd2sim.build_scene --pcd Maps/<name>.pcd --out scenes/<name>（預設開地面平面化；docs/usage.md §2）
 
 # 3. 啟動模擬（預設 scenes/dp_1012，即時速度）
 scripts/run_sim.sh
@@ -140,7 +140,7 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
 | `config/sim.yaml` | 所有參數 |
 | `config/stairs_dp_full.yaml`、`config/stairs_dp_bt.yaml` | dp_full（0.03 m PCD）與 dp_bt（0.1 m 1:1 octree）場景的人工樓梯 spec（`scripts/make_stairs.py`，docs/usage.md §2.5） |
 | `config/nav_waypoints_*.yaml` | 導航下點迴圈測試的 waypoint 集（`dp_1008*`：dp_1008 的 1F；`dp_2f`：`scenes/dp` 的 2F）；一次性的探點集在 `config/archive/` |
-| `scripts/` | `build_scenes.sh`、`run_sim.sh`、`bench.py`、`nav_goal_loop.sh` / `nav_goal_loop.py`（導航下點迴圈測試）、`make_waypoints_from_poses.py`、`fix_pcd_plane.py`（合成地面層）、`eval_scene.py`（場景品質）、`make_stairs.py`（把掃描樓梯換成乾淨的 16 cm 人工階梯）、`bt_to_pcd.py` / `deploy_octomap_surface.py`（手修 OctoMap → 表面 PCD 部署給 planner） |
+| `scripts/` | `run_sim.sh`、`bench.py`、`nav_goal_loop.sh` / `nav_goal_loop.py`（導航下點迴圈測試）、`make_waypoints_from_poses.py`、`fix_pcd_plane.py`（合成地面層）、`eval_scene.py`（場景品質）、`make_stairs.py`（把掃描樓梯換成乾淨的 16 cm 人工階梯）、`bt_to_pcd.py` / `deploy_octomap_surface.py`（手修 OctoMap → 表面 PCD 部署給 planner） |
 | `docker/` | Dockerfile、`run.sh`、最小化的 `livox_ros_driver2` 訊息套件 |
 | `docs/` | `usage.md`（依任務分章的使用手冊）、`pcd-to-sim-architecture.md`（設計）；`archive/`：有日期的測試紀錄和 dp_1012 建場景參數掃描 |
 | `tests/` | 單元測試（PCD、體素和 box 合併、地面平面化、碰撞代理、感測器時間、碰撞檢查、CustomMsg/PointCloud2 序列化、人工樓梯） |

@@ -11,7 +11,7 @@
 |---|---|---|---|
 | 建 Docker 映像檔 | `docker build -t quadsim:latest docker/` | 主機 | [1](#1-環境與容器) |
 | 進容器開 shell | `docker/run.sh` | 主機 | [1](#1-環境與容器) |
-| 把 PCD 地圖轉成場景 | `scripts/build_scenes.sh` | 主機 | [2](#2-建場景pcd--scenes) |
+| 把 PCD / OctoMap 轉成場景 | `docker/run.sh "python3 -m pcd2sim.build_scene ..."` | 主機 | [2](#2-建場景pcd--scenes) |
 | 啟動模擬器 | `scripts/run_sim.sh [參數]` | 主機 | [3](#3-跑模擬) |
 | 開 MuJoCo viewer / RViz | `QUADSIM_GUI=1 scripts/run_sim.sh --viewer` | 主機（桌面終端機） | [4](#4-畫面gui) |
 | 看 topic / frame 名稱 | 讀 `config/sim.yaml` 的 `ros:` 區塊 | — | [5](#5-ros-2-介面) |
@@ -49,9 +49,8 @@ DDS 條件：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、domain 1�
 把 `Maps/<name>.pcd`（或 OctoMap `.bt` / `.ot`，見 §2.3）轉成模擬用的場景目錄 `scenes/<name>/`。`Maps/*.pcd` 和 `scenes/` 都在 `.gitignore` 裡，要自己放。
 
 ```bash
-scripts/build_scenes.sh                       # Maps/*.pcd 全部建，額外參數會傳給 build_scene
-scripts/build_scenes.sh --voxel 0.1 --ground-fill 12
-docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008"   # 只建一張
+docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008"   # PCD，預設參數（0.1 m、地面平面化）
+docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008 --voxel 0.1 --ground-fill 12"
 docker/run.sh "python3 -m pcd2sim.build_scene --help"
 ```
 
