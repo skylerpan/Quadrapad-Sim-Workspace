@@ -346,6 +346,16 @@ QUADSIM_G23=1 docker/run.sh "python3 scripts/parity_g23.py"      # 約 40 s
 
 這個測試抓到兩個差異（都已修）：armature 在 spec 裡套 vs 編譯後套（上表）；代理池改 box 大小時沒改代理 body 的 BVH 節點，MuJoCo mid-phase 用編譯時的 5 cm 盒子剔除，多 geom 的 body（torso、hip）只有離代理中心 5 cm 內才會碰到（腳是單 geom，所以站得住、翻倒時機身卻穿地）。改了 quadsim/g23.py 或 proxies.py 就重跑一次。
 
+**看他們的 sim 本人** `scripts/run_theirs.py`：在同一個容器開他們的 `mujoco_simulation_G23.py`（viewer）和 Rust 控制器，送站立序列後掛著；和 quadsim g23 模式用同樣的埠（20001 / 30010 / 50051），先把 quadsim 的容器停掉：
+
+```bash
+QUADSIM_G23=1 QUADSIM_GUI=1 docker/run.sh "python3 scripts/run_theirs.py --scene stair"   # flat | stair | terrain
+python3 scripts/run_theirs.py --send "MODE 1"                       # 在主機上也能送（host network）
+python3 scripts/run_theirs.py --send "AXES 0.4 0 0" --repeat 8      # 10 Hz 連送 8 秒（控制器 300 ms watchdog）
+```
+
+`stair` 是他們的 mixed terrain：出生點前方 1 m 三條各 5 階的樓梯，y=+2.2 10 cm、y=0 15 cm、y=−2.2 20 cm，後方一片 4–14 cm 的亂石磚；`terrain` 是坡道 / 拱橋 / 斜坡。`--policy` 預設 0（PPO），`--no-stand` 只開兩個程式自己下 MODE。`scripts/idle_drift_theirs.py` 用同一組啟動函式。
+
 ### 3.2 控制器：建置與一鍵啟動
 
 控制器（`g2_deploy_rs`，Rust）在**容器裡編、容器裡跑**，host 不需要 Rust 或 OCS2。第二個映像 `quadsim-g23:latest`（`docker/Dockerfile.g23`，FROM quadsim:latest 加 Rust 工具鏈、cmake / ninja / Eigen、python3-venv）由 `docker/build_g23.sh` 建；控制器 repo 以 volume 掛在容器的 `/g2`（host 路徑 `G2_DEPLOY_RS`，預設本 repo 旁邊的 `../g2_deploy_rs/g2_deploy_rs`），編譯產物（`target/`、`onnxruntime-linux-*`、`.venv_lma`、`build/lma_bridge`）留在那個目錄、屬於你。

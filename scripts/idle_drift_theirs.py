@@ -13,11 +13,12 @@ from __future__ import annotations
 import argparse
 import math
 import os
-import signal
 import socket
-import subprocess
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from run_theirs import send, start_controller, start_sim, stop_all  # noqa: E402
 
 
 def main(argv=None):
@@ -27,31 +28,13 @@ def main(argv=None):
     ap.add_argument("--repo", default=os.environ.get("G2_DEPLOY_RS", "/g2"))
     a = ap.parse_args(argv)
     repo = a.repo
-    sim_dir = os.path.join(repo, "interface", "robot", "simulation")
-    env = dict(os.environ, G2_SIM_HEADLESS="1", G2_SIM_ROS_ASCII_TELEMETRY="0", G2_SIM_SCENE="flat",
-               PYTHONUNBUFFERED="1")
-    try:
-        import colorama  # noqa: F401  (their sim imports it)
-    except ImportError:
-        subprocess.run([sys.executable, "-m", "pip", "install", "--user", "-q", "colorama"], check=False)
     gt = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     gt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     gt.bind(("127.0.0.1", 30012))
     gt.settimeout(1.0)
-    sim = subprocess.Popen([sys.executable, "mujoco_simulation_G23.py", "--scene", "flat", "--headless"], cwd=sim_dir,
-                           env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    cenv = dict(os.environ, G2_LMA_STATE_SOURCE="ground_truth")
-    lib = os.path.join(repo, "onnxruntime-linux-aarch64-1.19.2", "lib", "libonnxruntime.so")
-    if os.path.exists(lib):
-        cenv["ORT_DYLIB_PATH"] = lib
+    sim = start_sim(repo, "flat", headless=True)
     time.sleep(2.0)
-    ctl = subprocess.Popen([os.path.join(repo, "target", "release", "g2_deploy_rs"), "sim", "ros"], cwd=repo, env=cenv,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    cmd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    def send(text):
-        cmd.sendto((text + "\n").encode(), ("127.0.0.1", 50051))
-        print(f"[theirs] sent {text}", flush=True)
+    ctl = start_controller(repo)
 
     def yaw_now():
         line = None
@@ -92,12 +75,7 @@ def main(argv=None):
         print(f"[theirs] policy {a.policy}: idle {dt:.1f} s, yaw {math.degrees(yaw_acc):.2f} deg "
               f"({math.degrees(yaw_acc) / dt:.3f} deg/s), drift {math.hypot(x - x0, y - y0):.3f} m", flush=True)
     finally:
-        for p in (ctl, sim):
-            try:
-                p.send_signal(signal.SIGINT)
-                p.wait(timeout=3)
-            except Exception:  # noqa: BLE001
-                p.kill()
+        stop_all(ctl, sim)
     return 0
 
 
