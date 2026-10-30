@@ -346,6 +346,8 @@ QUADSIM_G23=1 docker/run.sh "python3 scripts/parity_g23.py"      # 約 40 s
 
 這個測試抓到兩個差異（都已修）：armature 在 spec 裡套 vs 編譯後套（上表）；代理池改 box 大小時沒改代理 body 的 BVH 節點，MuJoCo mid-phase 用編譯時的 5 cm 盒子剔除，多 geom 的 body（torso、hip）只有離代理中心 5 cm 內才會碰到（腳是單 geom，所以站得住、翻倒時機身卻穿地）。改了 quadsim/g23.py 或 proxies.py 就重跑一次。
 
+**站立自旋是 policy 的**（2026-10-30，在他們的 sim 用 `idle_drift_theirs.py` 量，35 s × 3）：HIMLoco J60 模型 1.42–1.43 °/s、`G2_SIM_MOTOR_MODEL=ideal` 1.44–1.51 °/s，PPO 兩者都 0.00；關節乾摩擦 / 阻尼 / 轉子慣量拿掉自旋不變，所以不是 sim 的關節模型，是 `policy_himloco.onnx` 本身的不對稱（它沒帶訓練 metadata，查不到來源）。sim 這邊不補 yaw 修正，導航端持續送 cmd_vel 修航向。
+
 **看他們的 sim 本人** `scripts/run_theirs.py`：在同一個容器開他們的 `mujoco_simulation_G23.py`（viewer）和 Rust 控制器，送站立序列後掛著；和 quadsim g23 模式用同樣的埠（20001 / 30010 / 50051），先把 quadsim 的容器停掉：
 
 ```bash
