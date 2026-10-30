@@ -191,12 +191,9 @@ def build_g23_spec(cfg: dict, gravity, spawn_pos, n_proxies: int, opts: RefSimOp
     # Their sim has gravity straight down. The scene's gravity follows the fitted floor normal (the ideal
     # base's level map frame); fed to the policy it put the accelerometer 0.5-1 deg off the rpy.
     spec.option.gravity = [0.0, 0.0, -9.81] if r.get("level_gravity", True) else list(gravity)
-    if opts.motor_model == "j60":
-        for i, name in enumerate(JOINTS):
-            j = spec.joint(name)
-            j.armature = J60_ARMATURE[i % 3]
-            j.frictionloss = J60_FRICTION[i % 3]
-            j.damping = [J60_DAMPING[i % 3], 0.0, 0.0]        # MjsJoint.damping takes a 3-vector (hinge uses [0])
+    # The J60 joint model is applied to the compiled model in G23Backend, after mj compile, exactly as their
+    # _apply_motor_model does: the compiler's constraint weights (dof_invweight0 / body_invweight0, hence the
+    # contact and friction regularisation) are computed without the armature on their side, and must be here too.
     if opts.imu_pos is not None:
         spec.site("imu_site").pos = opts.imu_pos.tolist()
     spec.delete(spec.geom("floor"))
@@ -232,6 +229,10 @@ class G23Backend:
         self.root = m.body_rootid[torso_body]
         self.acc_adr = m.sensor_adr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "imu_acc")]
         self.gyro_adr = m.sensor_adr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")]
+        if self.opts.motor_model == "j60":                  # their _apply_motor_model (post-compile, see build_g23_spec)
+            m.dof_armature[self.jv] = np.tile(J60_ARMATURE, 4)
+            m.dof_frictionloss[self.jv] = np.tile(J60_FRICTION, 4)
+            m.dof_damping[self.jv] = np.tile(J60_DAMPING, 4)
         if self.opts.torso_com_offset is not None:          # their _apply_torso_com_offset
             m.body_ipos[torso_body] += self.opts.torso_com_offset
         self.kp = np.zeros(12)

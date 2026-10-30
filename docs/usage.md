@@ -312,7 +312,7 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 
 控制器還沒接上時機器人只會軟倒在地上（沒有力矩）；`tests/test_g23.py` 用一個假控制器（PD 撐住預設姿勢）驗證協定、站立和事件。站立序列要等到收到第一筆力矩指令（`connected`）才開始計時，所以控制器慢慢起來也沒關係。
 
-**和參考模擬器的對齊**（原則：quadsim 的 G23 要和 `g2_deploy_rs/interface/robot/simulation/mujoco_simulation_G23.py` 一樣，控制器才看到同一隻狗；有差異要寫在這張表，有疑問用 `scripts/idle_drift_theirs.py` 在同一個容器跑他們的 sim 對照，不要單方面「改好」機器人）：
+**和參考模擬器的對齊**（原則：quadsim 的 G23 要和 `g2_deploy_rs/interface/robot/simulation/mujoco_simulation_G23.py` 一樣，控制器才看到同一隻狗；有差異要寫在這張表，有疑問先跑 `scripts/parity_g23.py`（下面），行為層再用 `scripts/idle_drift_theirs.py` 在同一個容器跑他們的 sim 對照，不要單方面「改好」機器人）：
 
 | 項目 | 他們的 sim | quadsim |
 |---|---|---|
@@ -328,8 +328,23 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 | 馬達溫度 | `G2_SIM_MOTOR_TEMP=1` 熱模型，只影響 ASCII 行的 JOINT_TEMP | **沒做**，JOINT_TEMP 固定 0 |
 | 推力測試 | 鍵盤 Enter 側推 | 沒有（用 `/sim/set_pose` 或自己發力） |
 | 起始姿勢 | torso 在 xml 位置落下、關節預設角 | torso 在地板上 0.40 m 落下、關節預設角 |
+| 關節模型套用時機 | 編譯**之後**改 `dof_armature` 等（compiler 算的 `dof_invweight0` / `body_invweight0` 沒含 armature，接觸與摩擦的正則化跟著變） | 同：在 `G23Backend` 對編譯後的模型套，不在 MjSpec 裡（2026-10-30 之前在 spec 裡，接觸剛度差 30%） |
 
 啟動 log 的 `reference sim options: ...` 會印解析後的設定。
+
+**證偽測試** `scripts/parity_g23.py`：在同一個 process 直接 import 他們的 `MuJoCoSimulation` 類別（flat 場景、不開 socket）和 quadsim 的後端，三層比對，任何一行不是零就是不一樣：
+
+```bash
+QUADSIM_G23=1 docker/run.sh "python3 scripts/parity_g23.py"      # 約 40 s
+```
+
+| 層 | 內容 | 2026-10-30 結果 |
+|---|---|---|
+| A 模型 | 兩邊套完關節模型 / COM / IMU 後，每個 joint、body、geom、actuator、sensor、option 欄位逐一比 | 0 差異 |
+| B telemetry | 把兩邊設成同一個狀態，228 bytes 封包、ASCII 狀態行、`SIM_POSE` 行 | 位元組相同 |
+| C 動力學 | 同一起始狀態、同一串 1 kHz 指令（PD 撐住 → 1 Hz 關節正弦 → 120 N 側推翻倒），逐步比軌跡；另跑「他們的模型 + box 地板」當第三條線，分辨機器人模型差異和地板幾何差異 | quadsim 對「他們 + box 地板」6 s 內 ≤ 1e-11（浮點累積）；「他們 + box 地板」對「他們 + 平面」1e-4（box / 平面碰撞幾何，翻倒時才出現） |
+
+這個測試抓到兩個差異（都已修）：armature 在 spec 裡套 vs 編譯後套（上表）；代理池改 box 大小時沒改代理 body 的 BVH 節點，MuJoCo mid-phase 用編譯時的 5 cm 盒子剔除，多 geom 的 body（torso、hip）只有離代理中心 5 cm 內才會碰到（腳是單 geom，所以站得住、翻倒時機身卻穿地）。改了 quadsim/g23.py 或 proxies.py 就重跑一次。
 
 ### 3.2 控制器：建置與一鍵啟動
 
