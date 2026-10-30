@@ -51,7 +51,8 @@ robot:
   collision_pool: 256         # number of mocap proxy boxes (g23: the window holds ~110 contact boxes at 0.6 m on a 0.1 m scene)
 
 lidar:                        # Livox Mid-360-like, rolling (per-point time)
-  mount_xyz: [0.25, 0.0, 0.10]    # in base_link
+  mount_xyz: [0.195, 0.0, 0.155]  # in base_link: the robot URDF's base_link -> lidar_top joint (syncai_bringup G23.urdf)
+  mount_rpy: [0.0, 0.25, 0.0]     # rad, URDF rpy: the Mid-360 is pitched 0.25 rad on the mount; the cloud stays in the sensor frame, TF carries the tilt
   rate_hz: 10
   points_per_sec: 200000
   fov_deg: [-7.0, 52.0]

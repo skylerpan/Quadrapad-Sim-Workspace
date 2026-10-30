@@ -571,7 +571,7 @@ python3 scripts/make_waypoints_from_poses.py Maps/dp_1008/poses.txt --spacing 8 
 | `scene`、`spawn` | 預設場景目錄、出生點 `[x, y, yaw, z_floor]` |
 | `physics` | `timestep`（400 Hz）、`control_hz`（50）、`rtf` |
 | `robot` | 理想底盤：機身尺寸、站高（沿腳平面法線量，機身底面在樓梯上和腳平面平行）、腳位、`max_step_up/down`、`max_feet_over_gap`、`max_slope_deg`（四隻腳的平面：手畫 0.2 m 深踏板是 46°，預設 50）、`attitude_tau`、`vel_limits` / `acc_limits`、`cmd_tau`、`cmd_timeout`、碰撞代理池大小。roll / pitch / 高度取四隻腳高度（各 3×3 射線取中位數）構成的平面，碰撞盒跟著機身一起傾斜 |
-| `lidar` | Mid-360 參數：安裝位置、頻率、點數、FOV、距離、雜訊（掃描樣式固定為合成的非重複樣式） |
+| `lidar` | Mid-360 參數：安裝位置 `mount_xyz` / `mount_rpy`（base_link 座標，照機器人 URDF 的 `base_link → lidar_top`：0.195 / 0 / 0.155 m、pitch 0.25 rad；點雲在感測器座標，傾斜由 TF 帶）、頻率、點數、FOV、距離、雜訊（掃描樣式固定為合成的非重複樣式） |
 | `imu` | 頻率、雜訊、bias random walk（加速度單位固定為 g，和 livox_ros_driver2 相同） |
 | `viewer` | `shadows`、`sync_hz` |
 | `ros` | frame 名、`publish_gt_tf`、`publish_custom_msg`、`publish_pointcloud2`、`pointcloud2_format`、`publish_map_cloud`、各 topic 名 |
