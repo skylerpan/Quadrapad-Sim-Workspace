@@ -137,15 +137,23 @@ def test_a_rejected_behavior_is_resent_after_a_second_then_given_up():
 
 
 def test_policy_mode_maps_to_behaviors_and_unknown_slots_are_refused():
-    fake = _fake()
+    fake = _fake(handover_s=0.1)                                            # a second request would supersede the stand
     cfg, g = _backend()
     try:
-        for k in range(4):
+        _exchange(g, 0.0)                                                   # connected + stand (start_delay 0)
+        _wait(lambda: fake.behavior == "stand")                             # stand_delay 0 here: let it land first
+        for k in range(1, 4):
             _exchange(g, 0.001 * k)
+        _wait(lambda: fake.behavior == "rl_fcn")
         e = g.set_policy_mode(1, 2.0)
         assert e["live"] and e["behavior"] == "rl_him" and g.behavior == "rl_him"
-        assert g.sent[-2:] == ["stand", "rl_him"]                           # one edge at a time: by way of stand
+        assert g.sent[-1] == "stand"                                        # one edge at a time: stand first ...
+        _wait(lambda: fake.behavior == "stand")
+        for k in range(3):
+            _exchange(g, 2.1 + 0.001 * k)
+        assert g.sent[-1] == "rl_him"                                       # ... the behavior once stand is reported
         _wait(lambda: fake.behavior == "rl_him")
+        assert g.sent.count("rl_him") == 1
         n = len(g.sent)
         e = g.set_policy_mode(4, 3.0)
         assert e["rejected"] and not e["live"] and len(g.sent) == n and g.behavior == "rl_him"
@@ -223,8 +231,14 @@ def test_model_stands_on_the_map_with_the_fake_motorcontrol():
         sim.set_cmd(0.5, 0.0, -0.2)
         sim.control_tick()
         assert sim.g23.sent[-1] == "vel 0.500 0.000 -0.200"
+        n1 = len(sim.g23.sent)
         e = sim.set_policy_mode(1)
-        assert e["live"] and sim.g23.sent[-2:] == ["stand", "rl_him"]
+        assert e["live"] and sim.g23.sent[n1] == "stand"
+        for _ in range(10):
+            time.sleep(0.002)
+            sim.control_tick()
+        switch = [s for s in sim.g23.sent[n1:] if not s.startswith("vel")]
+        assert switch == ["stand", "rl_him"]                                 # the behavior once the controller reported stand
         n0 = len(sim.g23.sent)
         sim.set_pose(sim.base.x + 0.3, sim.base.y, 0.0, None)
         assert sim.g23.sent[n0] == "rest" and sim.g23.stage == "idle"

@@ -66,6 +66,7 @@ class MotorControlBackend(G23Physics):
         self._pending: str | None = None           # behavior requested, not yet accepted
         self._retry_at: float | None = None
         self._retries = 0
+        self._after_stand: str | None = None       # behavior to request once the controller reports stand
         self.seq = StandSequence(bool(robot_cfg.get("auto_stand", True)), robot_cfg.get("start_delay", 1.0),
                                  robot_cfg.get("stand_delay", 4.0), self.behavior)
         self.sent: list[str] = []
@@ -179,6 +180,9 @@ class MotorControlBackend(G23Physics):
             if isinstance(line, Status):
                 self.status = line
                 self._note_stop(line.stop, t, events)
+                if self._after_stand and line.behavior == "stand" and line.moving_to is None:
+                    behavior, self._after_stand = self._after_stand, None
+                    self._request(behavior)
             elif isinstance(line, Request):
                 self.last_request = line
                 if line.target == self._pending:
@@ -203,7 +207,7 @@ class MotorControlBackend(G23Physics):
     def restart(self, t: float, teleport: bool = False):
         """(Re)start the stand -> behavior sequence from sim time t (spawn, set_pose): rest before a teleport,
         reset before the new stand (a stop the teleport may have tripped is cleared), as an operator would."""
-        self._pending = None
+        self._pending = self._after_stand = None
         for intent in self.seq.restart(t, teleport):
             self._send(intent)
 
@@ -237,10 +241,12 @@ class MotorControlBackend(G23Physics):
         self.behavior = self.seq.gait_name = behavior
         live = self.stage == "gait"
         if live:
-            # the controller admits one edge at a time and the RL behaviors only touch stand: back to stand first,
-            # then the new behavior (rejected until the stand has settled: the retry picks it up)
+            # the controller admits one edge at a time, keeps only the latest request, and the RL behaviors only
+            # touch stand: back to stand first, the new behavior once stand is reported (and rejected until the
+            # stand has settled: the retry picks it up)
+            self._pending = None
+            self._after_stand = behavior
             self.send_command("stand")
-            self._request(behavior)
         return {"type": "controller", "state": "policy", "policy_mode": int(mode), "behavior": behavior, "t": t,
                 "live": live}
 

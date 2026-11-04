@@ -9,7 +9,8 @@ zeros in `rest`, a PD hold of the default standing pose otherwise. On the operat
 words (rest, stand, rl_fcn, rl_him, gait_mpc, reset, resume, estop, vel x y w) and replies like the controller:
 `kind=request` with the fate of a switch, `kind=status` whenever something changed, `kind=event type=switched`.
 Scripted faults: `reject_once` names behaviors whose first request is rejected (predecessor_not_settled),
-`reject_always` behaviors never admitted, and
+`reject_always` behaviors never admitted, `handover_s` makes a switch take that long (a newer request supersedes a
+pending one, as the controller does), and
 `inject_stop(kind)` latches a stop that only `reset` clears, as the controller does.
 """
 from __future__ import annotations
@@ -32,8 +33,10 @@ EDGES = {("rest", "stand"), ("stand", "rest"), ("stand", "gait_mpc"), ("gait_mpc
 class FakeMotorControl:
     def __init__(self, cmd_to=("127.0.0.1", 40001), joint_port: int = 40002, base_port: int = 40003,
                  operator_port: int = 40020, reject_once: tuple[str, ...] = (), reject_always: tuple[str, ...] = (),
-                 kp: float = 60.0, kd: float = 2.0):
+                 handover_s: float = 0.0, kp: float = 60.0, kd: float = 2.0):
         self.cmd_to, self.kp, self.kd = cmd_to, kp, kd
+        self.handover_s = handover_s                # a switch takes this long; a newer request supersedes a pending one
+        self._handover: threading.Timer | None = None
         self.reject_once = set(reject_once)
         self.reject_always = set(reject_always)     # behaviors never admitted (e.g. no IMU for RL)
         self.behavior = "rest"
@@ -145,12 +148,25 @@ class FakeMotorControl:
             reason = "stopped" if stopped else "no_edge"
             self._reply(f"kind=request seq={self.seq} state=rejected target={target} reasons={reason}")
             return
-        with self.lock:
-            self.behavior = target
-        self._reply(f"kind=request seq={self.seq} state=ok target={target} reasons=-")
-        if src != target:
-            self._reply(f"kind=event type=switched from={src} to={target} switch_count={self.seq}")
-        self._reply(self._status())
+        if self._handover is not None and self._handover.is_alive():      # the controller keeps the latest request only
+            self._handover.cancel()
+            self._reply(f"kind=request seq={self.seq - 1} state=superseded target=- reasons=-")
+        seq = self.seq
+
+        def land():
+            with self.lock:
+                self.behavior = target
+            self._reply(f"kind=request seq={seq} state=ok target={target} reasons=-")
+            if src != target:
+                self._reply(f"kind=event type=switched from={src} to={target} switch_count={seq}")
+            self._reply(self._status())
+
+        if self.handover_s > 0:
+            self._handover = threading.Timer(self.handover_s, land)
+            self._handover.daemon = True
+            self._handover.start()
+        else:
+            land()
 
     def _status(self) -> str:
         with self.lock:
