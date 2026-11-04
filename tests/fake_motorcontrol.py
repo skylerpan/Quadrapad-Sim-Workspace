@@ -12,6 +12,8 @@ Scripted faults: `reject_once` names behaviors whose first request is rejected (
 `reject_always` behaviors never admitted, `handover_s` makes a switch take that long (a newer request supersedes a
 pending one, as the controller does), and
 `inject_stop(kind)` latches a stop that only `reset` clears, as the controller does.
+Like the controller, the latest `kind=status` and `kind=request` lines are repeated every `heartbeat_s` while
+nothing changes (its cadence.rs: once a second); 0 turns the heartbeat off.
 """
 from __future__ import annotations
 
@@ -33,8 +35,10 @@ EDGES = {("rest", "stand"), ("stand", "rest"), ("stand", "gait_mpc"), ("gait_mpc
 class FakeMotorControl:
     def __init__(self, cmd_to=("127.0.0.1", 40001), joint_port: int = 40002, base_port: int = 40003,
                  operator_port: int = 40020, reject_once: tuple[str, ...] = (), reject_always: tuple[str, ...] = (),
-                 handover_s: float = 0.0, kp: float = 60.0, kd: float = 2.0):
+                 handover_s: float = 0.0, kp: float = 60.0, kd: float = 2.0, heartbeat_s: float = 1.0):
         self.cmd_to, self.kp, self.kd = cmd_to, kp, kd
+        self.heartbeat_s = heartbeat_s              # unchanged status / request lines are repeated this often (0 = never)
+        self._heartbeat: dict[str, str] = {}        # the latest line per kind that the heartbeat repeats
         self.handover_s = handover_s                # a switch takes this long; a newer request supersedes a pending one
         self._handover: threading.Timer | None = None
         self.reject_once = set(reject_once)
@@ -54,7 +58,8 @@ class FakeMotorControl:
         self.base = self._udp(base_port)
         self.op = self._udp(operator_port)
         self.out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.threads = [threading.Thread(target=f, daemon=True) for f in (self._joint_loop, self._base_loop, self._op_loop)]
+        self.threads = [threading.Thread(target=f, daemon=True)
+                        for f in (self._joint_loop, self._base_loop, self._op_loop, self._heartbeat_loop)]
         for t in self.threads:
             t.start()
 
@@ -176,12 +181,28 @@ class FakeMotorControl:
                 f"imu_health=ok imu_fault=- bms_health=ok bms_fault=-")
 
     def _reply(self, line: str):
+        kind = line.split(None, 1)[0]
+        if kind in ("kind=status", "kind=request"):
+            with self.lock:
+                self._heartbeat[kind] = line
+        self._send(line)
+
+    def _send(self, line: str):
         if self.operator_peer is None:
             return
         try:
             self.out.sendto((line + "\n").encode(), self.operator_peer)
         except OSError:
             pass
+
+    def _heartbeat_loop(self):
+        if self.heartbeat_s <= 0:
+            return
+        while not self._stop.wait(self.heartbeat_s):
+            with self.lock:
+                lines = list(self._heartbeat.values())
+            for line in lines:
+                self._send(line)
 
     def inject_stop(self, kind: str = "hardware"):
         """The controller's judge fired: forced to rest, latched until `reset`."""

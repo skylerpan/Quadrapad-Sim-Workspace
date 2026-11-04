@@ -381,7 +381,7 @@ scripts/run_sim.sh                 # 之後照常啟動：偵測到 quadsim-g23 
 | 控制器 → quadsim | `cmd_port` 40001 | 240 bytes：每顆馬達 `[pos, vel, tau, kp, kd]` × 12，力矩 = kp(pos−q) + kd(vel−dq) + tau，套 J60 包絡；控制器開機起每個 1 kHz tick 都送 |
 | quadsim → 控制器 | `joint_addr` 40002 | 144 bytes：每顆 `[q, dq, tau]` × 12，每個物理步 |
 | quadsim → 控制器 | `base_addr` 40003 | 36 bytes：`[rpy, 角速度, 加速度]`（機身座標，加速度含重力），每個物理步 |
-| quadsim → 控制器 | `operator_addr` 40020 | 文字行：`stand`、`rl_fcn` / `rl_him` / `gait_mpc`、`rest`、`reset`、`vel vx vy wz`；控制器把 `kind=status` / `kind=request` / `kind=event` 行回給最後發話者（同一個 socket） |
+| quadsim → 控制器 | `operator_addr` 40020 | 文字行：`stand`、`rl_fcn` / `rl_him` / `gait_mpc`、`rest`、`reset`、`vel vx vy wz`；控制器把 `kind=status` / `kind=request` / `kind=event` 行回給最後發話者（同一個 socket）；狀況 / 請求行有變化立刻送、沒變化每秒重送一次當心跳，quadsim 以 `seq` + `state` 認同一筆請求，心跳不算新的拒絕（2026-11-04 前每次心跳都把重送計時器往後推，被拒的行為永遠不重送） |
 
 序列：收到第一包力矩指令（`connected`）後 `start_delay` 秒送 `stand`（控制器開機在 `rest`，看到關節封包才接受站立），`stand_delay` 秒後送 `robot.behavior`。控制器的 `rise_to_stand` 要 3 s，站穩前 RL 行為會被 `state=rejected`，quadsim 每秒重送、最多 5 次，仍失敗發 `rejected` 事件（所以 `stand_delay` 要 ≥ 3）。`/cmd_vel` → `vel x y w`，過期送一次 `vel 0 0 0`（控制器的 deadman 500 ms 只把速度歸零、不改行為）。`set_pose` 前送 `rest`（阻尼放下），新序列以 `reset` 開頭再 `stand`。瀏覽器 viewer 的按鈕：Stand = `reset` + `stand`、Walk = `robot.behavior`、Lie down / Damping 都是 `rest`（控制器沒有獨立的阻尼行為，`rest` 前 2 秒就是阻尼）。控制器自己停機（關節封包斷 >100 ms、傾斜 >60°、`invalid_actions` …）會 `stop=hardware` 強制 `rest` 並 latch：quadsim 只發 `stopped` 事件、**不**自動 `reset`（避免遮掉真問題），Stand 按鈕或 `set_pose` 會送 `reset`。它的 sim 協定沒有機身位置 / 速度與腳接觸（gait_mpc 在 sim 裡只靠 IMU，跟實機一樣），quadsim 對這支不送 `SIM_POSE`（30012）也不送 ASCII 狀態行（50010）。
 

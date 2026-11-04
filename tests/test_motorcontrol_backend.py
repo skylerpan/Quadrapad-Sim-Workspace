@@ -102,7 +102,9 @@ def test_velocity_lines_follow_cmd_vel_and_stop_once():
 
 
 def test_a_rejected_behavior_is_resent_after_a_second_then_given_up():
-    fake = _fake(reject_once=("rl_fcn",))
+    # the controller repeats an unchanged request line as a heartbeat: here faster than the ticks, so every tick
+    # sees the same rejection again. A repeat is not a new verdict and must not postpone the retry.
+    fake = _fake(reject_once=("rl_fcn",), heartbeat_s=0.01)
     cfg, g = _backend()
     try:
         for k in range(4):
@@ -121,7 +123,7 @@ def test_a_rejected_behavior_is_resent_after_a_second_then_given_up():
         assert g.sent.count("rl_fcn") == 2                                 # accepted: no more resends
     finally:
         g.close(), fake.close()
-    fake = _fake(reject_always=("rl_him",))
+    fake = _fake(reject_always=("rl_him",), heartbeat_s=0.01)
     cfg, g = _backend(**{"robot.behavior": "rl_him"})
     try:
         events = []

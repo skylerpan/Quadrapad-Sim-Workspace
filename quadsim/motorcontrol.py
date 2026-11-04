@@ -184,7 +184,11 @@ class MotorControlBackend(G23Physics):
                     behavior, self._after_stand = self._after_stand, None
                     self._request(behavior)
             elif isinstance(line, Request):
-                self.last_request = line
+                # the controller repeats an unchanged request line once a second (a heartbeat); a request keeps its
+                # seq from pending to its verdict, so only a new (seq, state) is news
+                last, self.last_request = self.last_request, line
+                if last is not None and (line.seq, line.state) == (last.seq, last.state):
+                    continue
                 if line.target == self._pending:
                     if line.state == "ok":
                         self._pending = None
