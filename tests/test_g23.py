@@ -17,7 +17,7 @@ needs_scene = pytest.mark.skipif(not os.path.exists(os.path.join(SCENE, "contact
 
 def _cfg(**over):
     # private ports so a controller or another test on the machine never sees these packets
-    o = ["robot.type=g23", "robot.controller.cmd_port=20101", "robot.controller.telemetry=[127.0.0.1:30110]",
+    o = ["robot.type=g23", "robot.controller.kind=g2_deploy_rs", "robot.controller.cmd_port=20101", "robot.controller.telemetry=[127.0.0.1:30110]",
          "robot.controller.command_addr=127.0.0.1:50151", "robot.start_delay=0.1", "robot.stand_delay=0.2",
          "lidar.points_per_sec=2000"]
     o += [f"{k}={v}" for k, v in over.items()]

@@ -13,7 +13,8 @@ from pcd2sim import SCENE_FORMAT
 
 from .base import IdealBase, body_lift, rot_zyx
 from .config import load_scene_meta
-from .g23 import G2DeployBackend, RefSimOptions, build_g23_spec
+from .g23 import RefSimOptions, build_g23_spec
+from .backends import make_backend
 from .lidar import LidarFrame, RollingLidar
 from .model import add_map_mesh, build_mjcf, nearest_boxes
 from .proxies import BoxIndex, ProxyPool
@@ -125,7 +126,7 @@ class Simulator:
             self.mocap_target = None
             self.acc_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "lidar_acc")]
             self.gyro_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "lidar_gyro")]
-            self.g23 = G2DeployBackend(self.m, self.d, r, self.base_body, self.ref_opts)
+            self.g23 = make_backend(self.m, self.d, r, self.base_body, self.ref_opts)
             self.fallen = False
             self.low_since = None
         else:
@@ -178,7 +179,7 @@ class Simulator:
             pos = np.array([pos[0], pos[1], self.base.ground.z0 + float(self.cfg["robot"].get("spawn_height", 0.40))])
             teleport = self.d.time > 0.0              # set_pose, not the spawn
             if teleport:
-                self.g23.restart(self.d.time, teleport=True)   # MODE R first: the gait must not flail mid-air
+                self.g23.restart(self.d.time, teleport=True)   # damp the legs first: the gait must not flail mid-air
             self.g23.place(pos, quat)
             if not teleport:
                 self.g23.restart(self.d.time)
