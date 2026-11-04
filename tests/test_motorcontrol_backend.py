@@ -101,6 +101,24 @@ def test_velocity_lines_follow_cmd_vel_and_stop_once():
         g.close(), fake.close()
 
 
+def test_rl_him_velocity_is_predivided_by_the_controllers_command_scale():
+    # the controller multiplies rl_him's command by (2, 2, 0.25) before the policy; the reference stack feeds it
+    # raw, so quadsim divides first. rl_fcn is scaled by 1 on both sides and goes through unchanged.
+    for behavior, expected in (("rl_him", "vel 0.200 0.100 2.400"), ("rl_fcn", "vel 0.400 0.200 0.600")):
+        fake = _fake()
+        cfg, g = _backend(**{"robot.behavior": behavior})
+        try:
+            for k in range(4):
+                _exchange(g, 0.001 * k)
+            _wait(lambda: fake.behavior == behavior)
+            _exchange(g, 1.0)                                              # the status line naming it is drained
+            assert g.state == behavior
+            _exchange(g, 1.1, (0.4, 0.2, 0.6), fresh=True)
+            assert g.sent[-1] == expected, behavior
+        finally:
+            g.close(), fake.close()
+
+
 def test_a_rejected_behavior_is_resent_after_a_second_then_given_up():
     # the controller repeats an unchanged request line as a heartbeat: here faster than the ticks, so every tick
     # sees the same rejection again. A repeat is not a new verdict and must not postpone the retry.

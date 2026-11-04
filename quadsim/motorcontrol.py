@@ -28,6 +28,11 @@ from quadsim.sequence import Damp, Gait, Intent, Lie, ResetSafety, Stand, StandS
 
 RETRY_AFTER = 1.0          # s of sim time before a rejected behavior is requested again
 MAX_RETRIES = 5
+# What the controller multiplies a behavior's (vx, vy, wz) by before its policy sees it (its him.rs command_scale).
+# The reference stack (g2_deploy_rs himloco_policy_runner.rs) feeds the command raw, so quadsim divides by it first
+# and the policy sees the same observation on both. The controller clamps to its range before multiplying
+# (wz to +-1.0), so after the division it can see at most 0.25 rad/s of yaw command. rl_fcn is scaled by 1.
+CONTROLLER_COMMAND_SCALE: dict[str, tuple[float, float, float]] = {"rl_him": (2.0, 2.0, 0.25)}
 
 
 def check_behavior(name) -> str:
@@ -152,7 +157,8 @@ class MotorControlBackend(G23Physics):
         elif isinstance(intent, Gait):
             self._request(self.behavior)
         elif isinstance(intent, Vel):
-            self.send_command(f"vel {intent.x:.3f} {intent.y:.3f} {intent.w:.3f}")
+            sx, sy, sw = CONTROLLER_COMMAND_SCALE.get(self.state or self.behavior, (1.0, 1.0, 1.0))
+            self.send_command(f"vel {intent.x / sx:.3f} {intent.y / sy:.3f} {intent.w / sw:.3f}")
         elif isinstance(intent, VelStop):
             self.send_command("vel 0.000 0.000 0.000")
 
