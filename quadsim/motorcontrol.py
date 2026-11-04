@@ -71,6 +71,11 @@ class MotorControlBackend(G23Physics):
         self.sent: list[str] = []
         self.restart(0.0)
 
+    def describe(self) -> str:
+        """The reference sim options this link honours: the ASCII state line and SIM_POSE are not sent to it."""
+        parts = [x for x in self.opts.describe().split("; ") if not x.startswith(("ROS ASCII telemetry", "SIM_POSE"))]
+        return "; ".join(parts + ["no ASCII state line / SIM_POSE (MotorControl reads neither)"])
+
     def describe_link(self) -> str:
         return (f"torque cmds on udp:{self.cmd_port}, joints -> {self.joint_to}, base -> {self.base_to}, "
                 f"operator -> {self.operator_to}, behavior {self.behavior}")
