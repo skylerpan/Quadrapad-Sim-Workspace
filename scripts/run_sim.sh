@@ -4,8 +4,9 @@
 #   scripts/run_sim.sh ros.publish_gt_tf=false lidar.range_noise=0.0
 # QUADSIM_GUI=1 scripts/run_sim.sh --viewer   (needs an X display)
 # The default robot (config/sim.yaml robot.type) is the G23 legged model: then the quadsim-g23 image is used
-# (docker/build_g23.sh builds it and the controller) and sim_node starts the controller itself. With
-# robot.type=ideal on the command line, or when that image does not exist, the plain quadsim image runs.
+# (docker/build_g23.sh builds it and the controller, SyncAI-Device-MotorControl by default) and sim_node starts
+# the controller itself. With robot.type=ideal on the command line, or when that image does not exist, the plain
+# quadsim image runs.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 g23=1
 for a in "$@"; do [[ "$a" == robot.type=ideal ]] && g23=0; done
