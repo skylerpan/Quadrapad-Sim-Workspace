@@ -24,7 +24,7 @@ robot:
                               # dry friction / damping on the 12 joints + torque envelope); j60 | ideal here overrides it
   level_gravity: true         # g23: gravity straight down (the controller's sim); false = along the scene's fitted floor normal
   auto_stand: true            # g23: stand start_delay s after spawn / set_pose, the gait / behavior stand_delay s later
-  start_delay: 1.0
+  start_delay: 1.0            # MotorControl boots limp (lie_still, zero torque) until `stand`: the dog sits down for this long first
   stand_delay: 4.0            # >= 3 s: MotorControl's rise_to_stand takes 3 s and refuses an RL behavior before it settled
   spawn_height: 0.40          # g23: torso centre above the floor at spawn (it settles to ~0.36 standing)
   controller:                 # g23: which controller sim_node spawns and how quadsim talks to it (quadsim/controller_proc.py)
