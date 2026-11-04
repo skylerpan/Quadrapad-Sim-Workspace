@@ -22,7 +22,7 @@ docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scene
 #    Hand-edited OctoMap (1:1, 2 s): --map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0
 #    Flattened floors (slabs instead of voxels): drop --no-flatten; every recipe is in docs/usage.md section 2
 
-# 3. Start the sim (defaults to scenes/dp_1008, real time)
+# 3. Start the sim (defaults to scenes/dp_1008, real time); a browser viewer is served on http://<host>:8755
 scripts/run_sim.sh
 scripts/run_sim.sh --scene scenes/dp ros.publish_gt_tf=false   # another scene; no ground-truth TF: leave it to Point-LIO and global localization
 
@@ -30,7 +30,7 @@ scripts/run_sim.sh --scene scenes/dp ros.publish_gt_tf=false   # another scene; 
 docker/run.sh "python3 -m pytest -q"                    # unit tests
 docker/run.sh "python3 scripts/bench.py physics.rtf=0"   # headless benchmark on the default scene
 
-# GUI (needs an X display; run from a desktop terminal, DISPLAY and XAUTHORITY are passed into the container)
+# Desktop GUI (needs an X display; run from a desktop terminal, DISPLAY and XAUTHORITY are passed into the container)
 QUADSIM_GUI=1 scripts/run_sim.sh --viewer                # MuJoCo viewer (camera follows the body; the map is visual only)
 QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_time:=true"
 ```
@@ -40,6 +40,8 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 |---|---|---|
 | `sw` (llvmpipe) | 815 ms/frame | 391 ms/frame |
 | `nvidia` (Thor GPU) | 43 ms/frame | 16 ms/frame |
+
+**Browser viewer (default, no display needed).** Every run also serves a web viewer ([viser](https://github.com/nerfstudio-project/viser), `quadsim/web_viewer.py`) on `http://<host>:8755` (the container uses `--net=host`; the URL is in the start-up log): the map as a height-coloured point cloud (voxel-downsampled beyond `web.max_map_points`, sent once per connection), the robot's visual geoms following the simulation at up to `web.hz`, the latest LiDAR frame (`web.lidar_points` points at `web.lidar_hz`) and the planner's `nav_msgs/Path` from `web.path_topic`, with layer toggles, a follow-robot camera, a drag joystick on the robot (walk-to-the-handle velocity command, zero on release, same path as `/cmd_vel`), stand / walk / lie / damping and RL-policy controls for the G23 controller, and reset buttons (teleport to spawn / re-stand here, same as `set_pose`). Nothing is sent while no browser is connected; with one connected it costs about 2 % of the sim's wall time (reported in the 10 s status line as `web N% of wall`). `--no-web` or `web.enabled=false` turns it off; the `web:` block of the config sets the port, rates, map mode (`points` / `boxes` / `none`) and caps. A busy port falls through to the next one (logged).
 
 The `viewer:` section of the config sets `shadows` (the map casting shadows on itself costs a second pass over the mesh) and `sync_hz` (the maximum wall-clock rate at which the sim pushes its state to the window; each push takes the render lock). The sim logs `viewer: gl=... map mesh ... faces` at start-up so the path in use is visible. In the MuJoCo viewer, press `3` to show the active collision proxy boxes (red).
 The container uses `--net=host` and the same DDS settings as WebRvizLite: CycloneDDS (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`), `ROS_DOMAIN_ID=1`, and `conf/cyclonedds.xml` (unicast on loopback, multicast off), so the WebRvizLite viewer connects without extra setup. A navigation stack on the host or in another container connects directly as long as it uses the same RMW and domain (override with `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<file under conf/>` when running `docker/run.sh`). **Every other node must set `use_sim_time:=true`**.
@@ -58,7 +60,7 @@ The container uses `--net=host` and the same DDS settings as WebRvizLite: Cyclon
 | Sub | `/sim/set_pose` | geometry_msgs/PoseStamped (x, y, yaw; **z is a floor-height hint**) | — |
 | Sub | `/policy_mode` | std_msgs/Int32 (`g23` only): RL policy 0 PPO (default), 1 HIMLoco for stairs, switched live and forwarded to the controller as `MODE n` | — |
 
-**TF**: the static `base_link → livox_frame` is always published. With `publish_gt_tf: true` (default), `map → odom` (identity) and `odom → base_link` (ground truth) are added. With `ros.publish_gt_tf=false`, your localization stack publishes those two.
+**TF**: the static `base_link → livox_frame` is always published. `publish_gt_tf` defaults to `false`: `map → odom` and `odom → base_link` are left to your localization stack (Point-LIO + transform_fusion). With `ros.publish_gt_tf=true` the sim adds `map → odom` (identity) and `odom → base_link` (ground truth).
 
 All parameters (topics, frames, noise, body size, velocity limits, …) live in [`config/sim.yaml`](config/sim.yaml). They can be overridden on the command line, e.g. `scripts/run_sim.sh lidar.range_noise=0.0 robot.vel_limits=[1.0,0.5,1.5]`.
 

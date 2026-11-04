@@ -22,7 +22,7 @@ docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scene
 #    手修 OctoMap（1:1，2 秒）：--map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0
 #    要平面化地板（slab 取代體素）就拿掉 --no-flatten；所有配方見 docs/usage.md §2
 
-# 3. 啟動模擬（預設 scenes/dp_1008，即時速度）
+# 3. 啟動模擬（預設 scenes/dp_1008，即時速度）；瀏覽器 viewer 開在 http://<主機>:8755
 scripts/run_sim.sh
 scripts/run_sim.sh --scene scenes/dp ros.publish_gt_tf=false   # 換場景；不發布真值 TF，交給 Point-LIO 和全域定位
 
@@ -30,7 +30,7 @@ scripts/run_sim.sh --scene scenes/dp ros.publish_gt_tf=false   # 換場景；不
 docker/run.sh "python3 -m pytest -q"                    # 單元測試
 docker/run.sh "python3 scripts/bench.py physics.rtf=0"   # 預設場景的 headless 效能測試
 
-# 畫面（需要 X display；請在桌面的終端機執行，DISPLAY 和 XAUTHORITY 會自動帶進容器）
+# 桌面畫面（需要 X display；請在桌面的終端機執行，DISPLAY 和 XAUTHORITY 會自動帶進容器）
 QUADSIM_GUI=1 scripts/run_sim.sh --viewer                # MuJoCo viewer（相機跟隨機身，地圖只用於顯示）
 QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_time:=true"
 ```
@@ -40,6 +40,8 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 |---|---|---|
 | `sw`（llvmpipe） | 815 ms/幀 | 391 ms/幀 |
 | `nvidia`（Thor GPU） | 43 ms/幀 | 16 ms/幀 |
+
+**瀏覽器 viewer（預設開，不需要顯示器）。** 每次執行都會在 `http://<主機>:8755` 提供一個網頁 viewer（[viser](https://github.com/nerfstudio-project/viser)，`quadsim/web_viewer.py`；容器用 `--net=host`，網址在啟動 log）：地圖以高度上色的點雲（超過 `web.max_map_points` 就體素降採樣，連線時送一次）、機器人的 visual geom 跟著模擬更新（最多 `web.hz`）、最新一幀 LiDAR（`web.lidar_points` 點、`web.lidar_hz`）、以及 `web.path_topic` 的規劃路徑（nav_msgs/Path），面板有圖層開關、相機跟隨、拖曳式搖桿（把手拖到哪機器人走到哪，放開歸零，和 `/cmd_vel` 同一條路）、G23 的起立 / 走路 / 趴下 / damping 與 RL policy 切換，以及 reset 按鈕（回出生點 / 原地重站，等同 `set_pose`）。沒有瀏覽器連線時什麼都不送；有連線時約占 sim 2% 的 wall time（每 10 秒的狀態行顯示 `web N% of wall`）。`--no-web` 或 `web.enabled=false` 關掉；設定檔 `web:` 區塊可改埠、頻率、地圖模式（`points` / `boxes` / `none`）和上限。埠被占用會自動用下一個（log 有 WARN）。
 
 設定檔的 `viewer:` 區塊可以設 `shadows`（地圖對自己投影要多畫一遍整個 mesh）和 `sync_hz`（sim 把狀態推給視窗的最高 wall-clock 頻率；每次推送都會取算繪鎖）。sim 啟動時會記錄 `viewer: gl=... map mesh ... faces`，一眼就能看出用的是哪條路徑。MuJoCo viewer 裡，按 `3` 可以顯示目前生效的碰撞代理 box（紅色）。
 容器使用 `--net=host`，DDS 設定與 WebRvizLite 相同：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、`ROS_DOMAIN_ID=1`、`conf/cyclonedds.xml`（loopback 單播、關閉 multicast），所以 WebRvizLite 檢視器不需額外設定即可連上。主機或其他容器裡的導航堆疊，只要使用相同的 RMW 與 domain 就能直接連上（執行 `docker/run.sh` 時可用 `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<conf/ 下的檔名>` 覆寫）。**其他所有節點都要設 `use_sim_time:=true`**。
@@ -58,7 +60,7 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 | 訂閱 | `/sim/set_pose` | geometry_msgs/PoseStamped（x、y、yaw；**z 是地板高度的提示值**） | — |
 | 訂閱 | `/policy_mode` | std_msgs/Int32（只有 `g23`）：RL policy，0 PPO（預設）、1 HIMLoco 上下樓梯用，即時切換並以 `MODE n` 轉給控制器 | — |
 
-**TF**：一律發布靜態的 `base_link → livox_frame`。`publish_gt_tf: true`（預設）時，再加上 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。用 `ros.publish_gt_tf=false` 關掉之後，這兩段交給你們的定位堆疊發布。
+**TF**：一律發布靜態的 `base_link → livox_frame`。`publish_gt_tf` 預設 `false`：`map → odom` 和 `odom → base_link` 交給定位堆疊（Point-LIO + transform_fusion）發布。用 `ros.publish_gt_tf=true` 打開後，sim 才會再發 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。
 
 所有參數（topic、frame、雜訊、機身尺寸、速度上限等）都在 [`config/sim.yaml`](config/sim.yaml)。也可以在指令列覆寫，例如 `scripts/run_sim.sh lidar.range_noise=0.0 robot.vel_limits=[1.0,0.5,1.5]`。
 

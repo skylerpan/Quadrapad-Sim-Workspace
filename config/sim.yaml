@@ -76,6 +76,18 @@ viewer:                       # MuJoCo viewer (--viewer) only; the map mesh has 
   sync_hz: 30                 # max rate (wall clock) at which the sim pushes its state to the viewer window
   max_map_boxes: 400000       # boxes drawn in the viewer mesh, nearest to the spawn first (0.1-0.2 m scenes have fewer; a 0.03 m scene has ~3.4 M, 12 triangles each: 1500000 shows ~the whole storey)
 
+web:                          # browser viewer (viser), on by default: http://<host>:8755 (quadsim/web_viewer.py)
+  enabled: true               # --no-web or web.enabled=false turns it off; a missing viser only logs a warning
+  port: 8755                  # the container runs with --net=host, so this is the host's port (busy = next free one, logged)
+  hz: 30                      # max rate (wall clock) of robot pose updates to the browsers; nothing is sent without a client
+  lidar_hz: 10                # max rate of LiDAR cloud updates
+  lidar_points: 8000          # points per displayed LiDAR frame (uniformly decimated from ~20 k)
+  map: points                 # points: map_ds.pcd coloured by height | boxes: one cube per scene box, coloured by height with a checkerboard shade (edges visible, instanced) | none
+  max_map_points: 1500000     # voxel-downsample the map cloud beyond this (dp_1008 has 1.7 M, a 0.03 m scene 17 M)
+  max_map_boxes: 400000       # map: boxes only, nearest the spawn first (as viewer.max_map_boxes)
+  map_precision: float32      # float16 halves the map download but quantises to ~3 cm at 50 m from the origin
+  path_topic: /robot01/planned_path   # nav_msgs/Path from the planner, drawn as a line ("" = off)
+
 ros:
   frames: {map: map, odom: robot01/odom, base: robot01/base_link, lidar: robot01/laser}
   publish_gt_tf: false        # map->odom (identity) + odom->base_link ground truth; false = leave to Point-LIO/localization

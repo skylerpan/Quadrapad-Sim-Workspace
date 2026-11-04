@@ -13,6 +13,7 @@
 | 進容器開 shell | `docker/run.sh` | 主機 | [1](#1-環境與容器) |
 | 把 PCD / OctoMap 轉成場景 | `docker/run.sh "python3 -m pcd2sim.build_scene ..."` | 主機 | [2](#2-建場景pcd--scenes) |
 | 啟動模擬器 | `scripts/run_sim.sh [參數]` | 主機 | [3](#3-跑模擬) |
+| 用瀏覽器看畫面（headless） | `scripts/run_sim.sh` 之後開 `http://<主機>:8755` | 任何有瀏覽器的機器 | [4.1](#41-瀏覽器-viewerviser預設開) |
 | 開 MuJoCo viewer / RViz | `QUADSIM_GUI=1 scripts/run_sim.sh --viewer` | 主機（桌面終端機） | [4](#4-畫面gui) |
 | 看 topic / frame 名稱 | 讀 `config/sim.yaml` 的 `ros:` 區塊 | — | [5](#5-ros-2-介面) |
 | 跑單元測試 | `docker/run.sh "python3 -m pytest -q"` | 主機 | [6.1](#61-單元測試) |
@@ -297,6 +298,7 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 | `--rtf <f>` | 即時倍率；0 = 能多快跑多快 |
 | `--duration <s>` | 跑這麼多 sim 秒後自動結束（0 = 不停） |
 | `--viewer` | 開 MuJoCo viewer（需要 `QUADSIM_GUI=1`，見第 4 章） |
+| `--no-web` | 不開瀏覽器 viewer（預設開在 8755 埠，見 [4.1](#41-瀏覽器-viewerviser預設開)；等同 `web.enabled=false`） |
 | `key=value ...` | 任何設定檔欄位的覆寫（見第 9 章） |
 
 ### 3.1 機器人類型（`robot.type`）
@@ -392,6 +394,8 @@ QUADSIM_G23=1 docker/run.sh "python3 scripts/walk_g23.py --poses ... robot.polic
 
 ```
 scene scenes/dp_1008 (220128 boxes), spawn requested [x, y, yaw, z_floor] [0.0, 0.0, 0.0, -0.5] -> base at [0.0, 0.0, -0.15] yaw 0.00 (floor z -0.45, moved False), rtf 1.0, gt_tf False, custom_msg True
+web viewer: http://<主機>:8755 (map points (<= 1500000 points / 400000 boxes), poses <= 30 Hz, ...)   # 瀏覽器 viewer，見 4.1
+web viewer: map 1280894 points (of 1705933, 0.11 m cells) in 0.3 s
 viewer: gl=nvidia (docker/run.sh QUADSIM_GL), map mesh 3100000 faces, shadows False, sync <= 30 Hz   # 只有 --viewer 時出現
 event: {'type': 'spawn', ...}                   # 同一筆也會發到 /sim/events
 sim t=10.0s pose=[...]                          # 每 10 sim 秒一行
@@ -400,6 +404,31 @@ sim t=10.0s pose=[...]                          # 每 10 sim 秒一行
 結束用 Ctrl-C（再按一次強制）。
 
 ## 4. 畫面（GUI）
+
+### 4.1 瀏覽器 viewer（viser，預設開）
+
+sim 不需要顯示器或 GL：啟動後（任何模式，包含 headless）都會在 **`http://<主機>:8755`** 提供一個瀏覽器 viewer（[viser](https://github.com/nerfstudio-project/viser)，`quadsim/web_viewer.py`）。容器用 `--net=host`，所以同一台機器開 `http://localhost:8755`，別台機器開主機的 IP 即可；啟動 log 的 `web viewer: http://...` 就是網址。
+
+```bash
+scripts/run_sim.sh                       # 預設就開；瀏覽器開 http://<主機>:8755
+scripts/run_sim.sh --no-web              # 不開（或 web.enabled=false）
+scripts/run_sim.sh web.port=9000 web.map=boxes web.max_map_points=500000   # 設定都在 config/sim.yaml 的 web: 區塊
+```
+
+畫面內容：
+
+- **地圖**：`map_ds.pcd` 當點雲畫，顏色照高度。超過 `web.max_map_points`（預設 150 萬）就體素降採樣（dp_1008 的 170 萬點 → 128 萬點、0.11 m；0.03 m 場景 1,700 萬點也能開）。整張地圖在連線時送一次（約 20 MB），在背景執行緒建好，sim 不等它。`web.map=boxes` 改畫場景的 box（離出生點最近的 `web.max_map_boxes` 個）：每個 box 一個 instance（GPU instancing，比整塊 mesh 便宜），顏色用和點雲一樣的高度色再加棋盤式明暗，相鄰同高的 box 也分得開，所以 box 的邊、階梯的踏面都看得到；`none` 不畫。
+- **機器人**：MuJoCo 模型的 visual geom（G23 的 STL、理想底盤的 box），每個 body 一個 frame，姿態最多 `web.hz`（30）Hz 更新，沒變就不送。碰撞 geom 和代理 box 不畫。
+- **LiDAR**：最新一幀轉到 map 座標，均勻抽到 `web.lidar_points`（8000）點，最多 `web.lidar_hz`（10）Hz。
+- **規劃路徑**：訂閱 `web.path_topic`（預設 `/robot01/planned_path`，nav_msgs/Path），畫成綠線；設成空字串關掉。
+- 右上面板：sim 時間、即時倍率、機身位置、LiDAR 點數，圖層開關（地圖 / LiDAR / 路徑 / 相機跟隨機身）。
+- **Teleop（搖桿）**：機器人身上有一個可以拖的把手（transform gizmo）。把它拖到想去的地方，機器人就朝把手走（把手在機身座標的方向決定轉速、距離決定速度，到了就自動減到 0；把手在後方會先原地轉）；放開就歸零、把手跳回機身。拖著的時候 sim 每 tick 重送命令（不會碰到 `robot.cmd_timeout`）並蓋過 `/cmd_vel`，放開後交還給 ROS；瀏覽器中途斷線也視同放開。`Max speed` / `Max turn` 滑桿是上限，Stop 按鈕立刻歸零。走的是和 `/cmd_vel` 同一條路（g23 模式轉成 AXES 給控制器）。
+- **Motion**（只有 g23）：Stand / Walk / Lie down / Damping 四個鈕，各送 `RESET_SAFETY`+`MODE STAND`、`MODE <policy>`+`MODE RL`、`MODE LIE`、`MODE R` 給控制器（和他們的 ROS bridge 同一組字串）；Stand 之後不會自動進步態，要按 Walk。`RL policy` 下拉選單換 PPO / HIMLoco / IsaacSim（走路中即時切換，等同 `/robot01/policy_mode`）。
+- **Reset**：「Reset to spawn」把機器人瞬移回設定檔的出生點，「Re-stand here」在原地 set_pose（倒了可以重新站起來；3 秒防連點）。兩者等同發 `/robot01/set_pose`，會有 `set_pose` 事件；跑著定位 stack 時瞬移會讓 Point-LIO 失準，要重新 seed。
+
+成本：沒有瀏覽器連線時什麼都不送（log 顯示 `web 0% of wall (0 clients)`）；有連線時每 10 秒的狀態行會多 `web N% of wall (M clients)`，G23 模式實測約 2%，rtf 不變。埠被占用（同一台跑第二個 sim）會自動用下一個，log 有 WARN。沒裝 viser 只會 WARN 一行然後照常跑；映像檔的 Dockerfile 已經裝了。
+
+### 4.2 MuJoCo viewer / RViz（X display）
 
 要在**有 X display 的桌面終端機**執行，`DISPLAY` 和 `XAUTHORITY` 會自動帶進容器。
 
@@ -436,7 +465,7 @@ MuJoCo viewer 把整張地圖當一個 mesh 畫（dp_1008 約 310 萬個三角�
 | 訂閱 | `/cmd_vel` | `cmd_vel` | geometry_msgs/Twist（vx, vy, wz）；超過 `robot.cmd_timeout`（0.5 s）沒收到就歸零 | — |
 | 訂閱 | `/sim/set_pose` | `set_pose` | geometry_msgs/PoseStamped（x, y, yaw；**z 是地板高度提示**，多樓層時用來選層） | — |
 
-Frame（`ros.frames`）：`map`、`odom`、`base_link`、`livox_frame`。靜態 `base_link → livox_frame` 一律發布；`publish_gt_tf: true`（預設）時再加 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。用 `ros.publish_gt_tf=false` 關掉後，這兩段由 Point-LIO / 定位 stack 發。
+Frame（`ros.frames`）：`map`、`odom`、`base_link`、`livox_frame`。靜態 `base_link → livox_frame` 一律發布；`publish_gt_tf` 預設 `false`：`map → odom` 和 `odom → base_link` 由 Point-LIO / 定位 stack 發。用 `ros.publish_gt_tf=true` 打開後，sim 才會再發 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。
 
 `/sim/events` 的 `type`：
 
@@ -480,7 +509,7 @@ docker/run.sh "python3 scripts/bench.py --scene scenes/dp_1008 --seconds 30 phys
 
 前置條件：
 
-1. sim 用 `scripts/run_sim.sh ros.publish_gt_tf=false` 啟動（TF 交給定位），`ros.topics` 的 LiDAR / IMU / cmd_vel 名稱要和導航 stack 用的一致（見第 5、9 章）。
+1. sim 用 `scripts/run_sim.sh` 啟動（`publish_gt_tf` 預設 false，TF 交給定位），`ros.topics` 的 LiDAR / IMU / cmd_vel 名稱要和導航 stack 用的一致（見第 5、9 章）。
 2. 導航 stack 起好：定位（Point-LIO）、全域規劃（`octo_planner_rviz_node`）、控制（`syncai_controller_3d`），且 planner 的地圖和 sim 場景來自同一份 PCD。測試程式的 `--*-topic` 預設是 `robot01` 導航 stack 的名稱，接別的 stack 用這些參數改。
 3. 測試期間 **不要按 teleop**（鍵盤節點也會發 cmd_vel）。
 4. 定位已收斂：preflight 會比對 tracked pose 和真值，差超過 `--loc-preflight`（0.5 m）或 pose 太舊就以 exit 2 結束。
@@ -573,7 +602,8 @@ python3 scripts/make_waypoints_from_poses.py Maps/dp_1008/poses.txt --spacing 8 
 | `robot` | 理想底盤：機身尺寸、站高（沿腳平面法線量，機身底面在樓梯上和腳平面平行）、腳位、`max_step_up/down`、`max_feet_over_gap`、`max_slope_deg`（四隻腳的平面：手畫 0.2 m 深踏板是 46°，預設 50）、`attitude_tau`、`vel_limits` / `acc_limits`、`cmd_tau`、`cmd_timeout`、碰撞代理池大小。roll / pitch / 高度取四隻腳高度（各 3×3 射線取中位數）構成的平面，碰撞盒跟著機身一起傾斜 |
 | `lidar` | Mid-360 參數：安裝位置 `mount_xyz` / `mount_rpy`（base_link 座標，照機器人 URDF 的 `base_link → lidar_top`：0.195 / 0 / 0.155 m、pitch 0.25 rad；點雲在感測器座標，傾斜由 TF 帶）、頻率、點數、FOV、距離、雜訊（掃描樣式固定為合成的非重複樣式） |
 | `imu` | 頻率、雜訊、bias random walk（加速度單位固定為 g，和 livox_ros_driver2 相同） |
-| `viewer` | `shadows`、`sync_hz` |
+| `viewer` | `shadows`、`sync_hz`、`max_map_boxes`（MuJoCo viewer，`--viewer`） |
+| `web` | 瀏覽器 viewer：`enabled`、`port`（8755）、`hz`、`lidar_hz`、`lidar_points`、`map`（points / boxes / none）、`max_map_points`、`max_map_boxes`、`map_precision`、`path_topic`（[4.1](#41-瀏覽器-viewerviser預設開)） |
 | `ros` | frame 名、`publish_gt_tf`、`publish_custom_msg`、`publish_pointcloud2`、`pointcloud2_format`、`publish_map_cloud`、各 topic 名 |
 
 指令列覆寫：`區塊.欄位=值`，可以多個，`run_sim.sh`、`bench.py` 都接受。值用 YAML 解析，所以：
@@ -591,6 +621,7 @@ scripts/run_sim.sh --config config/sim_other.yaml              # 整份換掉
 | 現象 | 原因 / 處理 |
 |---|---|
 | `QUADSIM_GUI=1 but DISPLAY is not set` | 不是在桌面終端機執行。改在有 X 的終端機跑，或不開 GUI |
+| 瀏覽器開 `http://<主機>:8755` 沒畫面 | 看啟動 log 的 `web viewer: http://...`：埠被占用時會改用下一個（8756…）並有 WARN；`web viewer disabled` 表示容器沒有 viser（重建映像檔 `docker build -t quadsim:latest docker/`，再 `docker/build_g23.sh --image`）。地圖是在背景載入，面板的 Map 欄位從 `loading...` 變成點數才算好 |
 | viewer 一幀要幾百 ms | 走到 `sw` 路徑。看啟動 log 的 `viewer: gl=`，有 NVIDIA GPU 就設 `QUADSIM_GL=nvidia`；確認 `viewer.shadows: false` |
 | RViz 點雲、格線畫不出來 | GL 退到 2.1 fallback。用 `QUADSIM_GL=nvidia` 或 `sw`，不要用沒 `/dev/dri` 的 `hw` |
 | 一起步就 `stuck` / `no_ground` | 場景地板有破洞。用目前預設（`--ground-fill 12`）重建場景，並確認 `robot.max_feet_over_gap: 1`。用 `scripts/eval_scene.py --auto` 找出缺陷在哪（[2.2](#22-評估場景scriptseval_scenepy)） |

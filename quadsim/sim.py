@@ -15,7 +15,7 @@ from .base import IdealBase, body_lift, rot_zyx
 from .config import load_scene_meta
 from .g23 import G23Backend, RefSimOptions, build_g23_spec
 from .lidar import LidarFrame, RollingLidar
-from .model import add_map_mesh, build_mjcf
+from .model import add_map_mesh, build_mjcf, nearest_boxes
 from .proxies import BoxIndex, ProxyPool
 from .raycast import RayScene, VoxelLookup
 
@@ -78,6 +78,7 @@ class Simulator:
         self.contact = np.load(contact_path) if os.path.exists(contact_path) else None
         ground = os.path.join(scene_dir, "ground.npz")      # flattened floor slabs (absent in --no-flatten scenes)
         slabs = np.load(ground)["slabs"] if os.path.exists(ground) else None
+        self.boxes, self.slabs = boxes, slabs            # kept for the viewers (visual map)
         self.rays = RayScene(boxes, slabs)
         self.voxels = VoxelLookup(os.path.join(scene_dir, "voxels.npz"))
         self.index = BoxIndex(boxes)
@@ -112,11 +113,8 @@ class Simulator:
             spec = mujoco.MjSpec.from_string(build_mjcf(cfg, self.meta["gravity"], pos, r["collision_pool"]))
         if visual_map:                      # only for the viewer: headless runs keep the small model
             max_vis = int(cfg.get("viewer", {}).get("max_map_boxes", 400_000))
-            vis_boxes = boxes
-            if len(boxes) > max_vis:        # draw the boxes nearest the spawn (a 0.03 m map has millions)
-                d2 = ((boxes[:, :2] - pos[:2]) ** 2).sum(axis=1)
-                vis_boxes = boxes[np.argpartition(d2, max_vis)[:max_vis]]
-            add_map_mesh(spec, vis_boxes, slabs, max_boxes=max_vis)
+            # draw the boxes nearest the spawn (a 0.03 m map has millions)
+            add_map_mesh(spec, nearest_boxes(boxes, pos, max_vis), slabs, max_boxes=max_vis)
         self.m = spec.compile()
         self.d = mujoco.MjData(self.m)
         self.proxies = ProxyPool(self.m, self.d, self.contact_index, r["collision_pool"])
@@ -232,6 +230,15 @@ class Simulator:
     def set_policy_mode(self, mode: int) -> dict | None:
         """g23 RL policy switch (0 PPO, 1 HIMLoco ...); None in ideal mode."""
         return self.g23.set_policy_mode(mode, self.d.time) if self.legged else None
+
+    def set_motion(self, mode: str) -> dict | None:
+        """g23 operator command: stand | walk | lie | damp (quadsim.g23.G23Backend.operator); None in ideal mode."""
+        if not self.legged:
+            return None
+        if mode == "stand":
+            self.fallen = False
+            self.low_since = None
+        return self.g23.operator(mode, self.d.time)
 
     def set_cmd(self, vx: float, vy: float, wz: float):
         self.cmd = np.array([vx, vy, wz], dtype=np.float64)

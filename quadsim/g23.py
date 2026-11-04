@@ -497,6 +497,31 @@ class G23Backend:
                 events.append({"type": "controller", "state": "connected", "t": t})
         return events
 
+    def operator(self, mode: str, t: float) -> dict:
+        """An operator command outside the auto sequence (web viewer buttons), the same strings their ROS bridge takes:
+        stand (RESET_SAFETY + MODE STAND, then wait for Walk), walk (MODE <policy>, MODE <gait>), lie (MODE LIE),
+        damp (MODE R)."""
+        if mode == "stand":
+            self.send_command("RESET_SAFETY")
+            self.send_command("MODE STAND")
+            self.stage = "manual"
+        elif mode == "walk":
+            if self.policy_mode is not None and self.gait == "RL":
+                self.send_command(f"MODE {int(self.policy_mode)}")
+            self.send_command(f"MODE {self.gait}")
+            self.stage = "gait"
+            self.t_gait = t
+            mode = self.gait.lower()
+        elif mode == "lie":
+            self.send_command("MODE LIE")
+            self.stage = "manual"
+        elif mode == "damp":
+            self.send_command("MODE R")
+            self.stage = "manual"
+        else:
+            raise ValueError(f"operator mode {mode!r}: expected stand, walk, lie or damp")
+        return {"type": "controller", "state": mode, "t": t, "source": "operator"}
+
     def set_policy_mode(self, mode: int, t: float) -> dict:
         """Choose the RL policy (0 PPO, 1 HIMLoco, 4 IsaacSim): sent now when the gait is on (the controller
         switches live), otherwise before MODE RL in the start sequence."""

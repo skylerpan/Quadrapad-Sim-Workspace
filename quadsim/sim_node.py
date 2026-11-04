@@ -2,9 +2,10 @@
 
 Usage (inside the container):
   python3 -m quadsim.sim_node [--config config/sim.yaml] [--scene scenes/dp_1012] [--rtf 1.0]
-                              [--viewer] [key=value ...]
+                              [--viewer] [--no-web] [key=value ...]
 
 The sim owns /clock: run every other node with use_sim_time:=true.
+A browser viewer (viser) is served on http://<host>:8755 by default (config web:, --no-web to skip it).
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import traceback
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
@@ -84,7 +85,12 @@ class SimNode(Node):
         self.pending_cmd = None
         self.pending_pose = None
         self.pending_policy = None
+        self.pending_motion = None                 # web viewer stand / walk / lie / damp
+        self.pending_path = None
         self.create_subscription(Twist, tp["cmd_vel"], self._on_cmd, 10)
+        web = cfg.get("web") or {}
+        if web.get("enabled", True) and web.get("path_topic"):     # the planner's path, drawn by the web viewer
+            self.create_subscription(Path, web["path_topic"], self._on_path, 10)
         self.create_subscription(PoseStamped, tp["set_pose"], self._on_set_pose, 10)
         if sim.legged and tp.get("policy_mode"):
             self.create_subscription(Int32, tp["policy_mode"], self._on_policy_mode, 10)
@@ -132,16 +138,32 @@ class SimNode(Node):
         with self.lock:
             self.pending_policy = int(msg.data)
 
+    def _on_path(self, msg: Path):
+        pts = np.array([[p.pose.position.x, p.pose.position.y, p.pose.position.z] for p in msg.poses],
+                       dtype=np.float32).reshape(-1, 3)
+        with self.lock:
+            self.pending_path = pts
+
+    def take_path(self):
+        """The latest planned path since the last call (main thread), or None."""
+        with self.lock:
+            pts, self.pending_path = self.pending_path, None
+        return pts
+
     # -- main-thread stepping ---------------------------------------------------
     def step(self):
         with self.lock:
-            cmd, pose, policy = self.pending_cmd, self.pending_pose, self.pending_policy
-            self.pending_cmd = self.pending_pose = self.pending_policy = None
+            cmd, pose, policy, motion = self.pending_cmd, self.pending_pose, self.pending_policy, self.pending_motion
+            self.pending_cmd = self.pending_pose = self.pending_policy = self.pending_motion = None
         if pose is not None:
             ok, moved = self.sim.set_pose(*pose)
             self._event(self._pose_event("set_pose", pose, ok, moved))
         if policy is not None:
             e = self.sim.set_policy_mode(policy)
+            if e is not None:
+                self._event(e)
+        if motion is not None:
+            e = self.sim.set_motion(motion)
             if e is not None:
                 self._event(e)
         if cmd is not None:
@@ -234,6 +256,7 @@ def main(argv=None):
     ap.add_argument("--rtf", type=float, default=None, help="real-time factor (0 = as fast as possible)")
     ap.add_argument("--duration", type=float, default=0.0, help="stop after this much sim time (0 = forever)")
     ap.add_argument("--viewer", action="store_true", help="open the MuJoCo passive viewer (needs a display)")
+    ap.add_argument("--no-web", action="store_true", help="do not serve the browser viewer (config web.enabled)")
     ap.add_argument("overrides", nargs="*", help="dotted config overrides, e.g. lidar.range_noise=0.0")
     a, ros_args = ap.parse_known_args(argv)
     cfg = load_config(a.config, a.overrides)
@@ -241,6 +264,8 @@ def main(argv=None):
         cfg["scene"] = a.scene
     if a.rtf is not None:
         cfg["physics"]["rtf"] = a.rtf
+    if a.no_web:
+        cfg.setdefault("web", {})["enabled"] = False
 
     # Own SIGINT/SIGTERM handling: rclpy's handler races with the background spin thread and
     # destroy_node, which could leave the process hanging after Ctrl+C. 2nd Ctrl+C exits at once.
@@ -307,6 +332,22 @@ def main(argv=None):
             f"{sim.m.nmeshface} faces, shadows {bool(viewer_cfg.get('shadows', False))}, "
             f"sync <= {1.0 / sync_period:.0f} Hz")
 
+    # browser viewer: on by default, never fatal (a missing viser or a bind error just means no web view)
+    web = None
+    web_wall = 0.0
+    if (cfg.get("web") or {}).get("enabled", True):
+        try:
+            from .web_viewer import WebViewer
+            web = WebViewer(cfg, sim, log=lambda msg: node.get_logger().info(msg))
+        except ImportError as e:
+            node.get_logger().warn(f"web viewer disabled: {e} (pip3 install viser; docker/Dockerfile installs it)")
+        except Exception as e:  # noqa: BLE001
+            node.get_logger().warn(f"web viewer failed to start: {e!r}; running without it")
+        else:
+            node.get_logger().info(f"web viewer: {web.url} ({web.describe()})")
+            if web.port != int((cfg.get("web") or {}).get("port", web.port)):
+                node.get_logger().warn(f"web viewer: port {(cfg.get('web') or {}).get('port')} was busy, serving on {web.port}")
+
     rtf = cfg["physics"]["rtf"]
     wall0, sim0 = time.perf_counter(), sim.d.time
     last_report = wall0
@@ -314,7 +355,20 @@ def main(argv=None):
     code = 0
     try:
         while not stop.is_set() and rclpy.ok() and (a.duration <= 0 or sim.d.time < a.duration):
-            node.step()
+            if web is not None:                      # browser controls go through the same path as the topics
+                tele, reset = web.teleop_cmd(), web.take_reset(sim)
+                motion, policy = web.take_motion(), web.take_policy()
+                if tele is not None or reset is not None or motion is not None or policy is not None:
+                    with node.lock:
+                        if tele is not None:
+                            node.pending_cmd = tele
+                        if reset is not None:
+                            node.pending_pose = reset
+                        if motion is not None:
+                            node.pending_motion = motion
+                        if policy is not None:
+                            node.pending_policy = policy
+            out = node.step()
             now = time.perf_counter()
             if ctl is not None and ctl.poll() is not None:
                 node._event({"type": "controller", "state": "exited", "code": ctl.poll(), "t": sim.d.time})
@@ -330,6 +384,11 @@ def main(argv=None):
                     sync_wall += t_after - now
                     now = t_after
                     next_sync = now + sync_period
+            if web is not None:
+                path = node.take_path()
+                if path is not None:
+                    web.set_path(path)
+                web_wall += web.update(sim, out.frames)
             if rtf > 0:
                 ahead = (sim.d.time - sim0) / rtf - (now - wall0)
                 if ahead > 0:
@@ -345,6 +404,9 @@ def main(argv=None):
                 if viewer is not None:
                     msg += f", viewer.sync {100.0 * sync_wall / (now - last_report):.0f}% of wall"
                     sync_wall = 0.0
+                if web is not None:
+                    msg += f", web {100.0 * web_wall / (now - last_report):.0f}% of wall ({web.n_clients} clients)"
+                    web_wall = 0.0
                 node.get_logger().info(msg)
                 if sim.legged and rtf > 0 and achieved < 0.98 * rtf:
                     # the controller is a wall-clock 1 kHz loop: a slow sim starves it of telemetry
@@ -363,6 +425,8 @@ def main(argv=None):
             code = 1
         if viewer is not None:
             viewer.close()
+        if web is not None:
+            web.close()
         if ctl is not None:
             ctl.stop()
         sim.close()
