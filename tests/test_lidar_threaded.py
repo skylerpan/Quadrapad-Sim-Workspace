@@ -1,7 +1,10 @@
 """RollingLidar on a worker thread delivers the same frames as the synchronous path, one tick late."""
 import os
+import platform
 import stat
 import time
+
+import pytest
 
 import numpy as np
 
@@ -70,7 +73,7 @@ def test_controller_process_runs_and_reports_exit(tmp_path):
     exe.write_text("#!/bin/sh\necho hello from $0 $1 $2\necho \"ORT=$ORT_DYLIB_PATH STATE=$G2_LMA_STATE_SOURCE\"\nexit 3\n")
     exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
     lines = []
-    p = ControllerProcess({"exec": str(exe), "args": ["sim", "ros"]}, lines.append, repo=str(tmp_path))
+    p = ControllerProcess({"kind": "g2_deploy_rs", "exec": str(exe), "args": ["sim", "ros"]}, lines.append, repo=str(tmp_path))
     assert p.available
     p.start()
     deadline = time.time() + 5.0
@@ -80,5 +83,46 @@ def test_controller_process_runs_and_reports_exit(tmp_path):
     assert p.poll() == 3
     assert any("hello from" in l and "sim ros" in l for l in lines)
     assert any("STATE=ground_truth" in l for l in lines)
-    missing = ControllerProcess({}, lines.append, repo=str(tmp_path))
+    missing = ControllerProcess({"kind": "g2_deploy_rs"}, lines.append, repo=str(tmp_path))
     assert not missing.available and missing.exe.endswith("target/release/g2_deploy_rs")
+    assert p.spec.log_prefix == "[g2]" and any(l.startswith("[g2] ") for l in lines)
+
+
+def test_motorcontrol_controller_process_defaults(tmp_path, monkeypatch):
+    from quadsim.controller_proc import ControllerProcess
+    monkeypatch.delenv("ROBOTDOG_BACKEND", raising=False)
+    monkeypatch.setenv("ROBOTDOG_ROBOT", "from-env")                      # the environment wins over our defaults
+    lib = tmp_path / "third_party" / platform.machine() / "lib" / "libonnxruntime.so.1.19.2"
+    lib.parent.mkdir(parents=True)
+    lib.write_text("")
+    exe = tmp_path / "fake_robotdog.sh"
+    exe.write_text("#!/bin/sh\necho \"argc=$# BACKEND=$ROBOTDOG_BACKEND ROBOT=$ROBOTDOG_ROBOT TARGET=$ROBOTDOG_SIM_TARGET\"\n"
+                   "echo \"[STATE] rest ----> stand\"\nexit 0\n")
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    cfg = {"kind": "motorcontrol", "exec": str(exe), "motorcontrol": {"cmd_port": 40101, "joint_addr": "127.0.0.1:40102",
+           "base_addr": "127.0.0.1:40103", "operator_addr": "127.0.0.1:40120"}, "env": {"ROBOTDOG_TELEMETRY": "on"}}
+    lines = []
+    p = ControllerProcess(cfg, lines.append, repo=str(tmp_path))
+    assert p.args == [] and p.spec.log_prefix == "[mc]"
+    env = p.env
+    assert env["ROBOTDOG_BACKEND"] == "sim" and env["ROBOTDOG_ROBOT"] == "from-env"
+    assert env["ROBOTDOG_COMMAND_SOURCE"] == "udp" and env["ROBOTDOG_STATE_PUBLISHER"] == "udp"
+    assert env["ROBOTDOG_TELEMETRY"] == "on"                                # robot.controller.env wins over our defaults
+    assert env["ROBOTDOG_SHUTDOWN_SETTLE_SECS"] == "0"
+    assert env["ROBOTDOG_SIM_TARGET"] == "127.0.0.1:40101" and env["ROBOTDOG_SIM_JOINT_PORT"] == "40102"
+    assert env["ROBOTDOG_SIM_BASE_PORT"] == "40103" and env["ROBOTDOG_OPERATOR_UDP_PORT"] == "40120"
+    assert env["ROBOTDOG_ONNXRUNTIME_LIB"] == str(lib)
+    p.start()
+    deadline = time.time() + 5.0
+    while p.poll() is None and time.time() < deadline:
+        time.sleep(0.05)
+    time.sleep(0.1)
+    assert p.poll() == 0
+    assert any("argc=0 BACKEND=sim ROBOT=from-env TARGET=127.0.0.1:40101" in l for l in lines)
+    assert p.state is None and not p.safety_locked                          # stdout is not parsed for this controller
+    missing = ControllerProcess({"kind": "motorcontrol"}, lines.append, repo=str(tmp_path))
+    assert not missing.available and missing.exe.endswith("target/release/robotdog_control")
+    default = ControllerProcess({}, lines.append, repo=str(tmp_path))
+    assert default.spec.kind == "motorcontrol"                              # the default controller
+    with pytest.raises(ValueError):
+        ControllerProcess({"kind": "unknown"}, lines.append, repo=str(tmp_path))
