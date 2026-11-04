@@ -305,14 +305,14 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 
 | `robot.type` | 內容 |
 |---|---|
-| `g23`（預設） | `robot/g23/` 的 G23 機器狗模型（來源見 `provenance.json`），物理 1 kHz。腿由 `g2_deploy_rs` 的 Rust 控制器驅動：quadsim 扮演它自帶的 `mujoco_simulation_G23.py`，在 `robot.controller.cmd_port`（20001）收 240 bytes 的力矩指令（kp / q / kd / dq / tau 各 12 個 float32，力矩 = kp(q−q) + kd(dq−dq) + tau，套 J60 速度-力矩包絡），每個物理步對 `robot.controller.telemetry`（30010 控制器、30011 web GUI）送 228 bytes 的狀態（t、rpy、加速度、角速度、12 關節位置 / 速度 / 力矩、機身位置 / 速度、四腳接觸）。出生後 `start_delay` 秒送 `MODE STAND`、再 `stand_delay` 秒送 `MODE RL` 或 `MODE LMA`（`robot.gait`），之後把 `/cmd_vel` 轉成 `AXES vx vy wz`（m/s、m/s、rad/s）送到 `robot.controller.command_addr`（50051，和他們 ROS bridge 同一個埠）：`/cmd_vel` 在 `robot.cmd_timeout`（0.5 s）內有來就每個控制週期轉送，過期時送一次 `AXES 0 0 0` 然後不再送，讓控制器自己的 300 ms watchdog 把速度指令標成 inactive（持續送零會讓 RL policy 原地踏步）。`robot.auto_stand: false` 就不自動送 MODE，自己用 GUI / 鍵盤操作。代理池從場景的 `contact.npy`（含地板）取 box，機器人站在體素地板上；場景必須是格式 3 |
+| `g23`（預設） | `robot/g23/` 的 G23 機器狗模型（來源見 `provenance.json`），物理 1 kHz。腿由 Rust 控制器驅動，哪一支由 `robot.controller.kind` 決定（預設 `motorcontrol` = SyncAI-Device-MotorControl；`g2_deploy_rs` = 原本的控制器），兩種的協定與序列見 3.2。共同的部分：出生後 `start_delay` 秒送站立、再 `stand_delay` 秒送步態 / 行為，之後把 `/cmd_vel` 轉成速度指令：`/cmd_vel` 在 `robot.cmd_timeout`（0.5 s）內有來就每個控制週期轉送，過期時送一次零然後不再送，讓控制器自己的 watchdog 把速度指令標成 inactive（持續送零會讓 RL policy 原地踏步）。`robot.auto_stand: false` 就不自動送，自己用 GUI / 鍵盤操作。代理池從場景的 `contact.npy`（含地板）取 box，機器人站在體素地板上；場景必須是格式 3 |
 | `ideal` | 浮動底盤，不模擬腿：跟隨 `/cmd_vel`、腳下射線貼合地形、太高的台階 / 太陡 / 撞牆會拒絕並發事件。`eval_scene.py` 和 `bench.py` 固定用這個 |
 
-兩種模式對 ROS 的介面完全一樣（第 5 章）。`g23` 模式多兩種事件：`controller`（`state`：`connected` 第一次收到力矩指令、`stand` / `rl` / `lma` 送出模式指令、`lost` 超過 1 秒沒收到指令）和 `fall`（機身法線的 z 分量 < 0.5，每次出生 / set_pose 後只報一次）。`/sim/set_pose` 在 g23 模式會把機器人以預設關節角放到新位置、重新跑站立序列。
+兩種模式對 ROS 的介面完全一樣（第 5 章）。`g23` 模式多兩種事件：`controller`（`state`：`connected` 第一次收到力矩指令、`stand` / `rl_fcn` / `rl_him` / `gait_mpc`（g2_deploy_rs：`rl` / `lma`）送出站立 / 行為指令、`lost` 超過 1 秒沒收到指令；MotorControl 另有 `switched`（控制器回報真的換了行為）、`rejected`（行為被拒 5 次放棄）、`stopped` / `released`（控制器自己停機 / 解除））和 `fall`（機身法線的 z 分量 < 0.5，每次出生 / set_pose 後只報一次）。`/sim/set_pose` 在 g23 模式會把機器人以預設關節角放到新位置、重新跑站立序列。
 
-`robot.policy_mode`（RL 用）是起步時的 policy：0 = PPO 平地（**預設**），1 = HIMLoco 爬梯 / 崎嶇地形，4 = IsaacSim。要上下樓梯時由導航端切換：對 `ros.topics.policy_mode`（預設 `/robot01/policy_mode`，`std_msgs/Int32`）發 1，quadsim 轉成 `MODE 1` 送給控制器，它在 RL 模式中每個控制步都讀這個值所以立刻生效，下完樓梯再發 0 切回 PPO（事件 `controller` / `state: policy`，`live: true`）。對應實機 SDK 的 `/set_policy_mode` 服務。PPO 在地板修補前 2 m 內就被 0.1 m 凸起觸發 safety，修補後正常；HIMLoco 2026-10-29 沿 dp_1008 SLAM 軌跡走 81 m 無事。
+起步的 policy：MotorControl 用 `robot.behavior`（`rl_fcn` = PPO 平地，**預設**；`rl_him` = HIMLoco 爬梯 / 崎嶇地形；`gait_mpc`），g2_deploy_rs 用 `robot.policy_mode`（0 = PPO、1 = HIMLoco、4 = IsaacSim）。要上下樓梯時由導航端切換：對 `ros.topics.policy_mode`（預設 `/robot01/policy_mode`，`std_msgs/Int32`）發 1，MotorControl 這邊 quadsim 翻成 `rl_him`（0 → `rl_fcn`；其他值沒有對應，記 warning 不送），控制器一次只走一條邊、RL 行為只和 `stand` 相連，所以先送 `stand` 再送新行為（站穩前會被拒，quadsim 每秒重送、最多 5 次），下完樓梯再發 0 切回；g2_deploy_rs 收 `MODE 1` 即時生效（事件 `controller` / `state: policy`，`live: true`）。對應實機 SDK 的 `/set_policy_mode` 服務。PPO 在地板修補前 2 m 內就被 0.1 m 凸起觸發 safety，修補後正常；HIMLoco 2026-10-29 沿 dp_1008 SLAM 軌跡走 81 m 無事。
 
-控制器還沒接上時機器人只會軟倒在地上（沒有力矩）；`tests/test_g23.py` 用一個假控制器（PD 撐住預設姿勢）驗證協定、站立和事件。站立序列要等到收到第一筆力矩指令（`connected`）才開始計時，所以控制器慢慢起來也沒關係。
+控制器還沒接上時機器人只會軟倒在地上（沒有力矩）；`tests/test_motorcontrol_backend.py` 與 `tests/test_g23.py` 各用一個假控制器（PD 撐住預設姿勢；MotorControl 的那支 `tests/fake_motorcontrol.py` 也能單獨跑，見 3.2）驗證協定、站立和事件。站立序列要等到收到第一筆力矩指令（`connected`）才開始計時，所以控制器慢慢起來也沒關係。
 
 **和參考模擬器的對齊**（原則：quadsim 的 G23 要和 `g2_deploy_rs/interface/robot/simulation/mujoco_simulation_G23.py` 一樣，控制器才看到同一隻狗；有差異要寫在這張表，有疑問先跑 `scripts/parity_g23.py`（下面），行為層再用 `scripts/idle_drift_theirs.py` 在同一個容器跑他們的 sim 對照，不要單方面「改好」機器人）：
 
@@ -330,7 +330,7 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 | 馬達溫度 | `G2_SIM_MOTOR_TEMP=1` 熱模型，只影響 ASCII 行的 JOINT_TEMP | **沒做**，JOINT_TEMP 固定 0 |
 | 推力測試 | 鍵盤 Enter 側推 | 沒有（用 `/sim/set_pose` 或自己發力） |
 | 起始姿勢 | torso 在 xml 位置落下、關節預設角 | torso 在地板上 0.40 m 落下、關節預設角 |
-| 關節模型套用時機 | 編譯**之後**改 `dof_armature` 等（compiler 算的 `dof_invweight0` / `body_invweight0` 沒含 armature，接觸與摩擦的正則化跟著變） | 同：在 `G23Backend` 對編譯後的模型套，不在 MjSpec 裡（2026-10-30 之前在 spec 裡，接觸剛度差 30%） |
+| 關節模型套用時機 | 編譯**之後**改 `dof_armature` 等（compiler 算的 `dof_invweight0` / `body_invweight0` 沒含 armature，接觸與摩擦的正則化跟著變） | 同：在 `G23Physics` 對編譯後的模型套，不在 MjSpec 裡（2026-10-30 之前在 spec 裡，接觸剛度差 30%） |
 
 啟動 log 的 `reference sim options: ...` 會印解析後的設定。
 
@@ -362,20 +362,34 @@ python3 scripts/run_theirs.py --send "AXES 0.4 0 0" --repeat 8      # 10 Hz 連�
 
 ### 3.2 控制器：建置與一鍵啟動
 
-控制器（`g2_deploy_rs`，Rust）在**容器裡編、容器裡跑**，host 不需要 Rust 或 OCS2。第二個映像 `quadsim-g23:latest`（`docker/Dockerfile.g23`，FROM quadsim:latest 加 Rust 工具鏈、cmake / ninja / Eigen、python3-venv）由 `docker/build_g23.sh` 建；控制器 repo 以 volume 掛在容器的 `/g2`（host 路徑 `G2_DEPLOY_RS`，預設本 repo 旁邊的 `../g2_deploy_rs/g2_deploy_rs`），編譯產物（`target/`、`onnxruntime-linux-*`、`.venv_lma`、`build/lma_bridge`）留在那個目錄、屬於你。
+控制器（Rust）在**容器裡編、容器裡跑**，host 不需要 Rust。第二個映像 `quadsim-g23:latest`（`docker/Dockerfile.g23`，FROM quadsim:latest 加 Rust 工具鏈、cmake / ninja / Eigen、python3-venv）由 `docker/build_g23.sh` 建；控制器 repo 以 volume 掛進容器：SyncAI-Device-MotorControl 掛 `/mc`（host 路徑 `MOTORCONTROL_REPO`，預設本 repo 旁邊的 `../SyncAI-Device-MotorControl`），g2_deploy_rs 掛 `/g2`（`G2_DEPLOY_RS`，預設 `../g2_deploy_rs/g2_deploy_rs`）；不存在的只印警告。編譯產物（`target/` 等）留在那個目錄、屬於你。
 
 ```bash
-docker/build_g23.sh            # 映像（沒有才建）+ ONNX Runtime 下載 + cargo build --release（RL policy 用；幾分鐘）
-docker/build_g23.sh --lma      # 再加 LMA：cmeel 的 Pinocchio / Boost venv + OCS2 C++ bridge 從原始碼編（很久，每個 job 約 3 GB RAM）
-docker/build_g23.sh --image    # 只重建映像
-scripts/run_sim.sh             # 之後照常啟動：偵測到 quadsim-g23 映像就用它並掛 /g2，sim_node 自己把控制器當子行程帶起來
+docker/build_g23.sh                # 映像（沒有才建）+ SyncAI-Device-MotorControl cargo build --release（RL；第一次會下載它釘的 Rust 1.99.1 與 crates）
+docker/build_g23.sh --gait-mpc     # 再加它的 gait-mpc feature（C++ MPC：CMake / Eigen / OSQP；此旗標尚未在容器裡驗證）
+docker/build_g23.sh --kind g2      # 改建 g2_deploy_rs：ONNX Runtime 下載 + cargo build（--lma 再加 OCS2 bridge，很久）
+docker/build_g23.sh --image        # 只重建映像
+scripts/run_sim.sh                 # 之後照常啟動：偵測到 quadsim-g23 映像就用它並掛 /mc、/g2，sim_node 自己把控制器當子行程帶起來
 ```
 
-`scripts/run_sim.sh` 的規則：命令列沒有 `robot.type=ideal` 且 `quadsim-g23` 映像存在 → `QUADSIM_G23=1`（`docker/run.sh` 選那個映像、掛 `/g2`）；否則用 `quadsim:latest` 並印警告（機器人會沒有控制器）。sim_node 在 g23 模式且 `robot.controller.spawn`（預設 true）時，找 `/g2/target/release/g2_deploy_rs`（或 `robot.controller.exec`）以 `sim ros` 參數、工作目錄 `/g2` 啟動它，環境變數預設 `G2_LMA_STATE_SOURCE=ground_truth`（`robot.controller.env` 可加），`ORT_DYLIB_PATH` 自動指到 repo 裡下載好的 onnxruntime；它的輸出以 `[g2]` 前綴併進 sim 的 log，Ctrl-C 一起關；它自己掛掉會發 `controller` 事件（`state: exited`）並讓 sim 以 exit code 1 結束。找不到 binary 時只印警告，你可以在另一個終端自己跑控制器（它連 localhost UDP 即可，容器是 `--net=host`）。
+`scripts/run_sim.sh` 的規則：命令列沒有 `robot.type=ideal` 且 `quadsim-g23` 映像存在 → `QUADSIM_G23=1`（`docker/run.sh` 選那個映像、掛兩個 repo）；否則用 `quadsim:latest` 並印警告（機器人會沒有控制器）。sim_node 在 g23 模式且 `robot.controller.spawn`（預設 true）時，依 `robot.controller.kind` 啟動控制器（`quadsim/controller_proc.py` 的 `ControllerSpec`）；它的輸出以 `[mc]` / `[g2]` 前綴併進 sim 的 log，Ctrl-C 一起關；它自己掛掉會發 `controller` 事件（`state: exited`）並讓 sim 以 exit code 1 結束。找不到 binary 時只印警告，你可以在另一個終端自己跑控制器（它連 localhost UDP 即可，容器是 `--net=host`），或 `robot.controller.spawn=false` 配 `python3 -m tests.fake_motorcontrol`（假的 MotorControl：PD 撐住站姿、回狀態行）。
+
+**`motorcontrol`（預設）**：`/mc/target/release/robotdog_control`，沒有參數，全靠 `ROBOTDOG_*` 環境變數（quadsim 注入 `ROBOTDOG_BACKEND=sim`、`ROBOTDOG_ROBOT=g2`、`ROBOTDOG_COMMAND_SOURCE=udp`、`ROBOTDOG_STATE_PUBLISHER=udp`、`ROBOTDOG_TELEMETRY=off`、`ROBOTDOG_SHUTDOWN_SETTLE_SECS=0`、`ROBOTDOG_ONNXRUNTIME_LIB` 指到 repo 裡 vendored 的 onnxruntime、以及 `robot.controller.motorcontrol` 的埠；`robot.controller.env` 可覆寫任何一個）。協定（`quadsim/motorcontrol.py`、`quadsim/motorcontrol_wire.py`；全部 little-endian float32、無表頭、長度即身分）：
+
+| 方向 | 埠（`robot.controller.motorcontrol`） | 內容 |
+|---|---|---|
+| 控制器 → quadsim | `cmd_port` 40001 | 240 bytes：每顆馬達 `[pos, vel, tau, kp, kd]` × 12，力矩 = kp(pos−q) + kd(vel−dq) + tau，套 J60 包絡；控制器開機起每個 1 kHz tick 都送 |
+| quadsim → 控制器 | `joint_addr` 40002 | 144 bytes：每顆 `[q, dq, tau]` × 12，每個物理步 |
+| quadsim → 控制器 | `base_addr` 40003 | 36 bytes：`[rpy, 角速度, 加速度]`（機身座標，加速度含重力），每個物理步 |
+| quadsim → 控制器 | `operator_addr` 40020 | 文字行：`stand`、`rl_fcn` / `rl_him` / `gait_mpc`、`rest`、`reset`、`vel vx vy wz`；控制器把 `kind=status` / `kind=request` / `kind=event` 行回給最後發話者（同一個 socket） |
+
+序列：收到第一包力矩指令（`connected`）後 `start_delay` 秒送 `stand`（控制器開機在 `rest`，看到關節封包才接受站立），`stand_delay` 秒後送 `robot.behavior`。控制器的 `rise_to_stand` 要 3 s，站穩前 RL 行為會被 `state=rejected`，quadsim 每秒重送、最多 5 次，仍失敗發 `rejected` 事件（所以 `stand_delay` 要 ≥ 3）。`/cmd_vel` → `vel x y w`，過期送一次 `vel 0 0 0`（控制器的 deadman 500 ms 只把速度歸零、不改行為）。`set_pose` 前送 `rest`（阻尼放下），新序列以 `reset` 開頭再 `stand`。瀏覽器 viewer 的按鈕：Stand = `reset` + `stand`、Walk = `robot.behavior`、Lie down / Damping 都是 `rest`（控制器沒有獨立的阻尼行為，`rest` 前 2 秒就是阻尼）。控制器自己停機（關節封包斷 >100 ms、傾斜 >60°、`invalid_actions` …）會 `stop=hardware` 強制 `rest` 並 latch：quadsim 只發 `stopped` 事件、**不**自動 `reset`（避免遮掉真問題），Stand 按鈕或 `set_pose` 會送 `reset`。它的 sim 協定沒有機身位置 / 速度與腳接觸（gait_mpc 在 sim 裡只靠 IMU，跟實機一樣），quadsim 對這支不送 `SIM_POSE`（30012）也不送 ASCII 狀態行（50010）。
+
+**`g2_deploy_rs`**：`/g2/target/release/g2_deploy_rs sim ros`，工作目錄 `/g2`，環境變數預設 `G2_LMA_STATE_SOURCE=ground_truth`，`ORT_DYLIB_PATH` 自動指到 repo 裡下載好的 onnxruntime；stdout 的 `[SAFETY]` / `[STATE]` 行被抓來當狀態。quadsim 扮演它自帶的 `mujoco_simulation_G23.py`：在 `robot.controller.cmd_port`（20001）收 240 bytes 的力矩指令（kp / q / kd / dq / tau 各 12 個 float32），每個物理步對 `robot.controller.telemetry`（30010 控制器、30011 web GUI）送 228 bytes 的狀態（t、rpy、加速度、角速度、12 關節位置 / 速度 / 力矩、機身位置 / 速度、四腳接觸），站立 / 步態 / 速度是 `MODE STAND`、`MODE <policy>` + `MODE RL|LMA`（`robot.gait`、`robot.policy_mode`）、`AXES vx vy wz` 送到 `robot.controller.command_addr`（50051，和他們 ROS bridge 同一個埠；watchdog 300 ms），`set_pose` 前 `MODE R`、新序列以 `RESET_SAFETY` 開頭；另送 `SIM_POSE` 真值到 30012、ASCII 狀態行到 50010（`G2_SIM_*` 環境變數與 `robot.controller.gt_addr` / `ros_bridge_addr` / `ros_ascii_telemetry` 可關）。和他們參考模擬器的對齊表與證偽測試在 3.1。
 
 ### 3.3 機器人層評估（`scripts/walk_g23.py`）
 
-headless、即時、不用 ROS 也不用導航堆疊：Simulator 開 g23 模式、自己帶起控制器，等站立 → 步態完成後，以 pure pursuit（對 sim 真值）沿 `Maps/<map>/poses.txt`、waypoint yaml 或直線送 cmd_vel（bang-bang：policy 對很小的非零指令不穩，所以 wz 只送 0 或 ±`--wz` 0.6、vx 只送 0 或 `--vx` 0.4）。記錄 `fall`（翻倒或步態開啟 2 秒後高度 < `robot.fall_height` 達 1 秒）、控制器的 `[SAFETY]` 鎖定（`safety`）、腳的接觸力尖峰、機身高度 / pitch、沿路徑的進度，寫到 `results/walk_g23/<時間>.json`，有跌倒或 safety 就停。這是 Phase 1 幾何指標之外的「機器人層」：機器人真的在哪裡倒、為什麼。
+headless、即時、不用 ROS 也不用導航堆疊：Simulator 開 g23 模式、自己帶起控制器，等站立 → 步態完成後，以 pure pursuit（對 sim 真值）沿 `Maps/<map>/poses.txt`、waypoint yaml 或直線送 cmd_vel（bang-bang：policy 對很小的非零指令不穩，所以 wz 只送 0 或 ±`--wz` 0.6、vx 只送 0 或 `--vx` 0.4）。記錄 `fall`（翻倒或步態開啟 2 秒後高度 < `robot.fall_height` 達 1 秒）、控制器的停機 / 安全鎖定（`safety`：MotorControl 的 `stop`、g2 的 `[SAFETY]`）、腳的接觸力尖峰、機身高度 / pitch、沿路徑的進度，寫到 `results/walk_g23/<時間>.json`，有跌倒或 safety 就停。這是 Phase 1 幾何指標之外的「機器人層」：機器人真的在哪裡倒、為什麼。
 
 ```bash
 docker/build_g23.sh                                                                        # 一次
