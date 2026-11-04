@@ -48,3 +48,36 @@ def test_command_of_the_wrong_length_or_with_a_non_finite_value_is_dropped_whole
     assert decode_command(struct.pack("<60f", *fields)) is None
     fields[17] = math.inf
     assert decode_command(struct.pack("<60f", *fields)) is None
+
+
+# -- operator lines ---------------------------------------------------------------------------------------
+from quadsim.motorcontrol_wire import Request, Status, Switched, Stopped, Released, parse_operator_line  # noqa: E402
+
+STATUS = ("kind=status behavior=stand moving_to=- failure=- stop=- stopped_while=- stop_fired=- stop_joints=- "
+          "stop_rule=- stop_lost=- stop_battery=- stop_dropped_rule=- stop_source=- motors_health=ok motors_fault=- "
+          "motors_limit=- motors_warn=- imu_health=ok imu_fault=- imu_limit=- imu_warn=- bms_health=ok bms_fault=- "
+          "bms_limit=- bms_warn=- faulted_joints=- unseen_joints=- status_word_stale_joints=- feedback_late_joints=-")
+
+
+def test_status_line_becomes_a_typed_status_with_dashes_as_none():
+    s = parse_operator_line(STATUS)
+    assert s == Status(behavior="stand", moving_to=None, stop=None, motors_health="ok", imu_health="ok")
+    s = parse_operator_line(STATUS.replace("moving_to=-", "moving_to=rl_fcn").replace("stop=-", "stop=hardware")
+                            .replace("imu_health=ok", "imu_health=stale"))
+    assert s.moving_to == "rl_fcn" and s.stop == "hardware" and s.imu_health == "stale"
+
+
+def test_request_and_event_lines():
+    r = parse_operator_line("kind=request seq=9 state=rejected target=rl_fcn reasons=predecessor_not_settled")
+    assert r == Request(seq=9, state="rejected", target="rl_fcn", reasons="predecessor_not_settled")
+    assert parse_operator_line("kind=request seq=- state=- target=- reasons=-") == Request(None, None, None, None)
+    assert parse_operator_line("kind=event type=switched from=rest to=stand switch_count=1") == Switched("rest", "stand")
+    assert parse_operator_line("kind=event type=stopped stop=hardware") == Stopped("hardware")
+    assert parse_operator_line("kind=event type=released") == Released()
+
+
+def test_lines_that_carry_nothing_for_us_are_none():
+    assert parse_operator_line("kind=state rpy=0,0,0 omega=0,0,0") is None          # 20 Hz numbers: not consumed
+    assert parse_operator_line("kind=event type=failure behavior=rl_fcn reason=x") is None
+    assert parse_operator_line("") is None and parse_operator_line("garbage") is None
+    assert parse_operator_line("kind=request seq=abc state=ok target=stand reasons=-") is None   # bad seq

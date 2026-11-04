@@ -52,3 +52,78 @@ def decode_command(data: bytes) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.
     if not np.all(np.isfinite(v)):
         return None
     return v[:, 0], v[:, 1], v[:, 2], v[:, 3], v[:, 4]
+
+
+# -- operator lines -----------------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Status:
+    """A `kind=status` line: what the controller is doing and whether it is stopped. Only the fields quadsim acts
+    on; `None` is the controller's `-`."""
+    behavior: str | None
+    moving_to: str | None
+    stop: str | None                 # None, or operator | hardware | invalid_actions | source_unhealthy | shutdown | ...
+    motors_health: str | None
+    imu_health: str | None
+
+
+@dataclass(frozen=True)
+class Request:
+    """A `kind=request` line: the fate of the last switch request."""
+    seq: int | None
+    state: str | None                # pending | ok | rejected | abandoned | superseded
+    target: str | None
+    reasons: str | None
+
+
+@dataclass(frozen=True)
+class Switched:
+    from_behavior: str
+    to_behavior: str
+
+
+@dataclass(frozen=True)
+class Stopped:
+    stop: str
+
+
+@dataclass(frozen=True)
+class Released:
+    pass
+
+
+OperatorLine = Status | Request | Switched | Stopped | Released
+
+
+def _fields(line: str) -> dict[str, str | None]:
+    out: dict[str, str | None] = {}
+    for word in line.split():
+        key, eq, value = word.partition("=")
+        if eq:
+            out[key] = None if value == "-" else value
+    return out
+
+
+def parse_operator_line(line: str) -> OperatorLine | None:
+    """One line from the controller's operator socket as a typed value, or None for lines quadsim does not act on
+    (`kind=state`, other events) and for lines it cannot make sense of."""
+    f = _fields(line.strip())
+    kind = f.get("kind")
+    if kind == "status":
+        if "behavior" not in f:
+            return None
+        return Status(f.get("behavior"), f.get("moving_to"), f.get("stop"), f.get("motors_health"), f.get("imu_health"))
+    if kind == "request":
+        seq = f.get("seq")
+        try:
+            return Request(int(seq) if seq is not None else None, f.get("state"), f.get("target"), f.get("reasons"))
+        except ValueError:
+            return None
+    if kind == "event":
+        t = f.get("type")
+        if t == "switched" and f.get("from") and f.get("to"):
+            return Switched(f["from"], f["to"])
+        if t == "stopped" and f.get("stop"):
+            return Stopped(f["stop"])
+        if t == "released":
+            return Released()
+    return None
