@@ -375,6 +375,12 @@ class G23Physics:
     def lost(self) -> bool:
         return self.seq.lost
 
+    @property
+    def safety_locked(self) -> bool:
+        """The controller reported a stop / safety lock on its link (g2_deploy_rs reports it on stdout instead:
+        ControllerProcess.safety_locked)."""
+        return False
+
 
 class G2DeployBackend(G23Physics):
     """The g2_deploy_rs link: its torque packets in, its 228-byte telemetry out, its text commands, the ASCII

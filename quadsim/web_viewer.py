@@ -160,14 +160,20 @@ class WebViewer:
                                     hint="zero velocity now and hand the command back to /cmd_vel")
         self.legged = bool(getattr(sim, "legged", False))
         if self.legged:
-            policies = {"0 PPO flat": 0, "1 HIMLoco stairs": 1, "4 IsaacSim": 4}
-            cur = int(cfg["robot"].get("policy_mode") or 0)
-            initial = next((k for k, v in policies.items() if v == cur), "0 PPO flat")
+            kind = (cfg["robot"].get("controller", {}) or {}).get("kind") or "motorcontrol"
+            if kind == "motorcontrol":                 # the controller's behaviors, by their policy_mode slots
+                policies = {"rl_fcn (PPO flat)": 0, "rl_him (HIMLoco stairs)": 1}
+                cur = {"rl_fcn": 0, "rl_him": 1}.get(cfg["robot"].get("behavior", "rl_fcn"), 0)
+                hints = ("reset + stand / the behavior / rest / rest to the controller",
+                         "by way of stand while walking")
+            else:
+                policies = {"0 PPO flat": 0, "1 HIMLoco stairs": 1, "4 IsaacSim": 4}
+                cur = int(cfg["robot"].get("policy_mode") or 0)
+                hints = ("MODE STAND / MODE RL / MODE LIE / MODE R to the controller", "MODE <n>: switches live while walking")
+            initial = next((k for k, v in policies.items() if v == cur), next(iter(policies)))
             with gui.add_folder("Motion"):
-                self.bg_motion = gui.add_button_group("Motion", ["Stand", "Walk", "Lie down", "Damping"],
-                                                      hint="MODE STAND / MODE RL / MODE LIE / MODE R to the controller")
-                self.dd_policy = gui.add_dropdown("RL policy", list(policies), initial_value=initial,
-                                                  hint="MODE <n>: switches live while walking")
+                self.bg_motion = gui.add_button_group("Motion", ["Stand", "Walk", "Lie down", "Damping"], hint=hints[0])
+                self.dd_policy = gui.add_dropdown("RL policy", list(policies), initial_value=initial, hint=hints[1])
             motions = {"Stand": "stand", "Walk": "walk", "Lie down": "lie", "Damping": "damp"}
             self.bg_motion.on_click(lambda _: setattr(self, "_motion", motions[self.bg_motion.value]))
             self.dd_policy.on_update(lambda _: setattr(self, "_policy", policies[self.dd_policy.value]))

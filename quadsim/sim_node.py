@@ -293,9 +293,8 @@ def main(argv=None):
         f"yaw {sim.base.yaw:.2f} (floor z {sim.spawn_floor_z:.2f}, moved {sim.spawn_moved}), "
         f"rtf {cfg['physics']['rtf']}, gt_tf {cfg['ros']['publish_gt_tf']}, "
         f"custom_msg {node.pub_custom is not None}, robot {sim.robot_type}"
-        + (f" (gait {cfg['robot'].get('gait', 'rl')}, policy {cfg['robot'].get('policy_mode')}, gravity "
-           f"{np.round(sim.m.opt.gravity, 3).tolist()}, torque cmds on udp:{sim.g23.cmd_port}, telemetry -> "
-           f"{sim.g23.telemetry_to}, commands -> {sim.g23.command_to}; reference sim options: {sim.g23.describe()})"
+        + (f" (controller {type(sim.g23).__name__}, gravity {np.round(sim.m.opt.gravity, 3).tolist()}, "
+           f"{sim.g23.describe_link()}; reference sim options: {sim.g23.describe()})"
            if sim.legged else ""))
     spin = threading.Thread(target=_spin, args=(node, stop, failed), daemon=True)
     spin.start()
@@ -310,9 +309,9 @@ def main(argv=None):
             ctl.start()
         else:
             node.get_logger().warn(
-                f"controller binary not found at {ctl.exe}: start it yourself (g2_deploy_rs sim ros) or build "
-                f"it with docker/build_g23.sh; the robot lies still until torque commands arrive on "
-                f"udp:{sim.g23.cmd_port}")
+                f"controller binary not found at {ctl.exe}: start it yourself ({ctl.spec.kind}, or "
+                f"python3 -m tests.fake_motorcontrol) or build it with {ctl.spec.build_hint}; the robot lies still "
+                f"until torque commands arrive on udp:{sim.g23.cmd_port}")
             ctl = None
 
     viewer = None
