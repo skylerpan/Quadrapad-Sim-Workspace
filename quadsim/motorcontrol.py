@@ -75,6 +75,10 @@ class MotorControlBackend(G23Physics):
         self.seq = StandSequence(bool(robot_cfg.get("auto_stand", True)), robot_cfg.get("start_delay", 1.0),
                                  robot_cfg.get("stand_delay", 4.0), self.behavior)
         self.sent: list[str] = []
+        # The controller's control side takes one operator input per orchestrator period (5 ms): the latest
+        # datagram. Lines sent as separate datagrams inside one tick overwrite each other (a `stand` followed by
+        # the tick's `vel` was lost), so a tick's lines are collected here and leave as one datagram (_flush).
+        self._outbox: list[str] = []
         self.restart(0.0)
 
     def describe(self) -> str:
@@ -141,8 +145,15 @@ class MotorControlBackend(G23Physics):
 
     def send_command(self, text: str):
         self.sent.append(text)
+        self._outbox.append(text)
+
+    def _flush(self):
+        """Everything said since the last flush as one datagram: one operator input to the controller."""
+        if not self._outbox:
+            return
+        lines, self._outbox = self._outbox, []
         try:
-            self.op.sendto((text + "\n").encode(), self.operator_to)
+            self.op.sendto(("\n".join(lines) + "\n").encode(), self.operator_to)
         except OSError:
             pass
 
@@ -225,6 +236,7 @@ class MotorControlBackend(G23Physics):
             self._retry_at = None
             self._retries += 1
             self.send_command(self._pending)
+        self._flush()
 
     def set_policy_mode(self, mode: int, t: float) -> dict:
         """quadsim's RL policy slots (0 PPO, 1 HIMLoco) as the controller's behaviors (rl_fcn, rl_him); other slots
@@ -246,6 +258,7 @@ class MotorControlBackend(G23Physics):
                 "live": live}
 
     def close(self):
+        self._flush()
         self._stop.set()
         for s in (self.sock, self.out, self.op):
             try:

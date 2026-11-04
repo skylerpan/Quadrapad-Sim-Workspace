@@ -119,6 +119,33 @@ def test_rl_him_velocity_is_predivided_by_the_controllers_command_scale():
             g.close(), fake.close()
 
 
+def test_a_policy_switch_during_a_cmd_vel_stream_reaches_the_controller():
+    # the controller takes one operator input per 5 ms, the latest datagram: a `stand` sent on its own right
+    # before the tick's `vel` line was lost (sim_node.step: set_policy_mode, then the tick). Everything a tick
+    # says must leave as one datagram.
+    fake = _fake(latest_only_s=0.005)
+    cfg, g = _backend()
+    try:
+        for k in range(4):
+            _exchange(g, 0.001 * k)
+        _wait(lambda: fake.behavior == "rl_fcn")
+        g.send_telemetry(1.0)
+        time.sleep(0.03)
+        e = g.set_policy_mode(1, 1.0)                                      # sim_node.step: the switch, then the tick
+        assert e["live"] and e["behavior"] == "rl_him"
+        g.tick(1.0, np.array([0.4, 0.0, 0.0]), cmd_fresh=True)
+        _wait(lambda: fake.behavior == "stand")
+        for k in range(1, 30):                                             # the stand is reported, rl_him requested
+            _exchange(g, 1.0 + 0.02 * k, (0.4, 0.0, 0.0), fresh=True)
+            if fake.behavior == "rl_him":
+                break
+        assert fake.behavior == "rl_him"
+        _exchange(g, 2.0, (0.4, 0.0, 0.0), fresh=True)                     # the vel lines keep flowing (rl_him: /2)
+        _wait(lambda: fake.vel == (0.2, 0.0, 0.0))
+    finally:
+        g.close(), fake.close()
+
+
 def test_a_rejected_behavior_is_resent_after_a_second_then_given_up():
     # the controller repeats an unchanged request line as a heartbeat: here faster than the ticks, so every tick
     # sees the same rejection again. A repeat is not a new verdict and must not postpone the retry.
@@ -168,6 +195,7 @@ def test_policy_mode_maps_to_behaviors_and_unknown_slots_are_refused():
         e = g.set_policy_mode(1, 2.0)
         assert e["live"] and e["behavior"] == "rl_him" and g.behavior == "rl_him"
         assert g.sent[-1] == "stand"                                        # one edge at a time: stand first ...
+        _exchange(g, 2.0)                                                   # it leaves with the tick's datagram
         _wait(lambda: fake.behavior == "stand")
         for k in range(3):
             _exchange(g, 2.1 + 0.001 * k)

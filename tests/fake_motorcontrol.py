@@ -13,7 +13,9 @@ Scripted faults: `reject_once` names behaviors whose first request is rejected (
 pending one, as the controller does), and
 `inject_stop(kind)` latches a stop that only `reset` clears, as the controller does.
 Like the controller, the latest `kind=status` and `kind=request` lines are repeated every `heartbeat_s` while
-nothing changes (its cadence.rs: once a second); 0 turns the heartbeat off.
+nothing changes (its cadence.rs: once a second); 0 turns the heartbeat off. `latest_only_s` models its operator
+input: the control side sees one input per orchestrator period (5 ms), the latest datagram, so two datagrams
+inside one period leave only the second; 0 applies every datagram as it arrives.
 """
 from __future__ import annotations
 
@@ -35,8 +37,11 @@ EDGES = {("rest", "stand"), ("stand", "rest"), ("stand", "gait_mpc"), ("gait_mpc
 class FakeMotorControl:
     def __init__(self, cmd_to=("127.0.0.1", 40001), joint_port: int = 40002, base_port: int = 40003,
                  operator_port: int = 40020, reject_once: tuple[str, ...] = (), reject_always: tuple[str, ...] = (),
-                 handover_s: float = 0.0, kp: float = 60.0, kd: float = 2.0, heartbeat_s: float = 1.0):
+                 handover_s: float = 0.0, kp: float = 60.0, kd: float = 2.0, heartbeat_s: float = 1.0,
+                 latest_only_s: float = 0.0):
         self.cmd_to, self.kp, self.kd = cmd_to, kp, kd
+        self.latest_only_s = latest_only_s          # > 0: only the latest datagram of each such period is applied
+        self._latest: bytes | None = None           # the datagram waiting for the next period (latest_only_s)
         self.heartbeat_s = heartbeat_s              # unchanged status / request lines are repeated this often (0 = never)
         self._heartbeat: dict[str, str] = {}        # the latest line per kind that the heartbeat repeats
         self.handover_s = handover_s                # a switch takes this long; a newer request supersedes a pending one
@@ -59,7 +64,8 @@ class FakeMotorControl:
         self.op = self._udp(operator_port)
         self.out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.threads = [threading.Thread(target=f, daemon=True)
-                        for f in (self._joint_loop, self._base_loop, self._op_loop, self._heartbeat_loop)]
+                        for f in (self._joint_loop, self._base_loop, self._op_loop, self._heartbeat_loop,
+                                  self._latest_only_loop)]
         for t in self.threads:
             t.start()
 
@@ -118,10 +124,27 @@ class FakeMotorControl:
             except OSError:
                 break
             self.operator_peer = peer
-            for line in data.decode(errors="replace").splitlines():
-                line = line.strip()
-                if line:
-                    self._handle(line)
+            if self.latest_only_s > 0:
+                with self.lock:
+                    self._latest = data
+            else:
+                self._apply(data)
+
+    def _apply(self, data: bytes):
+        """One datagram = one operator input: its lines in order."""
+        for line in data.decode(errors="replace").splitlines():
+            line = line.strip()
+            if line:
+                self._handle(line)
+
+    def _latest_only_loop(self):
+        if self.latest_only_s <= 0:
+            return
+        while not self._stop.wait(self.latest_only_s):
+            with self.lock:
+                data, self._latest = self._latest, None
+            if data is not None:
+                self._apply(data)
 
     def _handle(self, line: str):
         with self.lock:
