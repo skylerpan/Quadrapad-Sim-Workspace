@@ -358,7 +358,41 @@ class G23Physics:
             last, n = self.last_cmd_wall, self.n_cmd
         return n, last is not None and time.monotonic() - last > 1.0
 
-    # -- the stand / gait sequence (StandSequence owns it; the subclass translates its intents) --------------
+    # -- the stand / gait sequence: StandSequence decides, the link translates its intents (_send) ----------
+    def _send(self, intent: Intent):
+        raise NotImplementedError
+
+    def _drain(self, t: float) -> list[dict]:
+        """What the controller said since the last tick, as events (links with a status channel)."""
+        return []
+
+    def _after_intents(self, t: float):
+        """A link's own per-tick work after the sequence's intents went out (retries ...)."""
+
+    def restart(self, t: float, teleport: bool = False):
+        """(Re)start the stand -> gait sequence from sim time t (spawn, set_pose): damp the legs before a
+        teleport, reset the controller's safety lock before the new stand, as an operator would."""
+        for intent in self.seq.restart(t, teleport):
+            self._send(intent)
+
+    def tick(self, t: float, cmd: np.ndarray, cmd_fresh: bool = True) -> list[dict]:
+        """Per control tick: what the controller reported, then the sequence (stand / gait / cmd_vel forwarding /
+        link watch), its intents sent in the controller's words."""
+        events = self._drain(t)
+        n, silent = self.link_counters()
+        intents, seq_events = self.seq.step(t, cmd, cmd_fresh, n, silent)
+        for intent in intents:
+            self._send(intent)
+        self._after_intents(t)
+        return events + seq_events
+
+    def operator(self, mode: str, t: float) -> dict:
+        """An operator command outside the auto sequence (web viewer buttons): stand, walk, lie, damp."""
+        intents, event = self.seq.operator(mode, t)
+        for intent in intents:
+            self._send(intent)
+        return event
+
     @property
     def stage(self) -> str:
         return self.seq.stage
@@ -505,29 +539,6 @@ class G2DeployBackend(G23Physics):
             self.send_command(f"AXES {intent.x:.3f} {intent.y:.3f} {intent.w:.3f}")
         elif isinstance(intent, VelStop):
             self.send_command("AXES 0.000 0.000 0.000")
-
-    def restart(self, t: float, teleport: bool = False):
-        """(Re)start the stand -> gait sequence from sim time t (spawn, set_pose): damping (MODE R) before a
-        teleport, RESET_SAFETY before the new stand, as an operator would."""
-        for intent in self.seq.restart(t, teleport):
-            self._send(intent)
-
-    def tick(self, t: float, cmd: np.ndarray, cmd_fresh: bool = True) -> list[dict]:
-        """Per control tick: advance the sequence, forward cmd_vel, watch the controller link."""
-        n, silent = self.link_counters()
-        intents, events = self.seq.step(t, cmd, cmd_fresh, n, silent)
-        for intent in intents:
-            self._send(intent)
-        return events
-
-    def operator(self, mode: str, t: float) -> dict:
-        """An operator command outside the auto sequence (web viewer buttons), the same strings their ROS bridge takes:
-        stand (RESET_SAFETY + MODE STAND, then wait for Walk), walk (MODE <policy>, MODE <gait>), lie (MODE LIE),
-        damp (MODE R)."""
-        intents, event = self.seq.operator(mode, t)
-        for intent in intents:
-            self._send(intent)
-        return event
 
     def set_policy_mode(self, mode: int, t: float) -> dict:
         """Choose the RL policy (0 PPO, 1 HIMLoco, 4 IsaacSim): sent now when the gait is on (the controller

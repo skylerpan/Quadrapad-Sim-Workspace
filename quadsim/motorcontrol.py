@@ -144,7 +144,7 @@ class MotorControlBackend(G23Physics):
     # -- the sequence's intents in the controller's words ---------------------------------------------
     def _send(self, intent: Intent):
         if isinstance(intent, (Damp, Lie)):
-            self.send_command("rest")                 # rest damps for 2 s, then lets go: the controller's only "down"
+            self.send_command("rest")                 # lie and damp alike: rest damps for 2 s, then lets go
         elif isinstance(intent, ResetSafety):
             self.send_command("reset")
         elif isinstance(intent, Stand):
@@ -203,33 +203,18 @@ class MotorControlBackend(G23Physics):
             elif isinstance(line, Released):
                 self._note_stop(None, t, events)
 
-    # -- the per-tick API sim.py drives -------------------------------------------------------------------
+    # -- the per-tick API (G23Physics.restart / tick / operator) --------------------------------------------
     def restart(self, t: float, teleport: bool = False):
-        """(Re)start the stand -> behavior sequence from sim time t (spawn, set_pose): rest before a teleport,
-        reset before the new stand (a stop the teleport may have tripped is cleared), as an operator would."""
+        """Rest before a teleport, reset before the new stand (a stop the teleport may have tripped is cleared);
+        a behavior still being requested is forgotten."""
         self._pending = self._after_stand = None
-        for intent in self.seq.restart(t, teleport):
-            self._send(intent)
+        super().restart(t, teleport)
 
-    def tick(self, t: float, cmd: np.ndarray, cmd_fresh: bool = True) -> list[dict]:
-        events = self._drain(t)
-        n, silent = self.link_counters()
-        intents, seq_events = self.seq.step(t, cmd, cmd_fresh, n, silent)
-        for intent in intents:
-            self._send(intent)
+    def _after_intents(self, t: float):
         if self._pending is not None and self._retry_at is not None and t >= self._retry_at:
             self._retry_at = None
             self._retries += 1
             self.send_command(self._pending)
-        return events + seq_events
-
-    def operator(self, mode: str, t: float) -> dict:
-        """stand (reset + stand), walk (the configured behavior), lie and damp (both rest: the controller has no
-        separate damping behavior; rest damps for its first seconds)."""
-        intents, event = self.seq.operator(mode, t)
-        for intent in intents:
-            self._send(intent)
-        return event
 
     def set_policy_mode(self, mode: int, t: float) -> dict:
         """quadsim's RL policy slots (0 PPO, 1 HIMLoco) as the controller's behaviors (rl_fcn, rl_him); other slots
