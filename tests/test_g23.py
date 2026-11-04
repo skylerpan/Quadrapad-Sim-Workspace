@@ -210,7 +210,7 @@ def test_sensor_model_delays_the_telemetry_imu(monkeypatch):
 
 
 def test_command_delay_and_torque_filter():
-    from quadsim.g23 import RefSimOptions, build_g23_spec, G23Backend
+    from quadsim.g23 import RefSimOptions, build_g23_spec, G2DeployBackend
     import mujoco
     cfg = load_config(None, ["robot.type=g23", "robot.controller.cmd_port=20102", "robot.controller.telemetry=[]",
                              "robot.controller.gt_addr=''", "robot.controller.ros_ascii_telemetry=false"])
@@ -218,7 +218,7 @@ def test_command_delay_and_torque_filter():
     o.cmd_delay_ms, o.torque_bw_hz, o.motor_model = 3.0, 0.0, "ideal"
     m = build_g23_spec(cfg, [0, 0, -9.81], [0, 0, 0.5], 0, o).compile()
     d = mujoco.MjData(m)
-    g = G23Backend(m, d, cfg["robot"], mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "TORSO"), o)
+    g = G2DeployBackend(m, d, cfg["robot"], mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "TORSO"), o)
     try:
         g.tau_ff[:] = 1.0
         hist = []
@@ -231,7 +231,7 @@ def test_command_delay_and_torque_filter():
         assert hist == [1.0, 1.0, 1.0, 2.0]                        # the step change arrives 3 steps later
         o2 = RefSimOptions.from_env(cfg["robot"])
         o2.torque_bw_hz, o2.motor_model = 50.0, "ideal"
-        g2 = G23Backend(m, d, cfg["robot"], g.torso, o2)
+        g2 = G2DeployBackend(m, d, cfg["robot"], g.torso, o2)
         g2.tau_ff[:] = 1.0
         g2.apply_torque()
         g2.tau_ff[:] = 0.0

@@ -39,6 +39,7 @@ import mujoco
 import numpy as np
 
 from quadsim.base import lidar_mount
+from quadsim.sequence import Damp, Gait, Intent, Lie, ResetSafety, Stand, StandSequence, Vel, VelStop
 
 G23_XML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "robot", "g23", "mjcf", "g23_mjcf.xml")
 JOINTS = ["FL_HipX_joint", "FL_HipY_joint", "FL_Knee_joint", "FR_HipX_joint", "FR_HipY_joint", "FR_Knee_joint",
@@ -216,9 +217,9 @@ def build_g23_spec(cfg: dict, gravity, spawn_pos, n_proxies: int, opts: RefSimOp
     return spec
 
 
-class G23Backend:
-    """Torque commands in, telemetry out, text commands to the controller, the stand / gait sequence, and the
-    reference sim's sensor / actuator options."""
+class G23Physics:
+    """The G23 model's physics side, shared by every controller link: the J60 joint model, the torque command
+    applied through the reference sim's actuator options, the IMU sensor model, foot contacts, pose placement."""
 
     def __init__(self, m, d, robot_cfg: dict, torso_body: int, opts: RefSimOptions | None = None):
         self.m, self.d, self.c = m, d, robot_cfg
@@ -238,6 +239,7 @@ class G23Backend:
             m.dof_damping[self.jv] = np.tile(J60_DAMPING, 4)
         if self.opts.torso_com_offset is not None:          # their _apply_torso_com_offset
             m.body_ipos[torso_body] += self.opts.torso_com_offset
+        # the last torque command (written by the link's receiver thread under the lock, read by apply_torque)
         self.kp = np.zeros(12)
         self.q_des = np.zeros(12)
         self.kd = np.zeros(12)
@@ -246,9 +248,6 @@ class G23Backend:
         self.lock = threading.Lock()
         self.last_cmd_wall = None
         self.n_cmd = 0
-        self.connected = False
-        self.t_connected = None                    # sim time of the first torque command
-        self.lost = False
         # sensor / actuator model (their _init_sensor_model)
         o = self.opts
         self._cmd_delay_steps = int(round(o.cmd_delay_ms * 1e-3 / self.dt))
@@ -262,54 +261,11 @@ class G23Backend:
         self._sensor_model = any(v > 0 for v in (o.ahrs_tau, o.imu_rate_hz, o.imu_delay_ms))
         self.step = 0
         self.input_tq = np.zeros(12)
-        ctl = robot_cfg.get("controller", {}) or {}
-        self.cmd_port = int(ctl.get("cmd_port", 20001))
-        self.telemetry_to = [_addr(a) for a in ctl.get("telemetry", ["127.0.0.1:30010", "127.0.0.1:30011"])]
-        self.command_to = _addr(ctl.get("command_addr", "127.0.0.1:50051"))
-        self.gt_to = o.gt
-        self.ros_bridge_to = o.ros_bridge if o.ros_ascii else None
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.settimeout(0.2)
-        self.sock.bind(("0.0.0.0", self.cmd_port))
-        self.out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._stop = threading.Event()
-        self.rx = threading.Thread(target=self._receiver, daemon=True)
-        self.rx.start()
-        # stand / gait sequence (sim time)
-        self.gait = str(robot_cfg.get("gait", "rl")).upper()
-        self.policy_mode = robot_cfg.get("policy_mode")      # g23 RL: integer policy slot sent before MODE RL
-        self.auto = bool(robot_cfg.get("auto_stand", True))
-        self.start_delay = float(robot_cfg.get("start_delay", 1.0))
-        self.stand_delay = float(robot_cfg.get("stand_delay", 4.0))
-        self.sent = []                             # text commands sent (for tests / logs)
-        self.axes_active = False
-        self.restart(0.0)
 
     def describe(self) -> str:
         return self.opts.describe()
 
-    # -- controller link --------------------------------------------------------------------------
-    def _receiver(self):
-        while not self._stop.is_set():
-            try:
-                data, _ = self.sock.recvfrom(4096)
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            if len(data) < CMD_BYTES:
-                continue
-            v = struct.unpack(CMD_FMT, data[:CMD_BYTES])
-            with self.lock:
-                self.kp[:] = v[0:12]
-                self.q_des[:] = v[12:24]
-                self.kd[:] = v[24:36]
-                self.dq_des[:] = v[36:48]
-                self.tau_ff[:] = v[48:60]
-                self.last_cmd_wall = time.monotonic()
-                self.n_cmd += 1
-
+    # -- torque ---------------------------------------------------------------------------------------
     def apply_torque(self):
         """Their _apply_joint_torque: kp (q_des - q) + kd (dq_des - dq) + tau_ff through the optional command
         delay line and torque filter, within the J60 envelope -> d.ctrl."""
@@ -386,6 +342,92 @@ class G23Backend:
                 c[leg] = 1.0
         return c
 
+    def place(self, pos, quat):
+        """Torso pose + the default joint angles, at rest."""
+        d = self.d
+        d.qpos[0:3] = pos
+        d.qpos[3:7] = quat
+        d.qpos[self.jq] = DEFAULT_Q
+        d.qvel[:] = 0.0
+        d.ctrl[:] = 0.0
+
+    # -- the link's view of the torque stream ---------------------------------------------------------------
+    def link_counters(self) -> tuple[int, bool]:
+        """(torque packets received, link silent for over a second) for the sequence."""
+        with self.lock:
+            last, n = self.last_cmd_wall, self.n_cmd
+        return n, last is not None and time.monotonic() - last > 1.0
+
+    # -- the stand / gait sequence (StandSequence owns it; the subclass translates its intents) --------------
+    @property
+    def stage(self) -> str:
+        return self.seq.stage
+
+    @property
+    def t_gait(self) -> float | None:
+        return self.seq.t_gait
+
+    @property
+    def connected(self) -> bool:
+        return self.seq.connected
+
+    @property
+    def lost(self) -> bool:
+        return self.seq.lost
+
+
+class G2DeployBackend(G23Physics):
+    """The g2_deploy_rs link: its torque packets in, its 228-byte telemetry out, its text commands, the ASCII
+    state line for udp_ros_bridge and the SIM_POSE ground truth, all as mujoco_simulation_G23.py sends them."""
+
+    def __init__(self, m, d, robot_cfg: dict, torso_body: int, opts: RefSimOptions | None = None):
+        super().__init__(m, d, robot_cfg, torso_body, opts)
+        ctl = robot_cfg.get("controller", {}) or {}
+        self.cmd_port = int(ctl.get("cmd_port", 20001))
+        self.telemetry_to = [_addr(a) for a in ctl.get("telemetry", ["127.0.0.1:30010", "127.0.0.1:30011"])]
+        self.command_to = _addr(ctl.get("command_addr", "127.0.0.1:50051"))
+        self.gt_to = self.opts.gt
+        self.ros_bridge_to = self.opts.ros_bridge if self.opts.ros_ascii else None
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.settimeout(0.2)
+        self.sock.bind(("0.0.0.0", self.cmd_port))
+        self.out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._stop = threading.Event()
+        self.rx = threading.Thread(target=self._receiver, daemon=True)
+        self.rx.start()
+        # stand / gait sequence (sim time)
+        self.gait = str(robot_cfg.get("gait", "rl")).upper()
+        self.policy_mode = robot_cfg.get("policy_mode")      # g23 RL: integer policy slot sent before MODE RL
+        self.seq = StandSequence(bool(robot_cfg.get("auto_stand", True)), robot_cfg.get("start_delay", 1.0),
+                                 robot_cfg.get("stand_delay", 4.0), self.gait.lower())
+        self.sent = []                             # text commands sent (for tests / logs)
+        self.restart(0.0)
+
+    def describe_link(self) -> str:
+        return f"torque cmds on udp:{self.cmd_port}, telemetry -> {self.telemetry_to}, commands -> {self.command_to}"
+
+    # -- controller link --------------------------------------------------------------------------
+    def _receiver(self):
+        while not self._stop.is_set():
+            try:
+                data, _ = self.sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if len(data) < CMD_BYTES:
+                continue
+            v = struct.unpack(CMD_FMT, data[:CMD_BYTES])
+            with self.lock:
+                self.kp[:] = v[0:12]
+                self.q_des[:] = v[12:24]
+                self.kd[:] = v[24:36]
+                self.dq_des[:] = v[36:48]
+                self.tau_ff[:] = v[48:60]
+                self.last_cmd_wall = time.monotonic()
+                self.n_cmd += 1
+
     # -- telemetry ------------------------------------------------------------------------------------
     def telemetry(self, t: float) -> bytes:
         d = self.d
@@ -439,106 +481,56 @@ class G23Backend:
         except OSError:
             pass
 
-    # -- sequence ---------------------------------------------------------------------------------
-    def restart(self, t: float, teleport: bool = False):
-        """(Re)start the stand -> gait sequence from sim time t (spawn, set_pose). A teleport while the
-        controller runs a gait trips its posture guard (safety lock), so before a set_pose the legs are put in
-        damping (MODE R) and the sequence then begins with RESET_SAFETY, as an operator would."""
-        self.t0 = t
-        self.t_gait = None
-        self.stage = "idle" if self.auto else "manual"
-        self.reset_safety = teleport and self.connected
-        if self.reset_safety:
+    # -- sequence: intents -> the strings their ROS bridge sends --------------------------------------
+    def _send(self, intent: Intent):
+        if isinstance(intent, Damp):
             self.send_command("MODE R")
-
-    def tick(self, t: float, cmd: np.ndarray, cmd_fresh: bool = True) -> list[dict]:
-        """Per control tick: advance the sequence, forward cmd_vel (cmd_fresh: a /cmd_vel arrived within the
-        timeout), watch the controller link."""
-        events = []
-        with self.lock:
-            last, n = self.last_cmd_wall, self.n_cmd
-        if n > 0 and not self.connected:
-            self.connected = True
-            self.t_connected = t
-            events.append({"type": "controller", "state": "connected", "t": t})
-        # the sequence starts once the controller talks (its first LMA start can take minutes) and after
-        # start_delay s past the spawn / set_pose
-        ready = self.connected and t - max(self.t0, self.t_connected) >= self.start_delay
-        if self.stage == "idle" and ready:
-            if getattr(self, "reset_safety", False):
-                self.send_command("RESET_SAFETY")
-                self.reset_safety = False
+        elif isinstance(intent, ResetSafety):
+            self.send_command("RESET_SAFETY")
+        elif isinstance(intent, Stand):
             self.send_command("MODE STAND")
-            self.stage = "stand"
-            self.t_stand = t
-            events.append({"type": "controller", "state": "stand", "t": t})
-        elif self.stage == "stand" and t - self.t_stand >= self.stand_delay:
+        elif isinstance(intent, Gait):
             if self.policy_mode is not None and self.gait == "RL":
                 self.send_command(f"MODE {int(self.policy_mode)}")     # RL policy slot (0 PPO flat, 1 HIMLoco, ...)
             self.send_command(f"MODE {self.gait}")
-            self.stage = "gait"
-            self.t_gait = t
-            events.append({"type": "controller", "state": self.gait.lower(), "t": t})
-        if self.stage in ("gait", "manual"):
-            # forward a live /cmd_vel every tick; when it has gone stale send one zero and then nothing, so
-            # the controller's own watchdog marks the command inactive (a stream of zero AXES keeps the RL
-            # policy stepping in place)
-            active = cmd_fresh
-            if active or self.axes_active:
-                self.send_command(f"AXES {cmd[0]:.3f} {cmd[1]:.3f} {cmd[2]:.3f}" if active else "AXES 0.000 0.000 0.000")
-            self.axes_active = active
-        if self.connected and last is not None:
-            silent = time.monotonic() - last > 1.0
-            if silent and not self.lost:
-                self.lost = True
-                events.append({"type": "controller", "state": "lost", "t": t})
-            elif not silent and self.lost:
-                self.lost = False
-                events.append({"type": "controller", "state": "connected", "t": t})
+        elif isinstance(intent, Lie):
+            self.send_command("MODE LIE")
+        elif isinstance(intent, Vel):
+            self.send_command(f"AXES {intent.x:.3f} {intent.y:.3f} {intent.w:.3f}")
+        elif isinstance(intent, VelStop):
+            self.send_command("AXES 0.000 0.000 0.000")
+
+    def restart(self, t: float, teleport: bool = False):
+        """(Re)start the stand -> gait sequence from sim time t (spawn, set_pose): damping (MODE R) before a
+        teleport, RESET_SAFETY before the new stand, as an operator would."""
+        for intent in self.seq.restart(t, teleport):
+            self._send(intent)
+
+    def tick(self, t: float, cmd: np.ndarray, cmd_fresh: bool = True) -> list[dict]:
+        """Per control tick: advance the sequence, forward cmd_vel, watch the controller link."""
+        n, silent = self.link_counters()
+        intents, events = self.seq.step(t, cmd, cmd_fresh, n, silent)
+        for intent in intents:
+            self._send(intent)
         return events
 
     def operator(self, mode: str, t: float) -> dict:
         """An operator command outside the auto sequence (web viewer buttons), the same strings their ROS bridge takes:
         stand (RESET_SAFETY + MODE STAND, then wait for Walk), walk (MODE <policy>, MODE <gait>), lie (MODE LIE),
         damp (MODE R)."""
-        if mode == "stand":
-            self.send_command("RESET_SAFETY")
-            self.send_command("MODE STAND")
-            self.stage = "manual"
-        elif mode == "walk":
-            if self.policy_mode is not None and self.gait == "RL":
-                self.send_command(f"MODE {int(self.policy_mode)}")
-            self.send_command(f"MODE {self.gait}")
-            self.stage = "gait"
-            self.t_gait = t
-            mode = self.gait.lower()
-        elif mode == "lie":
-            self.send_command("MODE LIE")
-            self.stage = "manual"
-        elif mode == "damp":
-            self.send_command("MODE R")
-            self.stage = "manual"
-        else:
-            raise ValueError(f"operator mode {mode!r}: expected stand, walk, lie or damp")
-        return {"type": "controller", "state": mode, "t": t, "source": "operator"}
+        intents, event = self.seq.operator(mode, t)
+        for intent in intents:
+            self._send(intent)
+        return event
 
     def set_policy_mode(self, mode: int, t: float) -> dict:
         """Choose the RL policy (0 PPO, 1 HIMLoco, 4 IsaacSim): sent now when the gait is on (the controller
         switches live), otherwise before MODE RL in the start sequence."""
         self.policy_mode = int(mode)
-        if self.stage == "gait" and self.gait == "RL":
+        live = self.stage == "gait" and self.gait == "RL"
+        if live:
             self.send_command(f"MODE {self.policy_mode}")
-        return {"type": "controller", "state": "policy", "policy_mode": self.policy_mode, "t": t,
-                "live": self.stage == "gait" and self.gait == "RL"}
-
-    def place(self, pos, quat):
-        """Torso pose + the default joint angles, at rest."""
-        d = self.d
-        d.qpos[0:3] = pos
-        d.qpos[3:7] = quat
-        d.qpos[self.jq] = DEFAULT_Q
-        d.qvel[:] = 0.0
-        d.ctrl[:] = 0.0
+        return {"type": "controller", "state": "policy", "policy_mode": self.policy_mode, "t": t, "live": live}
 
     def close(self):
         self._stop.set()

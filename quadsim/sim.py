@@ -13,7 +13,7 @@ from pcd2sim import SCENE_FORMAT
 
 from .base import IdealBase, body_lift, rot_zyx
 from .config import load_scene_meta
-from .g23 import G23Backend, RefSimOptions, build_g23_spec
+from .g23 import G2DeployBackend, RefSimOptions, build_g23_spec
 from .lidar import LidarFrame, RollingLidar
 from .model import add_map_mesh, build_mjcf, nearest_boxes
 from .proxies import BoxIndex, ProxyPool
@@ -125,7 +125,7 @@ class Simulator:
             self.mocap_target = None
             self.acc_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "lidar_acc")]
             self.gyro_adr = self.m.sensor_adr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SENSOR, "lidar_gyro")]
-            self.g23 = G23Backend(self.m, self.d, r, self.base_body, self.ref_opts)
+            self.g23 = G2DeployBackend(self.m, self.d, r, self.base_body, self.ref_opts)
             self.fallen = False
             self.low_since = None
         else:
@@ -232,7 +232,7 @@ class Simulator:
         return self.g23.set_policy_mode(mode, self.d.time) if self.legged else None
 
     def set_motion(self, mode: str) -> dict | None:
-        """g23 operator command: stand | walk | lie | damp (quadsim.g23.G23Backend.operator); None in ideal mode."""
+        """g23 operator command: stand | walk | lie | damp (quadsim.sequence.StandSequence.operator); None in ideal mode."""
         if not self.legged:
             return None
         if mode == "stand":
