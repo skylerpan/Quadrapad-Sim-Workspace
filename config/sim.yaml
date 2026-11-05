@@ -1,6 +1,6 @@
 # Quadruped navigation sim (MuJoCo, ideal base). All units SI unless noted.
-scene: scenes/dp_1008            # directory produced by pcd2sim.build_scene (dp_1008: Maps/dp_1008.pcd, 0.1 m, --no-flatten --close-rounds 1: raw voxel floor with 1-2 cell gaps closed, contact.npy for a legged robot; docs/usage.md section 2). scenes/dp_1012 = 1:1 build of the hand-edited octree (--no-flatten --min-neighbors 0), 2F nav tests use scenes/dp
-spawn: [0.0, 0.0, 0.0, -0.5]  # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0. z_floor = floor height of that storey (dp_1008 1F at (0,0): -0.45; dp_1012: -0.40)
+scene: scenes/dp                 # directory produced by pcd2sim.build_scene. scenes/dp: Maps/dp.bt, 0.2 m, the frame of the robot01 nav stack's localization map (maps/dp/dp.pcd = Maps/dp_full_original.pcd; robot01.ini 2026-10-22), so the sim and the nav stack agree. scenes/dp_1008 (Maps/dp_1008.pcd, 0.1 m, --no-flatten --close-rounds 1, the robot-layer runs of 2026-10-29) is a different frame: localization never converges on it. scenes/dp_1012 = 1:1 build of the hand-edited octree (docs/usage.md section 2)
+spawn: [0.0, 0.0, 0.0, -0.4]  # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0. z_floor = floor height of that storey (dp 1F at (0,0): -0.40; dp_1008: -0.45; dp_1012: -0.40)
 
 physics:
   timestep: 0.001             # s (1 kHz: the G23 controller expects 1 kHz telemetry; IMU/clock 200 Hz and control 50 Hz divide evenly)
@@ -8,23 +8,36 @@ physics:
   rtf: 1.0                    # real-time factor; 0 = run as fast as possible
 
 robot:
-  type: g23                   # g23: the G23 legged model driven by the g2_deploy_rs controller over UDP (quadsim/g23.py)
+  type: g23                   # g23: the G23 legged model driven by its controller over UDP (robot.controller.kind)
                               # tests / eval_scene / bench pin robot.type=ideal; robot.controller.spawn: false keeps sim_node
                               # from starting the controller (run it yourself)
                               # ideal: floating base that follows /cmd_vel and hugs the terrain (no legs, no controller)
-  gait: rl                    # g23: locomotion mode sent after standing, rl (ONNX policy) or lma (OCS2 NMPC + WBC)
-  policy_mode: 0              # g23 rl: RL policy at start, 0 = PPO flat-terrain walk (default), 1 = HIMLoco stairs / rough terrain,
-                              # 4 = IsaacSim. Switch at run time (before stairs) with an Int32 on ros.topics.policy_mode; the
-                              # controller takes MODE <n> live. PPO trips its posture guard on 0.1 m bumps the floor fixes remove
+  behavior: rl_fcn            # g23 motorcontrol: the behavior requested after standing: rl_fcn (PPO flat-terrain walk),
+                              # rl_him (HIMLoco stairs / rough terrain), gait_mpc. An Int32 on ros.topics.policy_mode switches
+                              # live (0 -> rl_fcn, 1 -> rl_him; other slots are refused), by way of stand
+  gait: rl                    # g23 g2_deploy_rs only: locomotion mode sent after standing, rl (ONNX policy) or lma (OCS2 NMPC + WBC)
+  policy_mode: 0              # g23 g2_deploy_rs only: RL policy at start, 0 = PPO flat-terrain walk, 1 = HIMLoco stairs / rough
+                              # terrain, 4 = IsaacSim; ros.topics.policy_mode switches live as MODE <n>. PPO trips its posture
+                              # guard on 0.1 m bumps the floor fixes remove
   fall_height: 0.18           # g23: torso lower than this over the floor for 1 s while walking = `fall` (collapsed)
   motor_model: null           # g23: null = follow G2_SIM_MOTOR_MODEL like the controller's own sim (j60 default: armature /
                               # dry friction / damping on the 12 joints + torque envelope); j60 | ideal here overrides it
   level_gravity: true         # g23: gravity straight down (the controller's sim); false = along the scene's fitted floor normal
-  auto_stand: true            # g23: send MODE STAND start_delay s after spawn / set_pose, MODE <gait> stand_delay s later
-  start_delay: 1.0
-  stand_delay: 4.0
+  auto_stand: true            # g23: stand start_delay s after spawn / set_pose, the gait / behavior stand_delay s later
+  start_delay: 1.0            # MotorControl boots limp (lie_still, zero torque) until `stand`: the dog sits down for this long first
+  stand_delay: 4.0            # >= 3 s: MotorControl's rise_to_stand takes 3 s and refuses an RL behavior before it settled
   spawn_height: 0.40          # g23: torso centre above the floor at spawn (it settles to ~0.36 standing)
-  controller:                 # g23: the controller's simulation-mode UDP ports (mujoco_simulation_G23.py defaults)
+  controller:                 # g23: which controller sim_node spawns and how quadsim talks to it (quadsim/controller_proc.py)
+    kind: motorcontrol        # motorcontrol: SyncAI-Device-MotorControl (robotdog_control, the default; quadsim/motorcontrol.py)
+                              # g2_deploy_rs: the original controller (g2_deploy_rs sim ros; quadsim/g23.py)
+    spawn: true               # false: do not start the controller, run it yourself (or python3 -m tests.fake_motorcontrol)
+    # exec: ...               # the binary (default <repo>/target/release/<controller>), args: [...], env: {KEY: value}
+    motorcontrol:             # the controller's sim backend UDP ports (its ROBOTDOG_SIM_* / ROBOTDOG_OPERATOR_UDP_PORT defaults)
+      cmd_port: 40001         # torque commands from the controller (240 bytes: pos, vel, tau, kp, kd per motor x 12)
+      joint_addr: 127.0.0.1:40002     # joint feedback to the controller, every physics step (144 bytes: q, dq, tau x 12)
+      base_addr: 127.0.0.1:40003      # base state to the controller, every physics step (36 bytes: rpy, gyro, acc)
+      operator_addr: 127.0.0.1:40020  # operator lines (stand / rl_fcn / vel x y w / reset ...); status comes back on the same socket
+    # g2_deploy_rs: its simulation-mode UDP ports (mujoco_simulation_G23.py defaults)
     cmd_port: 20001           # torque commands from the controller (240 bytes: kp | q | kd | dq | tau x 12)
     telemetry: [127.0.0.1:30010, 127.0.0.1:30011]   # 1 kHz state packets: controller, web GUI
     command_addr: 127.0.0.1:50051                   # text commands (MODE STAND / MODE RL / AXES vx vy wz)
@@ -107,4 +120,4 @@ ros:
     map_cloud: /sim/map_cloud
     cmd_vel: /robot01/cmd_vel
     set_pose: /robot01/set_pose
-    policy_mode: /robot01/policy_mode   # std_msgs/Int32 (g23 rl): 0 PPO, 1 HIMLoco, 4 IsaacSim; forwarded as MODE <n>
+    policy_mode: /robot01/policy_mode   # std_msgs/Int32 (g23): 0 PPO / rl_fcn, 1 HIMLoco / rl_him (g2_deploy_rs also 4 IsaacSim)

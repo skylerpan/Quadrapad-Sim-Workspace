@@ -10,19 +10,27 @@
 #           fallback draws no rviz2 point clouds or grids.
 # DDS matches ../WebRvizLite: CycloneDDS, ROS_DOMAIN_ID=1, conf/cyclonedds.xml (override the file with
 # CYCLONEDDS_CONFIG=<name under conf/>).
-# QUADSIM_G23=1: the quadsim-g23 image (docker/build_g23.sh) with the G23 controller repo mounted at /g2
-# (G2_DEPLOY_RS, default ../g2_deploy_rs/g2_deploy_rs) so sim_node can spawn the controller.
+# QUADSIM_G23=1: the quadsim-g23 image (docker/build_g23.sh) with the G23 controller repos mounted so sim_node can
+# spawn the controller (robot.controller.kind in config/sim.yaml): SyncAI-Device-MotorControl at /mc
+# (MOTORCONTROL_REPO, default ../SyncAI-Device-MotorControl) and g2_deploy_rs at /g2 (G2_DEPLOY_RS, default
+# ../g2_deploy_rs/g2_deploy_rs). A repo that is not there is skipped with a warning.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${QUADSIM_IMAGE:-quadsim:latest}"
 G2_ARGS=()
 if [[ "${QUADSIM_G23:-0}" == "1" ]]; then
   IMAGE="${QUADSIM_IMAGE:-quadsim-g23:latest}"
+  MC="${MOTORCONTROL_REPO:-$REPO/../SyncAI-Device-MotorControl}"
+  if [[ -d "$MC" ]]; then
+    G2_ARGS+=(-v "$(cd "$MC" && pwd)":/mc -e MOTORCONTROL_REPO=/mc)
+  else
+    echo "QUADSIM_G23=1 but SyncAI-Device-MotorControl is not at $MC (set MOTORCONTROL_REPO)" >&2
+  fi
   G2="${G2_DEPLOY_RS:-$REPO/../g2_deploy_rs/g2_deploy_rs}"
   if [[ -d "$G2" ]]; then
-    G2_ARGS=(-v "$(cd "$G2" && pwd)":/g2 -e G2_DEPLOY_RS=/g2)
+    G2_ARGS+=(-v "$(cd "$G2" && pwd)":/g2 -e G2_DEPLOY_RS=/g2)
   else
-    echo "QUADSIM_G23=1 but the controller repo is not at $G2 (set G2_DEPLOY_RS)" >&2
+    echo "QUADSIM_G23=1 but g2_deploy_rs is not at $G2 (set G2_DEPLOY_RS; only needed for robot.controller.kind=g2_deploy_rs)" >&2
   fi
 fi
 GUI_ARGS=()

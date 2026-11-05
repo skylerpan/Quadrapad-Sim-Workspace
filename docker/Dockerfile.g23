@@ -1,6 +1,8 @@
-# quadsim + the toolchain of the G23 controller (g2_deploy_rs): Rust, C++ (OCS2 / Pinocchio via cmeel),
-# so the controller is built and run inside the container (docker/build_g23.sh, sim_node spawns it).
-# The controller repo itself is mounted at /g2 by docker/run.sh (QUADSIM_G23=1), never copied in.
+# quadsim + the toolchain of the G23 controllers: Rust (SyncAI-Device-MotorControl pins its own version in
+# rust-toolchain.toml; rustup fetches it on the first build), C++ (OCS2 / Pinocchio via cmeel for g2_deploy_rs's LMA),
+# so a controller is built and run inside the container (docker/build_g23.sh, sim_node spawns it).
+# The controller repos are mounted by docker/run.sh (QUADSIM_G23=1): SyncAI-Device-MotorControl at /mc,
+# g2_deploy_rs at /g2; never copied in.
 FROM quadsim:latest
 
 USER root
@@ -13,7 +15,8 @@ USER syncrobotic
 ENV RUSTUP_HOME=/home/syncrobotic/.rustup \
     CARGO_HOME=/home/syncrobotic/.cargo \
     PATH=/home/syncrobotic/.cargo/bin:$PATH \
-    G2_DEPLOY_RS=/g2
+    G2_DEPLOY_RS=/g2 \
+    MOTORCONTROL_REPO=/mc
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable \
     && cargo --version
 WORKDIR /ws

@@ -135,7 +135,8 @@ def main(argv=None):
                 log(f"controller exited with code {ctl.poll()}")
                 rec["events"].append({"type": "controller", "state": "exited", "code": ctl.poll(), "t": sim.d.time})
                 break
-            if ctl is not None and ctl.safety_locked and rec.get("t_safety") is None:
+            locked = sim.g23.safety_locked or (ctl is not None and ctl.safety_locked)   # the link's status or g2's stdout
+            if locked and rec.get("t_safety") is None:
                 rec["t_safety"] = sim.d.time
                 rec["events"].append({"type": "controller", "state": "safety", "t": sim.d.time,
                                       "pose": [sim.base.x, sim.base.y, sim.base.yaw]})

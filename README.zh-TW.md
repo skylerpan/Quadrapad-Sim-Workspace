@@ -4,11 +4,11 @@
 
 **quadsim** 把 LiDAR SLAM 合併後的點雲地圖（PCD）轉成機器狗的導航測試環境。
 - **場景建置（`pcd2sim`）**：把地圖體素化、合併成碰撞 box，並把有雜訊的地板平面化成平板；幾秒內建好
-- **模擬器（`quadsim`）**：在 MuJoCo 裡以 1 kHz 跑 G23 機器狗模型，由它自己的 Rust 控制器經 UDP 驅動（`robot.type: g23`，預設），或跑跟隨 `/cmd_vel` 的理想浮動底盤（`robot.type: ideal`）。類 Mid-360 的滾動式 LiDAR（含逐點時間）用 Embree 投射射線，另外提供 IMU 和真值
+- **模擬器（`quadsim`）**：在 MuJoCo 裡以 1 kHz 跑 G23 機器狗模型，由它的 Rust 控制器經 UDP 驅動（`robot.type: g23`，預設；控制器是 SyncAI-Device-MotorControl，`robot.controller.kind: g2_deploy_rs` 可換回 g2_deploy_rs），或跑跟隨 `/cmd_vel` 的理想浮動底盤（`robot.type: ideal`）。類 Mid-360 的滾動式 LiDAR（含逐點時間）用 Embree 投射射線，另外提供 IMU 和真值
 - **ROS 2 介面**：發布 `livox_ros_driver2/CustomMsg`、`PointCloud2`、IMU、`/clock`、真值里程計和事件；訂閱 `/cmd_vel` 和 `/sim/set_pose`
 - 可以直接接上 Point-LIO / FAST-LIO 和以 Nav2 為基礎的 3D 導航堆疊。在 Docker 裡跑 ROS 2 Humble
 
-地圖進 MuJoCo 的方式是一小池代理 box，每個控制週期搬到機器人周圍的場景 box 上（有腳的模式從 `contact.npy` 連地板一起搬）；完整地圖只在 Embree 裡給 LiDAR 用。`g23` 模式下 quadsim 扮演控制器自帶的模擬行程：收力矩指令、以 1 kHz 送 telemetry、對控制器送 `MODE STAND` / `MODE RL|LMA` / `AXES` 文字指令，`/cmd_vel` 轉成 `AXES`（`quadsim/g23.py`，docs/usage.md §3.1）。`ideal` 模式不模擬腿：底盤跟隨 `/cmd_vel` 移動並貼合地形。
+地圖進 MuJoCo 的方式是一小池代理 box，每個控制週期搬到機器人周圍的場景 box 上（有腳的模式從 `contact.npy` 連地板一起搬）；完整地圖只在 Embree 裡給 LiDAR 用。`g23` 模式下 quadsim 是控制器 sim 後端的 MuJoCo 那一端：收力矩指令、每個物理步送關節與機身封包、對控制器送 `stand` / `rl_fcn` / `vel x y w` 操作者行並收它的狀態行（`quadsim/motorcontrol.py`；g2_deploy_rs 則是它自帶 sim 的 228 bytes telemetry 與 `MODE` / `AXES`，`quadsim/g23.py`；docs/usage.md §3.1、§3.2）。`ideal` 模式不模擬腿：底盤跟隨 `/cmd_vel` 移動並貼合地形。
 
 **使用手冊**（依任務分章，所有指令、參數和環境變數）見 [`docs/usage.md`](docs/usage.md)。設計背景見 [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md)（§12–§13）。 dp_1008 導航下點迴圈測試紀錄與失敗分析見 [`docs/archive/nav-goal-loop-test-2026-10-13.md`](docs/archive/nav-goal-loop-test-2026-10-13.md)。
 
@@ -58,7 +58,7 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 | 發布 | `/sim/map_cloud` | PointCloud2（latched，體素化後的地圖） | 一次 |
 | 訂閱 | `/cmd_vel` | geometry_msgs/Twist（vx、vy、wz） | — |
 | 訂閱 | `/sim/set_pose` | geometry_msgs/PoseStamped（x、y、yaw；**z 是地板高度的提示值**） | — |
-| 訂閱 | `/policy_mode` | std_msgs/Int32（只有 `g23`）：RL policy，0 PPO（預設）、1 HIMLoco 上下樓梯用，即時切換並以 `MODE n` 轉給控制器 | — |
+| 訂閱 | `/policy_mode` | std_msgs/Int32（只有 `g23`）：RL policy，0 PPO（預設，MotorControl 的 `rl_fcn`）、1 HIMLoco 上下樓梯用（`rl_him`），即時切換（MotorControl 經 `stand`；g2_deploy_rs 收 `MODE n`） | — |
 
 **TF**：一律發布靜態的 `base_link → livox_frame`。`publish_gt_tf` 預設 `false`：`map → odom` 和 `odom → base_link` 交給定位堆疊（Point-LIO + transform_fusion）發布。用 `ros.publish_gt_tf=true` 打開後，sim 才會再發 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。
 
