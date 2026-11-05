@@ -21,9 +21,9 @@ def rot_zyx(yaw: float, pitch: float, roll: float) -> np.ndarray:
                      [-sp, cp * sr, cp * cr]])
 
 
-def lidar_mount(li: dict) -> tuple[list[float], list[float]]:
-    """The lidar site in the base frame from `lidar.mount_xyz` / `lidar.mount_rpy` (URDF joint convention:
-    fixed-axis roll, pitch, yaw in rad; level when absent) -> (pos, quat wxyz)."""
+def mount_pose(li: dict) -> tuple[list[float], list[float]]:
+    """A sensor site in the base frame from a section's `mount_xyz` / `mount_rpy` (lidar, gnss; URDF joint
+    convention: fixed-axis roll, pitch, yaw in rad; level when absent) -> (pos, quat wxyz)."""
     roll, pitch, yaw = [float(v) for v in (li.get("mount_rpy") or [0.0, 0.0, 0.0])]
     return [float(v) for v in li["mount_xyz"]], quat_wxyz(rot_zyx(yaw, pitch, roll)).tolist()
 

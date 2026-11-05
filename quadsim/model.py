@@ -1,7 +1,7 @@
 """MJCF for the ideal-base quadruped: free body welded to a mocap target + proxy pool."""
 from __future__ import annotations
 
-from quadsim.base import lidar_mount
+from quadsim.base import mount_pose
 
 
 def _f(v) -> str:
@@ -11,7 +11,10 @@ def _f(v) -> str:
 def build_mjcf(cfg: dict, gravity, spawn_pos, n_proxies: int) -> str:
     r, li, ph = cfg["robot"], cfg["lidar"], cfg["physics"]
     half = [s / 2 for s in r["body_size"]]
-    lidar_pos, lidar_quat = lidar_mount(li)
+    lidar_pos, lidar_quat = mount_pose(li)
+    gnss = cfg.get("gnss") or {}
+    gnss_site = (f'      <site name="gnss" pos="{_f(mount_pose(gnss)[0])}" size="0.02" rgba="0.9 0.9 0.1 1"/>\n'
+                 if gnss.get("mount_xyz") else "")
     # Shadows mean a second render pass over the whole map mesh (about 2x per frame); off by default.
     shadows = "true" if cfg.get("viewer", {}).get("shadows", False) else "false"
     proxies = "\n".join(
@@ -37,7 +40,7 @@ def build_mjcf(cfg: dict, gravity, spawn_pos, n_proxies: int) -> str:
       <geom name="base_geom" type="box" size="{_f(half)}" mass="{r['mass']}" contype="1" conaffinity="2"
             friction="0.6 0.005 0.0001" rgba="0.95 0.6 0.15 1"/>
       <site name="lidar" pos="{_f(lidar_pos)}" quat="{_f(lidar_quat)}" size="0.03" rgba="0.1 0.1 0.9 1"/>
-    </body>
+{gnss_site}    </body>
 {proxies}
   </worldbody>
   <equality>

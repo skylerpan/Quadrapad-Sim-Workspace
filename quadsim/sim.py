@@ -14,6 +14,7 @@ from pcd2sim import SCENE_FORMAT
 from .base import IdealBase, body_lift, rot_zyx
 from .config import load_scene_meta
 from .g23 import RefSimOptions, build_g23_spec
+from .gnss import GnssFix, GnssModel, sky_directions, sky_fraction
 from .backends import make_backend
 from .lidar import LidarFrame, RollingLidar
 from .model import add_map_mesh, build_mjcf, nearest_boxes
@@ -62,6 +63,7 @@ class ImuSample:
 class TickOutput:
     t: float
     imu: list[ImuSample] = field(default_factory=list)
+    gnss: list[GnssFix] = field(default_factory=list)
     frames: list[LidarFrame] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
     clock: list[float] = field(default_factory=list)
@@ -120,6 +122,7 @@ class Simulator:
         self.d = mujoco.MjData(self.m)
         self.proxies = ProxyPool(self.m, self.d, self.contact_index, r["collision_pool"])
         self.lidar_site = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "lidar")
+        self.gnss_site = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "gnss")       # -1 without a gnss section
         if self.legged:
             self.base_body = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, "TORSO")
             self.base_geom = -1
@@ -147,6 +150,17 @@ class Simulator:
         self.rng = np.random.default_rng(cfg["lidar"].get("seed", 0) + 1)
         self.acc_bias = np.zeros(3)
         self.gyro_bias = np.zeros(3)
+        # the GNSS receiver (quadsim/gnss.py): only with a datum; the antenna is the `gnss` site
+        gn = cfg.get("gnss") or {}
+        self.gnss = GnssModel(gn, np.random.default_rng(cfg["lidar"].get("seed", 0) + 2)) if gn.get("datum") else None
+        if self.gnss is not None:
+            if self.gnss_site < 0:
+                raise ValueError("gnss.datum is set but gnss.mount_xyz is not: the antenna has no place on the base")
+            self.gnss_steps = self._steps_per(gn["rate_hz"], "gnss.rate_hz")
+            self.sky_dirs = sky_directions(int(gn["sky"]["rays"]), float(gn["sky"]["half_angle_deg"]))
+            self.sky_mode = str(gn["sky"].get("mode", "map"))
+            if self.sky_mode not in ("map", "always", "none"):
+                raise ValueError(f"gnss.sky.mode={self.sky_mode!r}: expected map, always or none")
 
         self.cmd = np.zeros(3)
         self.cmd_time = -1e9
@@ -319,6 +333,8 @@ class Simulator:
                                    self.d.site_xmat[self.lidar_site].reshape(3, 3))
             if self.step_count % self.imu_steps == 0:
                 out.imu.append(self._imu_sample(imu_cfg, t_state))
+            if self.gnss is not None and self.step_count % self.gnss_steps == 0:
+                out.gnss.append(self._gnss_sample(t_state))
             if self.step_count % self.clock_steps == 0:
                 out.clock.append(self.d.time)
         t2 = time.perf_counter()
@@ -358,6 +374,8 @@ class Simulator:
                                    self.d.site_xmat[self.lidar_site].reshape(3, 3))
             if self.step_count % self.imu_steps == 0:
                 out.imu.append(self._imu_sample(imu_cfg, t_state))
+            if self.gnss is not None and self.step_count % self.gnss_steps == 0:
+                out.gnss.append(self._gnss_sample(t_state))
             if self.step_count % self.clock_steps == 0:
                 out.clock.append(self.d.time)
         t2 = time.perf_counter()
@@ -403,6 +421,21 @@ class Simulator:
         gyro += self.gyro_bias + self.rng.normal(0, c["gyro_noise"], 3)
         acc /= G                                    # livox_ros_driver2 publishes acceleration in g
         return ImuSample(t, acc, gyro)
+
+    def _gnss_sample(self, t: float) -> GnssFix:
+        """The antenna's true position and velocity (world frame, at t like the IMU) and the sky it sees."""
+        pos = self.d.site_xpos[self.gnss_site].copy()
+        vel6 = np.empty(6)                                   # [angular, linear] in the world frame
+        mujoco.mj_objectVelocity(self.m, self.d, mujoco.mjtObj.mjOBJ_SITE, self.gnss_site, vel6, 0)
+        if self.sky_mode == "always":
+            sky = 1.0
+        elif self.sky_mode == "none":
+            sky = 0.0
+        else:
+            origins = np.repeat((pos + [0.0, 0.0, 0.05])[None], len(self.sky_dirs), axis=0)
+            t_hit, _ = self.rays.cast(origins.astype(np.float32), self.sky_dirs.astype(np.float32))
+            sky = sky_fraction(t_hit, float(self.cfg["gnss"]["sky"]["range"]))
+        return self.gnss.sample(t, pos, vel6[3:6], sky)
 
     def _base_contact(self):
         if self.base_geom < 0:

@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 import mujoco
 import numpy as np
 
-from quadsim.base import lidar_mount
+from quadsim.base import mount_pose
 from quadsim.sequence import Damp, Gait, Intent, Lie, ResetSafety, Stand, StandSequence, Vel, VelStop
 
 G23_XML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "robot", "g23", "mjcf", "g23_mjcf.xml")
@@ -202,8 +202,11 @@ def build_g23_spec(cfg: dict, gravity, spawn_pos, n_proxies: int, opts: RefSimOp
     spec.delete(spec.geom("floor"))
     torso = spec.body("TORSO")
     torso.pos = [spawn_pos[0], spawn_pos[1], spawn_pos[2]]
-    lidar_pos, lidar_quat = lidar_mount(li)                 # URDF base_link -> lidar_top, tilt included
+    lidar_pos, lidar_quat = mount_pose(li)                 # URDF base_link -> lidar_top, tilt included
     torso.add_site(name="lidar", pos=lidar_pos, quat=lidar_quat, size=[0.03, 0.03, 0.03], rgba=[0.1, 0.1, 0.9, 1])
+    gnss = cfg.get("gnss") or {}
+    if gnss.get("mount_xyz"):                               # the GNSS antenna (quadsim/gnss.py)
+        torso.add_site(name="gnss", pos=mount_pose(gnss)[0], size=[0.02, 0.02, 0.02], rgba=[0.9, 0.9, 0.1, 1])
     spec.add_sensor(name="lidar_acc", type=mujoco.mjtSensor.mjSENS_ACCELEROMETER,
                     objtype=mujoco.mjtObj.mjOBJ_SITE, objname="lidar")
     spec.add_sensor(name="lidar_gyro", type=mujoco.mjtSensor.mjSENS_GYRO,

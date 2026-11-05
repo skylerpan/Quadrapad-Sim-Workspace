@@ -38,11 +38,11 @@ def test_imu_stamped_with_the_state_it_measures():
 
 def test_lidar_site_follows_the_urdf_mount():
     """lidar.mount_xyz / mount_rpy place the site like the URDF joint base_link -> lidar_top (pitched Mid-360)."""
-    from quadsim.base import lidar_mount, rot_zyx
+    from quadsim.base import mount_pose, rot_zyx
     from quadsim.sim import Simulator
     cfg = load_config(None, ["robot.type=ideal", "lidar.points_per_sec=2000", "lidar.mount_xyz=[0.195,0,0.155]",
                              "lidar.mount_rpy=[0,0.25,0]"])
-    pos, quat = lidar_mount(cfg["lidar"])
+    pos, quat = mount_pose(cfg["lidar"])
     assert pos == [0.195, 0.0, 0.155] and abs(quat[0] - np.cos(0.125)) < 1e-9 and abs(quat[2] - np.sin(0.125)) < 1e-9
     s = Simulator(cfg)
     try:
@@ -51,7 +51,7 @@ def test_lidar_site_follows_the_urdf_mount():
         assert np.allclose(R_base.T @ R_site, rot_zyx(0.0, 0.25, 0.0), atol=1e-9)      # pitched on the base
         offset = R_base.T @ (s.d.site_xpos[s.lidar_site] - s.d.xpos[s.base_body])
         assert np.allclose(offset, [0.195, 0.0, 0.155], atol=1e-9)
-        assert lidar_mount({"mount_xyz": [1, 2, 3]})[1] == [1.0, 0.0, 0.0, 0.0]           # no rpy: level
+        assert mount_pose({"mount_xyz": [1, 2, 3]})[1] == [1.0, 0.0, 0.0, 0.0]           # no rpy: level
     finally:
         s.close()
 

@@ -31,7 +31,7 @@ from std_msgs.msg import Int32, String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 from pcd2sim.pcd_io import read_pcd
-from quadsim.base import lidar_mount
+from quadsim.base import mount_pose
 
 from .config import load_config
 from .controller_proc import ControllerProcess
@@ -230,7 +230,7 @@ class SimNode(Node):
     def _publish_static_tf(self):
         t = TransformStamped()
         t.header.frame_id, t.child_frame_id = self.fr["base"], self.fr["lidar"]
-        pos, (qw, qx, qy, qz) = lidar_mount(self.cfg["lidar"])
+        pos, (qw, qx, qy, qz) = mount_pose(self.cfg["lidar"])
         t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = pos
         t.transform.rotation.w, t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z = qw, qx, qy, qz
         self.static_tf.sendTransform(t)
