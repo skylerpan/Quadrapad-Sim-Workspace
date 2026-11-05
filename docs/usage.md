@@ -424,22 +424,22 @@ sim t=10.0s pose=[...]                          # 每 10 sim 秒一行
 ```bash
 scripts/run_sim.sh web.hz=10 web.lidar_hz=2 web.lidar_points=2000 gnss.sky.mode=always   # 室內地圖要強制有天空
 # robot01 裡重開 nav-sim（docker exec -it robot01 byobu → scripts/tmuxp/start.sh sim），tracked_pose 偏掉就發 /robot01/initialpose
-QUADSIM_G23=1 docker/run.sh "ros2 launch launch/gnss_ekf.launch.py"      # navsat_transform_node + ekf_map（config/gnss_ekf.yaml）
+QUADSIM_G23=1 docker/run.sh "ros2 launch launch/gnss_ekf.launch.py"      # scripts/gnss_map_odom.py + ekf_map（config/gnss_ekf.yaml）
 QUADSIM_G23=1 docker/run.sh "python3 scripts/gnss_ekf_check.py"          # 開車 27 s：直走、轉 90°、直走、停，每秒印誤差，結果進 results/gnss_ekf/
 ```
 
-設定的幾個決定（`config/gnss_ekf.yaml`）：`navsat_transform` 用 `use_odometry_yaw: true`（sim 的 IMU 沒有 orientation）加 `yaw_offset` 0.5411 rad（= 地圖 x 軸相對正東的 31°），datum 取第一個 fix 和當時的 odometry 位姿，所以不依賴出生在原點；**不用** `use_local_cartesian`：humble 的套件在這個模式會丟 `MGRS string too short` 直接 abort，UTM 模式輸出一樣是相對 datum 的。`ekf_map` 吃 `/robot01/odom` 的 yaw、vx、vy、vyaw 和 `/odometry/gps` 的 x、y，`two_d_mode`。
+**fix 怎麼進 map 座標**：`scripts/gnss_map_odom.py` 用 sim.yaml 的 `gnss.datum`（地圖原點的經緯度和地圖 x 軸方位）把每筆 NavSatFix 經 `quadsim.gnss` 轉成 map 座標的 `nav_msgs/Odometry`（`/odometry/gps`），天線偏移用 odom 的 yaw 扣掉，協方差帶 fix 自己的 sigma。datum 是地圖的屬性，只寫在一個地方；上實機時同一支節點改讀地圖自己的 datum。**沒有用** robot_localization 自帶的 `navsat_transform_node`：它的 datum 錨在機器人啟動時的位姿（手動 `datum` 的意思是「機器人此刻在這個經緯度、朝這個方向」，自動模式則拿第一筆 fix），第一筆 fix 的雜訊會變成永久偏移；而且 humble 的套件在 `use_local_cartesian` 模式會丟 `MGRS string too short` 直接 abort。`ekf_map` 吃 `/robot01/odom` 的 yaw、vx、vy、vyaw 和 `/odometry/gps` 的 x、y，`two_d_mode`。
 
-2026-11-05 第一次跑（scenes/dp 原點，`gnss.rtk: false` 單機：白雜訊 1.5 m + 慢漂 1 m；控制器 94c5531 rl_fcn，指令 0.3 m/s 實走約 0.12 m/s，共 1.5 m）：
+2026-11-05 的結果（scenes/dp 原點附近，`gnss.rtk: false` 單機：白雜訊 1.5 m + 時間常數 100 s 的慢漂 1 m；控制器 94c5531 rl_fcn，指令 0.3 m/s 實走約 0.12 m/s，每趟 1.5 m；對真值的誤差，27 s 270 筆）：
 
-| 對真值的誤差（27 s，270 筆） | RMS | 最大 |
-|---|---|---|
-| EKF `/odometry/filtered` xy | 0.86 m | 1.48 m |
-| 原始 fix 換到 map 座標 xy | 2.64 m | 8.83 m |
-| 導航 `tracked_pose` xy（參考） | 0.10 m | 0.12 m |
-| EKF yaw（= odom yaw） | 0.9° | 3.6°（轉彎時 odom 的延遲） |
+| | navsat_transform 第一趟 | navsat_transform 第二趟（8 分鐘後） | 固定 datum（gnss_map_odom） |
+|---|---|---|---|
+| EKF `/odometry/filtered` xy RMS / 最大 | 0.86 / 1.48 m | 3.41 / 4.06 m | **0.79 / 1.38 m** |
+| 原始 fix 換到 map 座標 xy RMS / 最大 | 2.64 / 8.83 m | 2.47 / 5.72 m | 2.25 / 4.87 m |
+| 導航 `tracked_pose` xy RMS（參考） | 0.10 m | 0.08 m | 0.06 m |
+| EKF yaw RMS（= odom yaw） | 0.9° | 0.9° | 0.9° |
 
-EKF 把 fix 的 2.6 m 壓到 0.9 m 左右，剩下的是 datum 本身的誤差（第一個 fix 的雜訊直接變成 datum）和慢漂；heading 完全來自 odom，GNSS 不觀測 yaw。要再往下就是：RTK（`gnss.rtk: true`，fix 1 cm）、把 datum 固定成 sim.yaml 那組而不是第一個 fix（`datum` 參數要配合出生位姿）、融合 `fix_velocity`。
+navsat_transform 兩趟差這麼多就是 datum 錨在第一筆 fix：第一趟 datum 誤差和慢漂剛好抵消，第二趟同向相加。固定 datum 後 EKF 剩下的誤差就是慢漂本身（σ 1 m），白雜訊被濾掉；heading 完全來自 odom，GNSS 不觀測 yaw。要再往下：RTK（`gnss.rtk: true`，fix 1 cm，慢漂 1 cm）、融合 `fix_velocity`。
 
 ## 4. 畫面（GUI）
 
