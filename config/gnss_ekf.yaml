@@ -1,26 +1,11 @@
 # robot_localization against the sim's GNSS (launch/gnss_ekf.launch.py; docs/usage.md 3.4): a map-frame EKF that
-# fuses the nav stack's odometry with the fix turned into map coordinates by navsat_transform_node. It publishes
+# fuses the nav stack's odometry with the fix turned into map coordinates through the map datum. It publishes
 # no TF (the nav stack owns map -> odom); /odometry/filtered is compared with /sim/ground_truth/odom and the nav's
 # /robot01/tracked_pose by scripts/gnss_ekf_check.py.
-navsat_transform:
-  ros__parameters:
-    use_sim_time: true
-    frequency: 10.0               # the sim's gnss.rate_hz
-    delay: 1.0
-    magnetic_declination_radians: 0.0
-    # heading = odometry yaw + yaw_offset: the map x axis is 31.0 deg counter-clockwise from east (config/sim.yaml
-    # gnss.datum.yaw_deg), so a robot at map yaw 0 heads 31 deg in ENU. The datum is the first fix at the odometry
-    # pose of that moment, so the test does not depend on where the robot spawned.
-    yaw_offset: 0.5410521
-    use_odometry_yaw: true        # the sim IMU carries no orientation; no imu topic is subscribed
-    # UTM, not use_local_cartesian: the humble package aborts in local-cartesian mode ("MGRS string too short",
-    # GeographicLib::GeographicErr, 2026-11-05); the output is relative to the datum either way
-    use_local_cartesian: false
-    zero_altitude: true
-    broadcast_cartesian_transform: false
-    publish_filtered_gps: true    # /gnss/filtered: the EKF pose back as lat / lon, to eyeball against the sim fix
-    wait_for_datum: false
-
+# The fix enters as /odometry/gps from scripts/gnss_map_odom.py (fixed map datum). robot_localization's
+# navsat_transform_node was tried first (2026-11-05): its datum is anchored to the robot's pose at start-up, so
+# the first fix's noise became a permanent 2-3 m offset, and the humble build aborts in use_local_cartesian mode
+# ("MGRS string too short").
 ekf_map:
   ros__parameters:
     use_sim_time: true
