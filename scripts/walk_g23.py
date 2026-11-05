@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from pcd2sim.geometry import resample  # noqa: E402
 from quadsim.config import load_config  # noqa: E402
 from quadsim.controller_proc import ControllerProcess  # noqa: E402
+from quadsim.motorcontrol_wire import GAIT_BEHAVIORS  # noqa: E402
 from quadsim.sim import Simulator  # noqa: E402
 
 
@@ -172,7 +173,9 @@ def main(argv=None):
             for e in out.events:
                 rec["events"].append(e)
                 log(f"event {e}")
-                if e["type"] == "controller" and e.get("state") in ("rl", "lma"):
+                # the gait is on: g2_deploy_rs reports `rl` / `lma`, MotorControl `switched` to a gait behavior
+                if e["type"] == "controller" and (e.get("state") in ("rl", "lma") or
+                                                  (e.get("state") == "switched" and e.get("to") in GAIT_BEHAVIORS)):
                     rec["t_gait"] = sim.d.time
                 if e["type"] == "fall":
                     rec["t_fall"] = sim.d.time

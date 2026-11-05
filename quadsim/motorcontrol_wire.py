@@ -31,6 +31,7 @@ MC_BASE_BYTES = struct.calcsize(_BASE_FMT)
 
 Behavior = Literal["rest", "stand", "rl_fcn", "rl_him", "gait_mpc"]
 BEHAVIORS: tuple[str, ...] = ("rest", "stand", "rl_fcn", "rl_him", "gait_mpc")
+GAIT_BEHAVIORS: tuple[str, ...] = ("rl_fcn", "rl_him", "gait_mpc")      # the ones that walk on /cmd_vel
 # quadsim's policy_mode integers (ROS /policy_mode, the web viewer, walk_g23 --switch) to the controller's RL behaviors;
 # other slots (4 = IsaacSim on g2_deploy_rs) have no counterpart
 POLICY_TO_BEHAVIOR: dict[int, str] = {0: "rl_fcn", 1: "rl_him"}
