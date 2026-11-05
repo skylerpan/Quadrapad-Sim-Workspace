@@ -417,6 +417,30 @@ sim t=10.0s pose=[...]                          # 每 10 sim 秒一行
 
 結束用 Ctrl-C（再按一次強制）。
 
+### 3.4 GNSS 融合測試（robot_localization）
+
+用 ROS 2 的 robot_localization 把 sim 的 GNSS（第 5 章 `/robot01/gnss/fix`）和導航堆疊的 odometry 融合成一個 map 座標的估計，和真值、導航自己的 `tracked_pose` 比。robot_localization 裝在 quadsim-g23 映像裡（`docker/Dockerfile.g23`），在 quadsim 容器跑，不動 robot01；它**不發 TF**（`publish_tf: false`，map → odom 還是 transform_fusion 的），只是比對。
+
+```bash
+scripts/run_sim.sh web.hz=10 web.lidar_hz=2 web.lidar_points=2000 gnss.sky.mode=always   # 室內地圖要強制有天空
+# robot01 裡重開 nav-sim（docker exec -it robot01 byobu → scripts/tmuxp/start.sh sim），tracked_pose 偏掉就發 /robot01/initialpose
+QUADSIM_G23=1 docker/run.sh "ros2 launch launch/gnss_ekf.launch.py"      # navsat_transform_node + ekf_map（config/gnss_ekf.yaml）
+QUADSIM_G23=1 docker/run.sh "python3 scripts/gnss_ekf_check.py"          # 開車 27 s：直走、轉 90°、直走、停，每秒印誤差，結果進 results/gnss_ekf/
+```
+
+設定的幾個決定（`config/gnss_ekf.yaml`）：`navsat_transform` 用 `use_odometry_yaw: true`（sim 的 IMU 沒有 orientation）加 `yaw_offset` 0.5411 rad（= 地圖 x 軸相對正東的 31°），datum 取第一個 fix 和當時的 odometry 位姿，所以不依賴出生在原點；**不用** `use_local_cartesian`：humble 的套件在這個模式會丟 `MGRS string too short` 直接 abort，UTM 模式輸出一樣是相對 datum 的。`ekf_map` 吃 `/robot01/odom` 的 yaw、vx、vy、vyaw 和 `/odometry/gps` 的 x、y，`two_d_mode`。
+
+2026-11-05 第一次跑（scenes/dp 原點，`gnss.rtk: false` 單機：白雜訊 1.5 m + 慢漂 1 m；控制器 94c5531 rl_fcn，指令 0.3 m/s 實走約 0.12 m/s，共 1.5 m）：
+
+| 對真值的誤差（27 s，270 筆） | RMS | 最大 |
+|---|---|---|
+| EKF `/odometry/filtered` xy | 0.86 m | 1.48 m |
+| 原始 fix 換到 map 座標 xy | 2.64 m | 8.83 m |
+| 導航 `tracked_pose` xy（參考） | 0.10 m | 0.12 m |
+| EKF yaw（= odom yaw） | 0.9° | 3.6°（轉彎時 odom 的延遲） |
+
+EKF 把 fix 的 2.6 m 壓到 0.9 m 左右，剩下的是 datum 本身的誤差（第一個 fix 的雜訊直接變成 datum）和慢漂；heading 完全來自 odom，GNSS 不觀測 yaw。要再往下就是：RTK（`gnss.rtk: true`，fix 1 cm）、把 datum 固定成 sim.yaml 那組而不是第一個 fix（`datum` 參數要配合出生位姿）、融合 `fix_velocity`。
+
 ## 4. 畫面（GUI）
 
 ### 4.1 瀏覽器 viewer（viser，預設開）
