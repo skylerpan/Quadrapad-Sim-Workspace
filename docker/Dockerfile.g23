@@ -9,6 +9,7 @@ USER root
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       build-essential cmake ninja-build pkg-config libssl-dev libeigen3-dev libudev-dev \
       python3-venv python3-pip rsync zip unzip tmux curl wget git ca-certificates \
+      ros-humble-robot-localization \
     && rm -rf /var/lib/apt/lists/*
 
 USER syncrobotic
