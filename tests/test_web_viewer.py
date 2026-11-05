@@ -66,3 +66,14 @@ def test_nearest_boxes():
     near = nearest_boxes(boxes, [7.2, 0.0], 3)
     assert sorted(near[:, 0].tolist()) == [6.0, 7.0, 8.0]
     assert nearest_boxes(boxes, [0, 0], 50) is boxes
+
+
+def test_gnss_line_reads_the_fix():
+    from quadsim.gnss import GnssFix
+    from quadsim.web_viewer import gnss_text
+    import numpy as np
+    assert gnss_text(None) == "waiting"
+    none = GnssFix(1.0, "none", float("nan"), float("nan"), float("nan"), np.full(3, np.nan), float("inf"), float("inf"), 0.0)
+    assert gnss_text(none) == "no fix (sky 0%)"
+    fix = GnssFix(1.0, "rtk_fixed", 24.96086, 121.421968, 129.85, np.zeros(3), 0.01, 0.02, 1.0)
+    assert gnss_text(fix) == "rtk_fixed 24.960860 121.421968 alt 129.8 ±0.01 m (sky 100%)"

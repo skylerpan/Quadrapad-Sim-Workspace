@@ -57,3 +57,34 @@ def test_stamp_parts_carries_at_second_boundary():
         assert cur > prev
         prev = cur
     assert stamp_parts(44.99999999999) == (45, 0)
+
+
+def test_gnss_fix_becomes_a_navsatfix_and_an_enu_twist_like_the_ublox_driver():
+    from sensor_msgs.msg import NavSatFix, NavSatStatus
+    from quadsim.gnss import GnssFix
+    from quadsim.ros_io import gnss_navsatfix, gnss_twist
+
+    fix = GnssFix(t=12.3456789, fix="rtk_fixed", lat=24.96, lon=121.42, alt=130.5, vel_enu=np.array([0.5, -0.2, 0.01]),
+                  sigma_h=0.01, sigma_v=0.02, sky=1.0)
+    m = gnss_navsatfix(fix, "robot01/gnss_link")
+    assert m.header.frame_id == "robot01/gnss_link" and m.header.stamp.sec == 12 and abs(m.header.stamp.nanosec - 345678900) <= 1
+    assert m.status.status == NavSatStatus.STATUS_GBAS_FIX                      # the driver reports RTK fixed this way
+    assert m.status.service == (NavSatStatus.SERVICE_GPS | NavSatStatus.SERVICE_GLONASS | NavSatStatus.SERVICE_GALILEO
+                                | NavSatStatus.SERVICE_COMPASS)
+    assert (m.latitude, m.longitude, m.altitude) == (24.96, 121.42, 130.5)
+    assert list(m.position_covariance) == [0.01 ** 2, 0, 0, 0, 0.01 ** 2, 0, 0, 0, 0.02 ** 2]
+    assert m.position_covariance_type == NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+    tw = gnss_twist(fix, "robot01/gnss_link", vel_sigma=0.02)
+    assert tw.header.frame_id == "robot01/gnss_link" and (tw.twist.twist.linear.x, tw.twist.twist.linear.y) == (0.5, -0.2)
+    assert tw.twist.covariance[0] == tw.twist.covariance[7] == tw.twist.covariance[14] == 0.02 ** 2
+
+    for kind, status in (("single", NavSatStatus.STATUS_FIX), ("rtk_float", NavSatStatus.STATUS_FIX),
+                         ("dead_reckoning", NavSatStatus.STATUS_FIX)):
+        fix.fix = kind
+        assert gnss_navsatfix(fix, "g").status.status == status
+
+    none = GnssFix(t=1.0, fix="none", lat=float("nan"), lon=float("nan"), alt=float("nan"),
+                   vel_enu=np.full(3, np.nan), sigma_h=float("inf"), sigma_v=float("inf"), sky=0.0)
+    m = gnss_navsatfix(none, "g")
+    assert m.status.status == NavSatStatus.STATUS_NO_FIX and np.isnan(m.latitude)
+    assert m.position_covariance_type == NavSatFix.COVARIANCE_TYPE_UNKNOWN and list(m.position_covariance) == [0.0] * 9

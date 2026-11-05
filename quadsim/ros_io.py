@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import struct
 
+import math
+
 import numpy as np
-from sensor_msgs.msg import PointCloud2, PointField
+from geometry_msgs.msg import TwistWithCovarianceStamped
+from sensor_msgs.msg import NavSatFix, NavSatStatus, PointCloud2, PointField
 
 # --- livox_ros_driver2/CustomMsg as raw CDR -----------------------------------
 # CustomPoint: uint32 offset_time, float32 x y z, uint8 reflectivity tag line (19 B, 4-aligned -> 20)
@@ -88,3 +91,40 @@ def _cloud(t_stamp, frame_id, fields, step, data: bytes, n: int) -> PointCloud2:
     msg.is_dense = True
     msg.data = data
     return msg
+
+
+# --- GNSS: what the ublox ROS 2 driver publishes for a ZED-F9x -----------------
+_NAVSAT_STATUS = {"none": NavSatStatus.STATUS_NO_FIX, "single": NavSatStatus.STATUS_FIX,
+                  "rtk_float": NavSatStatus.STATUS_FIX, "rtk_fixed": NavSatStatus.STATUS_GBAS_FIX,
+                  "dead_reckoning": NavSatStatus.STATUS_FIX}
+_NAVSAT_SERVICE = (NavSatStatus.SERVICE_GPS | NavSatStatus.SERVICE_GLONASS | NavSatStatus.SERVICE_GALILEO
+                   | NavSatStatus.SERVICE_COMPASS)                            # the F9 tracks all four
+
+
+def gnss_navsatfix(fix, frame_id: str) -> NavSatFix:
+    """sensor_msgs/NavSatFix for a quadsim.gnss.GnssFix: RTK fixed is STATUS_GBAS_FIX like the driver's `fix`,
+    the covariance is the receiver's own sigma on the diagonal, a lost fix is STATUS_NO_FIX with NaN."""
+    m = NavSatFix()
+    m.header.stamp.sec, m.header.stamp.nanosec = stamp_parts(fix.t)
+    m.header.frame_id = frame_id
+    m.status.status = _NAVSAT_STATUS[fix.fix]
+    m.status.service = _NAVSAT_SERVICE
+    m.latitude, m.longitude, m.altitude = float(fix.lat), float(fix.lon), float(fix.alt)
+    if math.isfinite(fix.sigma_h):
+        m.position_covariance = [fix.sigma_h ** 2, 0.0, 0.0, 0.0, fix.sigma_h ** 2, 0.0, 0.0, 0.0, fix.sigma_v ** 2]
+        m.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+    else:
+        m.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
+    return m
+
+
+def gnss_twist(fix, frame_id: str, vel_sigma: float) -> TwistWithCovarianceStamped:
+    """geometry_msgs/TwistWithCovarianceStamped with the ENU velocity, like the driver's `fix_velocity`."""
+    m = TwistWithCovarianceStamped()
+    m.header.stamp.sec, m.header.stamp.nanosec = stamp_parts(fix.t)
+    m.header.frame_id = frame_id
+    m.twist.twist.linear.x, m.twist.twist.linear.y, m.twist.twist.linear.z = (float(v) for v in fix.vel_enu)
+    cov = [0.0] * 36
+    cov[0] = cov[7] = cov[14] = vel_sigma ** 2
+    m.twist.covariance = cov
+    return m

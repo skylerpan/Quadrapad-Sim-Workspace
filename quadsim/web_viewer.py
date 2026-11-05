@@ -137,6 +137,7 @@ class WebViewer:
             self.g_rtf = gui.add_text("Real-time factor", "-", disabled=True)
             self.g_pose = gui.add_text("Base x y z", "-", disabled=True)
             self.g_lidar = gui.add_text("LiDAR", "-", disabled=True)
+            self.g_gnss = gui.add_text("GNSS", "-", disabled=True)
             self.g_map = gui.add_text("Map", "loading...", disabled=True)
         with gui.add_folder("Layers", expand_by_default=False):
             self.c_map = gui.add_checkbox("Map", True)
@@ -453,6 +454,9 @@ class WebViewer:
                 self.g_cmd.value = cmd_txt
             if self.g_lidar.value != self._lidar_info:
                 self.g_lidar.value = self._lidar_info
+            gnss_txt = gnss_text(sim.gnss.latest) if getattr(sim, "gnss", None) is not None else "off"
+            if self.g_gnss.value != gnss_txt:
+                self.g_gnss.value = gnss_txt
         return time.perf_counter() - now
 
     def _push_lidar(self, d, f) -> None:
@@ -489,3 +493,12 @@ class WebViewer:
             self.server.stop()
         except Exception:  # noqa: BLE001
             pass
+
+
+def gnss_text(fix) -> str:
+    """The GNSS line of the Sim folder: fix type, position, sigma, sky."""
+    if fix is None:
+        return "waiting"
+    if fix.fix == "none":
+        return f"no fix (sky {fix.sky:.0%})"
+    return f"{fix.fix} {fix.lat:.6f} {fix.lon:.6f} alt {fix.alt:.1f} ±{fix.sigma_h:.2f} m (sky {fix.sky:.0%})"

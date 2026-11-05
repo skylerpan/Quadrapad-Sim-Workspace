@@ -20,13 +20,13 @@ import traceback
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
+from geometry_msgs.msg import PoseStamped, TransformStamped, Twist, TwistWithCovarianceStamped
 from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 from rosgraph_msgs.msg import Clock
-from sensor_msgs.msg import Imu, PointCloud2
+from sensor_msgs.msg import Imu, NavSatFix, PointCloud2
 from std_msgs.msg import Int32, String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
@@ -35,7 +35,7 @@ from quadsim.base import mount_pose
 
 from .config import load_config
 from .controller_proc import ControllerProcess
-from .ros_io import lidar_pointcloud2, serialize_custom_msg, stamp_parts, xyzi_pointcloud2
+from .ros_io import gnss_navsatfix, gnss_twist, lidar_pointcloud2, serialize_custom_msg, stamp_parts, xyzi_pointcloud2
 from .sim import Simulator
 
 try:
@@ -61,6 +61,10 @@ class SimNode(Node):
         self.pub_clock = self.create_publisher(Clock, tp["clock"], 10)
         self.pub_imu = self.create_publisher(Imu, tp["imu"], sensor_qos)
         self.pub_odom = self.create_publisher(Odometry, tp["gt_odom"], 10)
+        self.pub_fix = self.pub_fix_vel = None
+        if sim.gnss is not None:                    # gnss.datum set: the receiver's fix and ENU velocity
+            self.pub_fix = self.create_publisher(NavSatFix, tp["gnss_fix"], sensor_qos)
+            self.pub_fix_vel = self.create_publisher(TwistWithCovarianceStamped, tp["gnss_velocity"], sensor_qos)
         # transient_local: a late subscriber asking for it still gets the start-up `spawn` event
         self.pub_events = self.create_publisher(String, tp["events"], QoSProfile(
             depth=20, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -175,6 +179,9 @@ class SimNode(Node):
             self.pub_clock.publish(msg)
         for s in out.imu:
             self._publish_imu(s)
+        for f in out.gnss:
+            self.pub_fix.publish(gnss_navsatfix(f, self.fr["gnss"]))
+            self.pub_fix_vel.publish(gnss_twist(f, self.fr["gnss"], self.sim.gnss.vel_sigma(f)))
         for f in out.frames:
             if self.pub_custom is not None:
                 self.pub_custom.publish(serialize_custom_msg(f.stamp, self.fr["lidar"], f))
@@ -228,12 +235,19 @@ class SimNode(Node):
             self.tf.sendTransform([ident, base])
 
     def _publish_static_tf(self):
-        t = TransformStamped()
-        t.header.frame_id, t.child_frame_id = self.fr["base"], self.fr["lidar"]
-        pos, (qw, qx, qy, qz) = mount_pose(self.cfg["lidar"])
-        t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = pos
-        t.transform.rotation.w, t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z = qw, qx, qy, qz
-        self.static_tf.sendTransform(t)
+        """base_link -> lidar, and -> gnss_link with a receiver: one call, a static broadcaster keeps only its last."""
+        mounts = [("lidar", self.cfg["lidar"])]
+        if self.sim.gnss is not None:
+            mounts.append(("gnss", self.cfg["gnss"]))
+        tfs = []
+        for frame, section in mounts:
+            t = TransformStamped()
+            t.header.frame_id, t.child_frame_id = self.fr["base"], self.fr[frame]
+            pos, (qw, qx, qy, qz) = mount_pose(section)
+            t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = pos
+            t.transform.rotation.w, t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z = qw, qx, qy, qz
+            tfs.append(t)
+        self.static_tf.sendTransform(tfs)
 
 
 def _spin(node, stop: threading.Event, failed: threading.Event):

@@ -162,8 +162,19 @@ class GnssModel:
         self.outage_since: float | None = None
         self.dr_offset = np.zeros(3)
         self.last = self.noise["single"]           # the noise the dead-reckoning starts from
+        self.latest: GnssFix | None = None         # the last fix, for the viewers
+
+    def vel_sigma(self, fix: GnssFix) -> float:
+        """The velocity noise the fix was made with (dead reckoning keeps the last good value)."""
+        if fix.fix == "none":
+            return math.inf
+        return self.noise[fix.fix]["vel_sigma"] if fix.fix in self.noise else self.last["vel_sigma"]
 
     def sample(self, t: float, pos_map: np.ndarray, vel_map: np.ndarray, sky: float) -> GnssFix:
+        self.latest = self._sample(t, pos_map, vel_map, sky)
+        return self.latest
+
+    def _sample(self, t: float, pos_map: np.ndarray, vel_map: np.ndarray, sky: float) -> GnssFix:
         dt = 1.0 / self.rate_hz
         if sky >= self.sky_cfg["poor"]:
             self.outage_since = None
