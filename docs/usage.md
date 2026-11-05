@@ -473,13 +473,17 @@ MuJoCo viewer 把整張地圖當一個 mesh 畫（dp_1008 約 310 萬個三角�
 | 發布 | `/livox/lidar` | `lidar_custom` | livox_ros_driver2/CustomMsg（`offset_time` 逐點時間，ns） | 10 Hz |
 | 發布 | `/livox/points` | `lidar_points` | PointCloud2（`pointcloud2_format`：livox 或 velodyne 欄位） | 10 Hz |
 | 發布 | `/livox/imu` | `imu` | sensor_msgs/Imu（加速度單位 g，無 orientation） | 200 Hz |
+| 發布 | `/robot01/gnss/fix` | `gnss_fix` | sensor_msgs/NavSatFix（`gnss` 區塊有 datum 才發；RTK fixed 是 `STATUS_GBAS_FIX`，沒 fix 是 `STATUS_NO_FIX` + NaN；協方差對角線是接收器的 sigma²） | 10 Hz |
+| 發布 | `/robot01/gnss/fix_velocity` | `gnss_velocity` | geometry_msgs/TwistWithCovarianceStamped（ENU 速度，和 ublox 驅動的 `fix_velocity` 一樣） | 10 Hz |
 | 發布 | `/sim/ground_truth/odom` | `gt_odom` | nav_msgs/Odometry，map frame，**只用於評估** | 50 Hz |
 | 發布 | `/sim/events` | `events` | std_msgs/String（JSON），transient_local | 事件時 |
 | 發布 | `/sim/map_cloud` | `map_cloud` | PointCloud2，latched 的體素化地圖 | 一次 |
 | 訂閱 | `/cmd_vel` | `cmd_vel` | geometry_msgs/Twist（vx, vy, wz）；超過 `robot.cmd_timeout`（0.5 s）沒收到就歸零 | — |
 | 訂閱 | `/sim/set_pose` | `set_pose` | geometry_msgs/PoseStamped（x, y, yaw；**z 是地板高度提示**，多樓層時用來選層） | — |
 
-Frame（`ros.frames`）：`map`、`odom`、`base_link`、`livox_frame`。靜態 `base_link → livox_frame` 一律發布；`publish_gt_tf` 預設 `false`：`map → odom` 和 `odom → base_link` 由 Point-LIO / 定位 stack 發。用 `ros.publish_gt_tf=true` 打開後，sim 才會再發 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。
+Frame（`ros.frames`）：`map`、`odom`、`base_link`、`livox_frame`、`gnss_link`。靜態 `base_link → livox_frame`（有 GNSS 時加 `→ gnss_link`）一律發布；`publish_gt_tf` 預設 `false`：`map → odom` 和 `odom → base_link` 由 Point-LIO / 定位 stack 發。用 `ros.publish_gt_tf=true` 打開後，sim 才會再發 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。
+
+**GNSS（`gnss` 區塊，`quadsim/gnss.py`，2026-11-05）。** 模擬一顆 u-blox ZED-F9P 或 ZED-F9R（`gnss.model`），訊息和上游 ublox ROS 2 驅動的 `fix` / `fix_velocity` 相同，所以為實機寫的消費端不用分支。`datum`（地圖原點的 WGS84 經緯度、橢球高、地圖 x 軸相對正東的方位角）把 map 座標轉成 ENU 再經 ECEF 轉成經緯度；`datum: null` 就沒有 GNSS。dp 地圖的 datum 由兩個參考點解出（map (29.10, 39.50) ↔ 24.961306 / 121.422022、map (39.90, 40.30) ↔ 24.961353 / 121.422095）：原點 24.960860 / 121.421968、方位角 31.0°；兩點的距離差 17 %，原點帶約 1.5 m 誤差，橢球高 130 m 是佔位值。天線是 base 上的 `gnss` site（`gnss.mount_xyz`，目前是佔位的機身後上方，URDF 還沒有 gnss link），靜態 TF `base_link → robot01/gnss_link`。**fix 品質由地圖決定**：每次取樣從天線往天頂錐內射 9 條射線（`sky`：半角 60°、50 m 內打到東西就不算天空），天空比例 ≥ `good` 是 `rtk_fixed`（`rtk: true`）或 `single`、≥ `degraded` 是 `rtk_float` / `single`、≥ `poor` 是 `single`、再低就沒 fix；dp 室內原點 9 條全打到 9 m 內，所以沒 fix，走到門口才會有。`sky.mode: always` 強制有天空（室內地圖測協定用）、`none` 強制沒有。雜訊按 fix 類型（`noise`）：白雜訊加一階 Gauss-Markov 偏差（多路徑那種慢漂）；F9R 在天空消失後靠 IMU 航位推算撐 `holdover.secs`（`dead_reckoning`，位置隨機漫步、sigma 漸增），F9P 立刻沒 fix。導航堆疊目前沒有任何東西吃 GNSS：要接的話，robot01.ini 的 `[map]` 要有同一組 datum、URDF 要有 gnss link、global_localization 可以拿 fix 當 seed。
 
 `/sim/events` 的 `type`：
 
@@ -616,11 +620,12 @@ python3 scripts/make_waypoints_from_poses.py Maps/dp_1008/poses.txt --spacing 8 
 | `robot` | 理想底盤：機身尺寸、站高（沿腳平面法線量，機身底面在樓梯上和腳平面平行）、腳位、`max_step_up/down`、`max_feet_over_gap`、`max_slope_deg`（四隻腳的平面：手畫 0.2 m 深踏板是 46°，預設 50）、`attitude_tau`、`vel_limits` / `acc_limits`、`cmd_tau`、`cmd_timeout`、碰撞代理池大小。roll / pitch / 高度取四隻腳高度（各 3×3 射線取中位數）構成的平面，碰撞盒跟著機身一起傾斜 |
 | `lidar` | Mid-360 參數：安裝位置 `mount_xyz` / `mount_rpy`（base_link 座標，照機器人 URDF 的 `base_link → lidar_top`：0.195 / 0 / 0.155 m、pitch 0.25 rad；點雲在感測器座標，傾斜由 TF 帶）、頻率、點數、FOV、距離、雜訊（掃描樣式固定為合成的非重複樣式） |
 | `imu` | 頻率、雜訊、bias random walk（加速度單位固定為 g，和 livox_ros_driver2 相同） |
+| `gnss` | ZED-F9P / F9R：`model`、`rate_hz`、`rtk`、天線 `mount_xyz`、`datum`（null = 關）、`sky`（射線數、半角、距離、good / degraded / poor 門檻、`mode` map / always / none）、`noise`（每種 fix 的 sigma、偏差、速度雜訊）、`holdover`（F9R）；第 5 章 |
 | `viewer` | `shadows`、`sync_hz`、`max_map_boxes`（MuJoCo viewer，`--viewer`） |
 | `web` | 瀏覽器 viewer：`enabled`、`port`（8755）、`hz`、`lidar_hz`、`lidar_points`、`map`（points / boxes / none）、`max_map_points`、`max_map_boxes`、`map_precision`、`path_topic`（[4.1](#41-瀏覽器-viewerviser預設開)） |
 | `ros` | frame 名、`publish_gt_tf`、`publish_custom_msg`、`publish_pointcloud2`、`pointcloud2_format`、`publish_map_cloud`、各 topic 名 |
 
-指令列覆寫：`區塊.欄位=值`，可以多個，`run_sim.sh`、`bench.py` 都接受。值用 YAML 解析，所以：
+指令列覆寫：`區塊.欄位=值`，可以多個，`run_sim.sh`、`bench.py` 都接受；**放在所有 `--選項` 之後**（`sim_node` 用 `parse_known_args`，夾在選項後面的覆寫會被當成 ROS 參數丟掉）。值用 YAML 解析，所以：
 
 ```bash
 scripts/run_sim.sh physics.rtf=0 lidar.range_noise=0.0        # 數字

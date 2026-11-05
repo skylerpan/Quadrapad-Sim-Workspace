@@ -53,6 +53,8 @@ The container uses `--net=host` and the same DDS settings as WebRvizLite: Cyclon
 | Pub | `/livox/lidar` | livox_ros_driver2/CustomMsg (`offset_time` = per-point time, ns) | 10 Hz |
 | Pub | `/livox/points` | PointCloud2 (livox layout: x y z intensity tag line timestamp; switchable to velodyne layout: ring, time) | 10 Hz |
 | Pub | `/livox/imu` | sensor_msgs/Imu (acceleration in **g**, like livox_ros_driver2; no orientation) | 200 Hz |
+| Pub | `/robot01/gnss/fix` | sensor_msgs/NavSatFix: a simulated u-blox ZED-F9P / F9R (`gnss` section: datum of the map origin, antenna mount, fix quality from the sky the antenna sees in the scene, noise per fix type, F9R dead-reckoning holdover); RTK fixed = `STATUS_GBAS_FIX`, no fix = `STATUS_NO_FIX` + NaN | 10 Hz |
+| Pub | `/robot01/gnss/fix_velocity` | geometry_msgs/TwistWithCovarianceStamped (ENU velocity, like the ublox driver's `fix_velocity`) | 10 Hz |
 | Pub | `/sim/ground_truth/odom` | nav_msgs/Odometry (map frame, **for evaluation only**) | 50 Hz |
 | Pub | `/sim/events` | std_msgs/String (JSON: `spawn` / `set_pose` / `collision` / `stuck`; transient_local, so a late subscriber can still read the start-up `spawn` event) | on event |
 | Pub | `/sim/map_cloud` | PointCloud2 (latched, voxelized map) | once |
@@ -60,7 +62,7 @@ The container uses `--net=host` and the same DDS settings as WebRvizLite: Cyclon
 | Sub | `/sim/set_pose` | geometry_msgs/PoseStamped (x, y, yaw; **z is a floor-height hint**) | — |
 | Sub | `/policy_mode` | std_msgs/Int32 (`g23` only): RL policy 0 PPO (default, MotorControl `rl_fcn`), 1 HIMLoco for stairs (`rl_him`), switched live (MotorControl goes by way of `stand`; g2_deploy_rs takes `MODE n`) | — |
 
-**TF**: the static `base_link → livox_frame` is always published. `publish_gt_tf` defaults to `false`: `map → odom` and `odom → base_link` are left to your localization stack (Point-LIO + transform_fusion). With `ros.publish_gt_tf=true` the sim adds `map → odom` (identity) and `odom → base_link` (ground truth).
+**TF**: the static `base_link → livox_frame` (and `→ gnss_link` with GNSS on) is always published. `publish_gt_tf` defaults to `false`: `map → odom` and `odom → base_link` are left to your localization stack (Point-LIO + transform_fusion). With `ros.publish_gt_tf=true` the sim adds `map → odom` (identity) and `odom → base_link` (ground truth).
 
 All parameters (topics, frames, noise, body size, velocity limits, …) live in [`config/sim.yaml`](config/sim.yaml). They can be overridden on the command line, e.g. `scripts/run_sim.sh lidar.range_noise=0.0 robot.vel_limits=[1.0,0.5,1.5]`.
 

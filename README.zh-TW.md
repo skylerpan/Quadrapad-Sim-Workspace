@@ -53,6 +53,8 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 | 發布 | `/livox/lidar` | livox_ros_driver2/CustomMsg（`offset_time` 為逐點時間，單位 ns） | 10 Hz |
 | 發布 | `/livox/points` | PointCloud2（livox 格式：x y z intensity tag line timestamp；可切換成 velodyne 格式：ring、time） | 10 Hz |
 | 發布 | `/livox/imu` | sensor_msgs/Imu（加速度單位 **g**，和 livox_ros_driver2 相同；沒有 orientation） | 200 Hz |
+| 發布 | `/robot01/gnss/fix` | sensor_msgs/NavSatFix：模擬的 u-blox ZED-F9P / F9R（`gnss` 區塊：地圖原點的 datum、天線位置、fix 品質由天線在場景裡看到的天空決定、每種 fix 的雜訊、F9R 的航位推算 holdover）；RTK fixed 是 `STATUS_GBAS_FIX`，沒 fix 是 `STATUS_NO_FIX` + NaN | 10 Hz |
+| 發布 | `/robot01/gnss/fix_velocity` | geometry_msgs/TwistWithCovarianceStamped（ENU 速度，和 ublox 驅動的 `fix_velocity` 相同） | 10 Hz |
 | 發布 | `/sim/ground_truth/odom` | nav_msgs/Odometry（map 座標系，**只用於評估**） | 50 Hz |
 | 發布 | `/sim/events` | std_msgs/String（JSON：`spawn` / `set_pose` / `collision` / `stuck`；transient_local，晚訂閱也能收到啟動時的 `spawn` 事件） | 事件發生時 |
 | 發布 | `/sim/map_cloud` | PointCloud2（latched，體素化後的地圖） | 一次 |
@@ -60,7 +62,7 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 | 訂閱 | `/sim/set_pose` | geometry_msgs/PoseStamped（x、y、yaw；**z 是地板高度的提示值**） | — |
 | 訂閱 | `/policy_mode` | std_msgs/Int32（只有 `g23`）：RL policy，0 PPO（預設，MotorControl 的 `rl_fcn`）、1 HIMLoco 上下樓梯用（`rl_him`），即時切換（MotorControl 經 `stand`；g2_deploy_rs 收 `MODE n`） | — |
 
-**TF**：一律發布靜態的 `base_link → livox_frame`。`publish_gt_tf` 預設 `false`：`map → odom` 和 `odom → base_link` 交給定位堆疊（Point-LIO + transform_fusion）發布。用 `ros.publish_gt_tf=true` 打開後，sim 才會再發 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。
+**TF**：一律發布靜態的 `base_link → livox_frame`（有 GNSS 時加 `→ gnss_link`）。`publish_gt_tf` 預設 `false`：`map → odom` 和 `odom → base_link` 交給定位堆疊（Point-LIO + transform_fusion）發布。用 `ros.publish_gt_tf=true` 打開後，sim 才會再發 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。
 
 所有參數（topic、frame、雜訊、機身尺寸、速度上限等）都在 [`config/sim.yaml`](config/sim.yaml)。也可以在指令列覆寫，例如 `scripts/run_sim.sh lidar.range_noise=0.0 robot.vel_limits=[1.0,0.5,1.5]`。
 
