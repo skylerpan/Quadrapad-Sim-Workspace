@@ -36,7 +36,7 @@ def _drive(sim, x, y, yaw, z_floor, vx, seconds):
 def sim():
     from quadsim.config import load_config
     from quadsim.sim import Simulator
-    cfg = load_config(None, [])
+    cfg = load_config(None, ["robot.type=ideal"])
     cfg["scene"] = SCENE
     return Simulator(cfg)
 

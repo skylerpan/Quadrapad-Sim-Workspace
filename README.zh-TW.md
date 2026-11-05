@@ -4,11 +4,11 @@
 
 **quadsim** 把 LiDAR SLAM 合併後的點雲地圖（PCD）轉成機器狗的導航測試環境。
 - **場景建置（`pcd2sim`）**：把地圖體素化、合併成碰撞 box，並把有雜訊的地板平面化成平板；幾秒內建好
-- **模擬器（`quadsim`）**：在 MuJoCo 裡跑理想底盤的機器狗。類 Mid-360 的滾動式 LiDAR（含逐點時間）用 Embree 投射射線，另外提供 IMU 和真值
+- **模擬器（`quadsim`）**：在 MuJoCo 裡以 1 kHz 跑 G23 機器狗模型，由它自己的 Rust 控制器經 UDP 驅動（`robot.type: g23`，預設），或跑跟隨 `/cmd_vel` 的理想浮動底盤（`robot.type: ideal`）。類 Mid-360 的滾動式 LiDAR（含逐點時間）用 Embree 投射射線，另外提供 IMU 和真值
 - **ROS 2 介面**：發布 `livox_ros_driver2/CustomMsg`、`PointCloud2`、IMU、`/clock`、真值里程計和事件；訂閱 `/cmd_vel` 和 `/sim/set_pose`
 - 可以直接接上 Point-LIO / FAST-LIO 和以 Nav2 為基礎的 3D 導航堆疊。在 Docker 裡跑 ROS 2 Humble
 
-機器狗用**理想底盤**表示（不模擬腿）：底盤跟隨 `/cmd_vel` 移動，並貼合地形。
+地圖進 MuJoCo 的方式是一小池代理 box，每個控制週期搬到機器人周圍的場景 box 上（有腳的模式從 `contact.npy` 連地板一起搬）；完整地圖只在 Embree 裡給 LiDAR 用。`g23` 模式下 quadsim 扮演控制器自帶的模擬行程：收力矩指令、以 1 kHz 送 telemetry、對控制器送 `MODE STAND` / `MODE RL|LMA` / `AXES` 文字指令，`/cmd_vel` 轉成 `AXES`（`quadsim/g23.py`，docs/usage.md §3.1）。`ideal` 模式不模擬腿：底盤跟隨 `/cmd_vel` 移動並貼合地形。
 
 **使用手冊**（依任務分章，所有指令、參數和環境變數）見 [`docs/usage.md`](docs/usage.md)。設計背景見 [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md)（§12–§13）。 dp_1008 導航下點迴圈測試紀錄與失敗分析見 [`docs/archive/nav-goal-loop-test-2026-10-13.md`](docs/archive/nav-goal-loop-test-2026-10-13.md)。
 
@@ -17,11 +17,12 @@
 # 1. 建 Docker 映像檔（以 syncai-robot-base 為基底，加裝 mujoco 和 livox CustomMsg）
 docker build -t quadsim:latest docker/
 
-# 2. 建預設場景：手修 OctoMap 的純 1:1 轉換（約 2 秒）
-docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0"
-#    PCD 地圖：scripts/build_scenes.sh 會把每個 Maps/*.pcd 建成帶地面平面化的場景（docs/usage.md §2）
+# 2. 建預設場景：dp_1008 的 PCD、0.1 m、原始體素地板只補小縫（約 27 秒）
+docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008 --no-flatten --close-rounds 1"
+#    手修 OctoMap（1:1，2 秒）：--map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0
+#    要平面化地板（slab 取代體素）就拿掉 --no-flatten；所有配方見 docs/usage.md §2
 
-# 3. 啟動模擬（預設 scenes/dp_1012，即時速度）
+# 3. 啟動模擬（預設 scenes/dp_1008，即時速度）；瀏覽器 viewer 開在 http://<主機>:8755
 scripts/run_sim.sh
 scripts/run_sim.sh --scene scenes/dp ros.publish_gt_tf=false   # 換場景；不發布真值 TF，交給 Point-LIO 和全域定位
 
@@ -29,7 +30,7 @@ scripts/run_sim.sh --scene scenes/dp ros.publish_gt_tf=false   # 換場景；不
 docker/run.sh "python3 -m pytest -q"                    # 單元測試
 docker/run.sh "python3 scripts/bench.py physics.rtf=0"   # 預設場景的 headless 效能測試
 
-# 畫面（需要 X display；請在桌面的終端機執行，DISPLAY 和 XAUTHORITY 會自動帶進容器）
+# 桌面畫面（需要 X display；請在桌面的終端機執行，DISPLAY 和 XAUTHORITY 會自動帶進容器）
 QUADSIM_GUI=1 scripts/run_sim.sh --viewer                # MuJoCo viewer（相機跟隨機身，地圖只用於顯示）
 QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_time:=true"
 ```
@@ -39,6 +40,8 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 |---|---|---|
 | `sw`（llvmpipe） | 815 ms/幀 | 391 ms/幀 |
 | `nvidia`（Thor GPU） | 43 ms/幀 | 16 ms/幀 |
+
+**瀏覽器 viewer（預設開，不需要顯示器）。** 每次執行都會在 `http://<主機>:8755` 提供一個網頁 viewer（[viser](https://github.com/nerfstudio-project/viser)，`quadsim/web_viewer.py`；容器用 `--net=host`，網址在啟動 log）：地圖以高度上色的點雲（超過 `web.max_map_points` 就體素降採樣，連線時送一次）、機器人的 visual geom 跟著模擬更新（最多 `web.hz`）、最新一幀 LiDAR（`web.lidar_points` 點、`web.lidar_hz`）、以及 `web.path_topic` 的規劃路徑（nav_msgs/Path），面板有圖層開關、相機跟隨、拖曳式搖桿（把手拖到哪機器人走到哪，放開歸零，和 `/cmd_vel` 同一條路）、G23 的起立 / 走路 / 趴下 / damping 與 RL policy 切換，以及 reset 按鈕（回出生點 / 原地重站，等同 `set_pose`）。沒有瀏覽器連線時什麼都不送；有連線時約占 sim 2% 的 wall time（每 10 秒的狀態行顯示 `web N% of wall`）。`--no-web` 或 `web.enabled=false` 關掉；設定檔 `web:` 區塊可改埠、頻率、地圖模式（`points` / `boxes` / `none`）和上限。埠被占用會自動用下一個（log 有 WARN）。
 
 設定檔的 `viewer:` 區塊可以設 `shadows`（地圖對自己投影要多畫一遍整個 mesh）和 `sync_hz`（sim 把狀態推給視窗的最高 wall-clock 頻率；每次推送都會取算繪鎖）。sim 啟動時會記錄 `viewer: gl=... map mesh ... faces`，一眼就能看出用的是哪條路徑。MuJoCo viewer 裡，按 `3` 可以顯示目前生效的碰撞代理 box（紅色）。
 容器使用 `--net=host`，DDS 設定與 WebRvizLite 相同：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、`ROS_DOMAIN_ID=1`、`conf/cyclonedds.xml`（loopback 單播、關閉 multicast），所以 WebRvizLite 檢視器不需額外設定即可連上。主機或其他容器裡的導航堆疊，只要使用相同的 RMW 與 domain 就能直接連上（執行 `docker/run.sh` 時可用 `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<conf/ 下的檔名>` 覆寫）。**其他所有節點都要設 `use_sim_time:=true`**。
@@ -55,8 +58,9 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 | 發布 | `/sim/map_cloud` | PointCloud2（latched，體素化後的地圖） | 一次 |
 | 訂閱 | `/cmd_vel` | geometry_msgs/Twist（vx、vy、wz） | — |
 | 訂閱 | `/sim/set_pose` | geometry_msgs/PoseStamped（x、y、yaw；**z 是地板高度的提示值**） | — |
+| 訂閱 | `/policy_mode` | std_msgs/Int32（只有 `g23`）：RL policy，0 PPO（預設）、1 HIMLoco 上下樓梯用，即時切換並以 `MODE n` 轉給控制器 | — |
 
-**TF**：一律發布靜態的 `base_link → livox_frame`。`publish_gt_tf: true`（預設）時，再加上 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。用 `ros.publish_gt_tf=false` 關掉之後，這兩段交給你們的定位堆疊發布。
+**TF**：一律發布靜態的 `base_link → livox_frame`。`publish_gt_tf` 預設 `false`：`map → odom` 和 `odom → base_link` 交給定位堆疊（Point-LIO + transform_fusion）發布。用 `ros.publish_gt_tf=true` 打開後，sim 才會再發 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。
 
 所有參數（topic、frame、雜訊、機身尺寸、速度上限等）都在 [`config/sim.yaml`](config/sim.yaml)。也可以在指令列覆寫，例如 `scripts/run_sim.sh lidar.range_noise=0.0 robot.vel_limits=[1.0,0.5,1.5]`。
 
@@ -97,7 +101,7 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
     - 地板旁邊的雜訊突起、小破洞、浮在地面上的小團塊都會清掉
     - 平面上方第一層、只有 1–2 個點、上面也沒有東西的體素（地板雜訊的上緣）也會清掉
   - **縫隙**：Mid-360 看不到機器人腳邊的地板，所以 SLAM 地圖的地板本來就有整欄沒點的格子，平面化的接縫又會多出一些。有至少 3 個地板鄰居、上面沒有東西的格子會被補成地板（`--ground-fill 12 --ground-fill-nb 3`；dp_1008 1F 沿建圖路徑的無地面取樣從 0.37% 降到 0.17%）。機身另外允許一隻腳踩在剩下的縫隙上（`robot.max_feet_over_gap: 1`，那隻腳的高度取其他三隻腳的平面），不再發 `stuck/no_ground` 拒絕移動
-  - **樓梯**：一片踏板只有 24–36 格，預設的 `--ground-min-cells 30` 會把它丟掉，平台的長 / 補又把它埋起來；豎板的點和頂上的雜訊體素也會讓踏板格子的高度變成一道斜坡、沿著豎板的欄位和平台連成一區。樓梯配方 `--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100`：保留小區、上方 0.1–0.3 m 有實心體素的欄位不補、格高用加權中位數而不是平均、不是單一平面的區先剝出主平面再分剩下的、100 格以下的區直接壓成水平面（自由擬合會把 2–3 格深的踏板變成斜坡）。全部預設關閉（舊場景重建結果不變）；`scripts/eval_scene.py --stairs-box` 量結果（層數、階高、覆蓋率、ASCII 側面圖）。目前在用的場景（`scenes/dp_1012`、`scenes/dp`）完全不走這套：它們是手修 OctoMap 的純 1:1 建置（`--no-flatten --min-neighbors 0`）。掃描紀錄見  [`docs/archive/scene-tuning-dp_1012-2026-10-16.md`](docs/archive/scene-tuning-dp_1012-2026-10-16.md)
+  - **樓梯**：一片踏板只有 24–36 格，預設的 `--ground-min-cells 30` 會把它丟掉，平台的長 / 補又把它埋起來；豎板的點和頂上的雜訊體素也會讓踏板格子的高度變成一道斜坡、沿著豎板的欄位和平台連成一區。樓梯配方 `--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100`：保留小區、上方 0.1–0.3 m 有實心體素的欄位不補、格高用加權中位數而不是平均、不是單一平面的區先剝出主平面再分剩下的、100 格以下的區直接壓成水平面（自由擬合會把 2–3 格深的踏板變成斜坡）。全部預設關閉（舊場景重建結果不變）；`scripts/eval_scene.py --stairs-box` 量結果（層數、階高、覆蓋率、ASCII 側面圖）。預設場景（`scenes/dp_1008`，`--no-flatten --close-rounds 1`）和手修 OctoMap 的場景（`scenes/dp_1012`、`scenes/dp`，`--no-flatten --min-neighbors 0`）完全不走這套：地板保留原始體素（有腳的機器人跨得過掃描雜訊，平面化反而可能造出假地板），`contact.npy` 標出機器人碰得到的 box（地板下 0.3 m 到上 1.2 m）。掃描紀錄見  [`docs/archive/scene-tuning-dp_1012-2026-10-16.md`](docs/archive/scene-tuning-dp_1012-2026-10-16.md)
   - **合成地面層**：匯出的 PCD 可能帶一層產生出來、完全平的地面在真地板下面（dp_1012：z = −0.95，佔 25% 的點），真地板的每個掃描破洞都會變成坑。`scripts/fix_pcd_plane.py` 只在真地板沒點的地方保留那層、抬到旁邊地板的高度，其他全部丟掉
   - 用 `build_scene --no-flatten` 可以關掉，保留原始的體素地板
 - **出生點和 `/sim/set_pose` 會檢查機身有沒有和地圖重疊**：重疊時，會在 1 m 內找最近的空位（最多轉 90°），TF/odom 跟著*移動後*的位姿走。啟動 log 會印 `spawn requested [x, y, yaw, z_floor] -> base at [...]`，有被移動時另外印一行 ROS warning，並在 `/sim/events` 發一筆 `spawn` 事件（`requested`、`pose`、`floor_z`、`moved`）；`set_pose` 事件也帶同樣欄位
@@ -140,7 +144,7 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
 | `config/sim.yaml` | 所有參數 |
 | `config/stairs_dp_full.yaml`、`config/stairs_dp_bt.yaml` | dp_full（0.03 m PCD）與 dp_bt（0.1 m 1:1 octree）場景的人工樓梯 spec（`scripts/make_stairs.py`，docs/usage.md §2.5） |
 | `config/nav_waypoints_*.yaml` | 導航下點迴圈測試的 waypoint 集（`dp_1008*`：dp_1008 的 1F；`dp_2f`：`scenes/dp` 的 2F）；一次性的探點集在 `config/archive/` |
-| `scripts/` | `build_scenes.sh`、`run_sim.sh`、`bench.py`、`nav_goal_loop.sh` / `nav_goal_loop.py`（導航下點迴圈測試）、`make_waypoints_from_poses.py`、`fix_pcd_plane.py`（合成地面層）、`eval_scene.py`（場景品質）、`make_stairs.py`（把掃描樓梯換成乾淨的 16 cm 人工階梯）、`bt_to_pcd.py` / `deploy_octomap_surface.py`（手修 OctoMap → 表面 PCD 部署給 planner） |
+| `scripts/` | `run_sim.sh`、`bench.py`、`nav_goal_loop.sh` / `nav_goal_loop.py`（導航下點迴圈測試）、`make_waypoints_from_poses.py`、`fix_pcd_plane.py`（合成地面層）、`eval_scene.py`（場景品質）、`make_stairs.py`（把掃描樓梯換成乾淨的 16 cm 人工階梯）、`bt_to_pcd.py` / `deploy_octomap_surface.py`（手修 OctoMap → 表面 PCD 部署給 planner） |
 | `docker/` | Dockerfile、`run.sh`、最小化的 `livox_ros_driver2` 訊息套件 |
 | `docs/` | `usage.md`（依任務分章的使用手冊）、`pcd-to-sim-architecture.md`（設計）；`archive/`：有日期的測試紀錄和 dp_1012 建場景參數掃描 |
 | `tests/` | 單元測試（PCD、體素和 box 合併、地面平面化、碰撞代理、感測器時間、碰撞檢查、CustomMsg/PointCloud2 序列化、人工樓梯） |

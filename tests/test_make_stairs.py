@@ -69,6 +69,9 @@ def test_steps_and_clearing(built):
     fl = spec["elements"][0]
     assert fl.n == 5 and abs(fl.rise - 0.16) < 1e-9 and abs(fl.tread - 0.4) < 1e-9
     boxes = np.load(os.path.join(out, "boxes.npy"))
+    contact = np.load(os.path.join(out, "contact.npy"))                # format 3 output from a format 2 scene
+    assert meta["format_version"] == 3 and len(contact) == len(boxes) and contact.dtype == bool
+    assert contact[-5:].all()                                          # the synthetic step boxes come last
     # the noisy lump is gone, the ceiling and the floor stay
     assert not np.any(np.all(np.isclose(boxes, [0.0, 0.3, 0.75, 0.1, 0.1, 0.05]), axis=1))
     assert np.any(np.all(np.isclose(boxes, [0.0, 0.0, 3.0, 2.0, 2.0, 0.05]), axis=1))
@@ -97,7 +100,7 @@ def test_base_climbs_with_exact_rises(built):
     from quadsim.config import load_config
     from quadsim.sim import Simulator
     _, out, _, _ = built
-    cfg = load_config(None, [])
+    cfg = load_config(None, ["robot.type=ideal"])
     cfg["scene"] = out
     cfg["spawn"] = [0.0, -2.0, math.pi / 2, 0.0]
     sim = Simulator(cfg)
@@ -176,6 +179,10 @@ def test_exact_boxes_on_coarse_grid(coarse):
     src, out, spec, meta, src_boxes = coarse
     assert meta["synthetic_stairs"]["mode"] == "exact_boxes"
     boxes = np.load(os.path.join(out, "boxes.npy"))
+    contact = np.load(os.path.join(out, "contact.npy"))
+    assert meta["format_version"] == 3 and len(contact) == len(boxes)
+    assert contact[-6:].all()                                          # 5 treads + landing, exact AABBs, touchable
+    assert np.load(os.path.join(out, "voxels.npz"))["contact"].sum() >= 6
     # every tread is one AABB with its top exactly at k * 0.16 (not quantised to the 0.1 m grid)
     for k in range(1, 6):
         y = -1.0 + (k - 0.5) * 0.4
@@ -205,7 +212,7 @@ def test_base_climbs_exact_coarse_stairs(coarse):
     from quadsim.config import load_config
     from quadsim.sim import Simulator
     _, out, _, _, _ = coarse
-    cfg = load_config(None, [])
+    cfg = load_config(None, ["robot.type=ideal"])
     cfg["scene"] = out
     cfg["spawn"] = [0.0, -2.0, math.pi / 2, 0.0]
     sim = Simulator(cfg)

@@ -1,0 +1,207 @@
+<mujoco model="g23">
+<!-- G2.3 MJCF. Dynamics / kinematics / limits must match SyncAI-Robot-Description urdf/G23_capsule.urdf (see ../provenance.json, tests/test_model_consistency.py). Collision: capsules + torso boxes at z=0.01 as in the URDF, plus back-shell / head geoms (from g23_fixbody.xml, not in the URDF). -->
+  <compiler angle="radian" autolimits="true" meshdir="../meshes/"/>
+
+  <default>
+    <default class="robot">
+      <default class="motor">
+        <joint/>
+        <motor/>
+      </default>
+      <default class="visual">
+        <geom material="visualgeom" contype="0" conaffinity="0" group="2" density="0"/>
+      </default>
+      <default class="collision">
+        <geom material="collision_material" condim="3" contype="0" conaffinity="1" group="1" solref="0.005 1" friction="1 0.01 0.01"/>
+        <equality solimp="0.99 0.999 1e-05" solref="0.005 1"/>
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <material name="visualgeom" rgba="0.7 0.7 0.7 1"/>
+    <material name="white" rgba="1 1 1 1"/>
+    <material name="collision_material" rgba="0.0 0.4 0.8 0.2"/>
+    <texture type="2d" name="checker" builtin="checker" rgb1="0.2 0.3 0.4" rgb2="0.9 0.9 0.9" width="500" height="500"/>
+    <material name="checker_mat" texture="checker" specular="1" shininess="1" texrepeat="15 15"/>
+
+    <mesh name="torso_g23" file="jeff_2_3_body_low_res.stl"/>
+    <mesh name="hip" file="hip.STL"/>
+    <mesh name="hip_right" file="hip.STL" scale="1 -1 1"/>
+    <mesh name="hip_rear_left" file="hip.STL" scale="-1 1 1"/>
+    <mesh name="hip_rear_right" file="hip.STL" scale="-1 -1 1"/>
+    <mesh name="thigh" file="thigh.STL"/>
+    <mesh name="thigh_right" file="thigh.STL" scale="1 -1 1"/>
+    <mesh name="shank" file="shank.STL"/>
+  </asset>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="10 10 0.1" pos="0 0 0" material="checker_mat"/>
+    <light directional="true" pos="-0.5 0.5 3" dir="0 0 -1"/>
+
+    <body name="TORSO" pos="0 0 0.5" quat="1 0 0 0" childclass="robot">
+      <freejoint name="floating_base"/>
+      <site name="imu_site" pos="0 0 0" size="0.005" rgba="1 0 0 1"/>
+      <inertial pos="0.023640945 0.001529477 0.033866753" mass="9.368000" fullinertia="0.058025245 0.142509325 0.150322311 0 -0.014586129 0"/>
+      <geom name="TORSO_visual" quat="0.500398 0.5 0.499602 0.5" type="mesh" mesh="torso_g23" class="visual"/>
+      <geom name="TORSO_collision_front" pos="0 0 0.01" type="box" size="0.25 0.05 0.06" class="collision"/>
+      <geom name="TORSO_collision_center" pos="0 0 0.01" type="box" size="0.125 0.1 0.06" class="collision"/>
+      <!-- 背部外殼 / 頭部碰撞（2026-10-15，取自 g23_fixbody.xml，URDF 沒有）：上面兩個 box 頂面只到 z=0.07，
+           外殼（TORSO_visual）最高到 0.18 m，四腳朝上時機身會平躺在 box 上，和實機不同。尺寸由網格外表面擬合：
+           脊線頂面 z ≈ 0.135 + 0.215x（12.1°）、頭部頂面往前下降 14.6°、頭頂感測器圓頂中心 (0.193, 0, 0.159) r 0.022；
+           和網格凸包相比誤差 ≤ 0.5 cm。 -->
+      <geom name="TORSO_shell_ridge_collision" pos="-0.0431 0 0.0921" quat="0.994399 0 -0.10569 0" type="box" size="0.1995 0.05 0.0329" class="collision"/>
+      <geom name="TORSO_shell_front_collision" pos="0.0656 0 0.1077" quat="0.994399 0 -0.10569 0" type="box" size="0.0895 0.065 0.0385" class="collision"/>
+      <geom name="TORSO_head_collision" pos="0.1865 0 0.0815" quat="0.991923 0 0.126841 0" type="box" size="0.0542 0.07 0.0635" class="collision"/>
+      <geom name="TORSO_head_dome_collision" pos="0.193 0 0.159" type="sphere" size="0.022" class="collision"/>
+
+      <body name="FL_HIP" pos="0.1895 0.062 0" quat="1 0 0 0">
+        <joint name="FL_HipX_joint" type="hinge" ref="0" class="motor" axis="-1 0 0" range="-0.523 0.523" actuatorfrcrange="-24 24"/>
+        <inertial pos="-0.00601 -0.0066532 0.00034295" quat="0 0.707107 0 0.707107" mass="0.550" diaginertia="0.0004472 0.0004028 0.0003949"/>
+        <geom name="FL_HIP_visual" type="mesh" mesh="hip" class="visual"/>
+        <geom name="FL_HIP_collision" pos="0 0.05 0" quat="0.707107 0.707107 0 0" type="capsule" size="0.04 0.075" class="collision"/>
+        <body name="FL_THIGH" pos="0 0.09735 0" quat="1 0 0 0">
+          <joint name="FL_HipY_joint" type="hinge" ref="0" class="motor" axis="0 -1 0" range="-2.67 0.314" actuatorfrcrange="-24 24"/>
+          <inertial pos="-0.0039245 -0.014632 -0.025146" mass="0.86" diaginertia="0.005736 0.00496 0.001436"/>
+          <geom name="FL_THIGH_visual" type="mesh" mesh="thigh" class="visual"/>
+          <geom name="FL_THIGH_collision" pos="-0.015 0 -0.08" type="box" size="0.02 0.0225 0.1" class="collision"/>
+          <body name="FL_SHANK" pos="0 0 -0.20" quat="1 0 0 0">
+            <joint name="FL_Knee_joint" type="hinge" ref="0" class="motor" axis="0 -1 0" range="0.524 2.792" actuatorfrcrange="-36 36"/>
+            <inertial pos="0.0064794 -1.4535e-06 -0.12157" quat="0.707107 0 0 0.707107" mass="0.153" diaginertia="0.00090672 0.00089039 3.1266e-05"/>
+            <geom name="FL_SHANK_visual" type="mesh" mesh="shank" material="white" class="visual"/>
+            <geom name="FL_SHANK_collision_upper" pos="0.005 0 -0.03" quat="0.995004 0 -0.0998334 0" type="capsule" size="0.015 0.06" class="collision"/>
+            <geom name="FL_SHANK_collision_lower" pos="0.01 0 -0.14" quat="0.997189 0 0.0749297 0" type="capsule" size="0.015 0.05" class="collision"/>
+            <body name="FL_FOOT" pos="0 0 -0.21012" quat="1 0 0 0">
+              <inertial pos="0 0 0" mass="0.02" diaginertia="0 0 0"/>
+              <geom name="FL_FOOT_collision" quat="0.707107 0.707107 0 0" type="sphere" size="0.022" class="collision"/>
+              <geom name="FL_FOOT_visual" type="sphere" size="0.022" class="visual"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <body name="FR_HIP" pos="0.1895 -0.062 0" quat="1 0 0 0">
+        <joint name="FR_HipX_joint" type="hinge" ref="0" class="motor" axis="-1 0 0" range="-0.523 0.523" actuatorfrcrange="-24 24"/>
+        <inertial pos="-0.010579 0.011358 0.00048546" mass="0.550" diaginertia="0.0004472 0.0004028 0.0003949"/>
+        <geom name="FR_HIP_visual" type="mesh" mesh="hip_right" class="visual"/>
+        <geom name="FR_HIP_collision" pos="0 -0.05 0" quat="0.707107 0.707107 0 0" type="capsule" size="0.04 0.075" class="collision"/>
+        <body name="FR_THIGH" pos="0 -0.09735 0" quat="1 0 0 0">
+          <joint name="FR_HipY_joint" type="hinge" ref="0" class="motor" axis="0 -1 0" range="-2.67 0.314" actuatorfrcrange="-24 24"/>
+          <inertial pos="-0.0039245 0.014632 -0.025146" mass="0.86" diaginertia="0.005736 0.00496 0.001436"/>
+          <geom name="FR_THIGH_visual" type="mesh" mesh="thigh_right" class="visual"/>
+          <geom name="FR_THIGH_collision" pos="-0.015 0 -0.08" type="box" size="0.02 0.0225 0.1" class="collision"/>
+          <body name="FR_SHANK" pos="0 0 -0.20" quat="1 0 0 0">
+            <joint name="FR_Knee_joint" type="hinge" ref="0" class="motor" axis="0 -1 0" range="0.524 2.792" actuatorfrcrange="-36 36"/>
+            <inertial pos="0.0064794 -1.4552e-06 -0.12157" quat="0.707107 0 0 0.707107" mass="0.153" diaginertia="0.00090672 0.00089039 3.1266e-05"/>
+            <geom name="FR_SHANK_visual" type="mesh" mesh="shank" class="visual"/>
+            <geom name="FR_SHANK_collision_upper" pos="0.005 0 -0.03" quat="0.995004 0 -0.0998334 0" type="capsule" size="0.015 0.06" class="collision"/>
+            <geom name="FR_SHANK_collision_lower" pos="0.01 0 -0.14" quat="0.997189 0 0.0749297 0" type="capsule" size="0.015 0.05" class="collision"/>
+            <body name="FR_FOOT" pos="0 0 -0.21012" quat="1 0 0 0">
+              <inertial pos="0 0 0" mass="0.02" diaginertia="0 0 0"/>
+              <geom name="FR_FOOT_collision" quat="0.707107 0.707107 0 0" type="sphere" size="0.022" class="collision"/>
+              <geom name="FR_FOOT_visual" type="sphere" size="0.022" class="visual"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <body name="HL_HIP" pos="-0.1895 0.062 0" quat="1 0 0 0">
+        <joint name="HL_HipX_joint" type="hinge" ref="0" class="motor" axis="-1 0 0" range="-0.523 0.523" actuatorfrcrange="-24 24"/>
+        <inertial pos="0.010905 -0.012636 0.001051" quat="0 0.707107 0 0.707107" mass="0.550" diaginertia="0.0004472 0.0004028 0.0003949"/>
+        <geom name="HL_HIP_visual" type="mesh" mesh="hip_rear_left" class="visual"/>
+        <geom name="HL_HIP_collision" pos="0 0.05 0" quat="0.707107 0.707107 0 0" type="capsule" size="0.04 0.075" class="collision"/>
+        <body name="HL_THIGH" pos="0 0.09735 0" quat="1 0 0 0">
+          <joint name="HL_HipY_joint" type="hinge" ref="0" class="motor" axis="0 -1 0" range="-2.67 0.314" actuatorfrcrange="-24 24"/>
+          <inertial pos="-0.0039245 -0.014632 -0.025146" mass="0.86" diaginertia="0.005736 0.00496 0.001436"/>
+          <geom name="HL_THIGH_visual" type="mesh" mesh="thigh" class="visual"/>
+          <geom name="HL_THIGH_collision" pos="-0.015 0 -0.08" type="box" size="0.02 0.0225 0.1" class="collision"/>
+          <body name="HL_SHANK" pos="0 0 -0.20" quat="1 0 0 0">
+            <joint name="HL_Knee_joint" type="hinge" ref="0" class="motor" axis="0 -1 0" range="0.524 2.792" actuatorfrcrange="-36 36"/>
+            <inertial pos="0.0064794 -1.4558e-06 -0.12157" quat="0.707107 0 0 0.707107" mass="0.153" diaginertia="0.00090672 0.00089039 3.1266e-05"/>
+            <geom name="HL_SHANK_visual" type="mesh" mesh="shank" class="visual"/>
+            <geom name="HL_SHANK_collision_upper" pos="0.005 0 -0.03" quat="0.995004 0 -0.0998334 0" type="capsule" size="0.015 0.06" class="collision"/>
+            <geom name="HL_SHANK_collision_lower" pos="0.01 0 -0.14" quat="0.997189 0 0.0749297 0" type="capsule" size="0.015 0.05" class="collision"/>
+            <body name="HL_FOOT" pos="0 0 -0.21012" quat="1 0 0 0">
+              <inertial pos="0 0 0" mass="0.02" diaginertia="0 0 0"/>
+              <geom name="HL_FOOT_collision" quat="0.707107 0.707107 0 0" type="sphere" size="0.022" class="collision"/>
+              <geom name="HL_FOOT_visual" type="sphere" size="0.022" class="visual"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <body name="HR_HIP" pos="-0.1895 -0.062 0" quat="1 0 0 0">
+        <joint name="HR_HipX_joint" type="hinge" ref="0" class="motor" axis="-1 0 0" range="-0.523 0.523" actuatorfrcrange="-24 24"/>
+        <inertial pos="0.010354 0.011423 0.00049498" mass="0.550" diaginertia="0.0004472 0.0004028 0.0003949"/>
+        <geom name="HR_HIP_visual" type="mesh" mesh="hip_rear_right" class="visual"/>
+        <geom name="HR_HIP_collision" pos="0 -0.05 0" quat="0.707107 0.707107 0 0" type="capsule" size="0.04 0.075" class="collision"/>
+        <body name="HR_THIGH" pos="0 -0.09735 0" quat="1 0 0 0">
+          <joint name="HR_HipY_joint" type="hinge" ref="0" class="motor" axis="0 -1 0" range="-2.67 0.314" actuatorfrcrange="-24 24"/>
+          <inertial pos="-0.0039245 0.014632 -0.025146" mass="0.86" diaginertia="0.005736 0.00496 0.001436"/>
+          <geom name="HR_THIGH_visual" type="mesh" mesh="thigh_right" class="visual"/>
+          <geom name="HR_THIGH_collision" pos="-0.015 0 -0.08" type="box" size="0.02 0.0225 0.1" class="collision"/>
+          <body name="HR_SHANK" pos="0 0 -0.20" quat="1 0 0 0">
+            <joint name="HR_Knee_joint" type="hinge" ref="0" class="motor" axis="0 -1 0" range="0.524 2.792" actuatorfrcrange="-36 36"/>
+            <inertial pos="0.0064794 -1.4529e-06 -0.12157" quat="0.707107 0 0 0.707107" mass="0.153" diaginertia="0.00090672 0.00089039 3.1266e-05"/>
+            <geom name="HR_SHANK_visual" type="mesh" mesh="shank" class="visual"/>
+            <geom name="HR_SHANK_collision_upper" pos="0.005 0 -0.03" quat="0.995004 0 -0.0998334 0" type="capsule" size="0.015 0.06" class="collision"/>
+            <geom name="HR_SHANK_collision_lower" pos="0.01 0 -0.14" quat="0.997189 0 0.0749297 0" type="capsule" size="0.015 0.05" class="collision"/>
+            <body name="HR_FOOT" pos="0 0 -0.21012" quat="1 0 0 0">
+              <inertial pos="0 0 0" mass="0.02" diaginertia="0 0 0"/>
+              <geom name="HR_FOOT_collision" quat="0.707107 0.707107 0 0" type="sphere" size="0.022" class="collision"/>
+              <geom name="HR_FOOT_visual" type="sphere" size="0.022" class="visual"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <site name="TORSO_site" pos="0 0 0" quat="1 0 0 0"/>
+      <camera name="front_camera" mode="track" fovy="90" quat="4.329780281177467e-17 4.329780281177466e-17 0.7071067811865475 0.7071067811865476" pos="0 2 0.5"/>
+      <camera name="side_camera" mode="track" fovy="90" quat="-0.5 -0.4999999999999999 0.5 0.5000000000000001" pos="-2 0 0.5"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="FL_HipX_joint_ctrl" joint="FL_HipX_joint" class="motor"/>
+    <motor name="FL_HipY_joint_ctrl" joint="FL_HipY_joint" class="motor"/>
+    <motor name="FL_Knee_joint_ctrl" joint="FL_Knee_joint" class="motor"/>
+    <motor name="FR_HipX_joint_ctrl" joint="FR_HipX_joint" class="motor"/>
+    <motor name="FR_HipY_joint_ctrl" joint="FR_HipY_joint" class="motor"/>
+    <motor name="FR_Knee_joint_ctrl" joint="FR_Knee_joint" class="motor"/>
+    <motor name="HL_HipX_joint_ctrl" joint="HL_HipX_joint" class="motor"/>
+    <motor name="HL_HipY_joint_ctrl" joint="HL_HipY_joint" class="motor"/>
+    <motor name="HL_Knee_joint_ctrl" joint="HL_Knee_joint" class="motor"/>
+    <motor name="HR_HipX_joint_ctrl" joint="HR_HipX_joint" class="motor"/>
+    <motor name="HR_HipY_joint_ctrl" joint="HR_HipY_joint" class="motor"/>
+    <motor name="HR_Knee_joint_ctrl" joint="HR_Knee_joint" class="motor"/>
+  </actuator>
+
+  <contact>
+    <exclude body1="TORSO" body2="FL_HIP"/>
+    <exclude body1="FL_HIP" body2="FL_THIGH"/>
+    <exclude body1="FL_THIGH" body2="FL_SHANK"/>
+    <exclude body1="FL_SHANK" body2="FL_FOOT"/>
+    <exclude body1="TORSO" body2="FR_HIP"/>
+    <exclude body1="FR_HIP" body2="FR_THIGH"/>
+    <exclude body1="FR_THIGH" body2="FR_SHANK"/>
+    <exclude body1="FR_SHANK" body2="FR_FOOT"/>
+    <exclude body1="TORSO" body2="HL_HIP"/>
+    <exclude body1="HL_HIP" body2="HL_THIGH"/>
+    <exclude body1="HL_THIGH" body2="HL_SHANK"/>
+    <exclude body1="HL_SHANK" body2="HL_FOOT"/>
+    <exclude body1="TORSO" body2="HR_HIP"/>
+    <exclude body1="HR_HIP" body2="HR_THIGH"/>
+    <exclude body1="HR_THIGH" body2="HR_SHANK"/>
+    <exclude body1="HR_SHANK" body2="HR_FOOT"/>
+  </contact>
+
+  <sensor>
+    <framepos name="TORSO_site_pos" objtype="site" objname="TORSO_site"/>
+    <framequat name="TORSO_site_quat" objtype="site" objname="TORSO_site"/>
+    <framelinvel name="TORSO_site_linvel" objtype="site" objname="TORSO_site"/>
+    <frameangvel name="TORSO_site_angvel" objtype="site" objname="TORSO_site"/>
+    <velocimeter name="TORSO_site_vel" site="TORSO_site"/>
+    <accelerometer name="imu_acc" site="imu_site"/>
+    <gyro name="imu_gyro" site="imu_site"/>
+  </sensor>
+</mujoco>

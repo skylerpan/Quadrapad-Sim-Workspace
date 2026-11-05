@@ -4,11 +4,11 @@ English | [繁體中文](README.zh-TW.md)
 
 **quadsim** turns a merged LiDAR SLAM point cloud (PCD) into a navigation test environment for quadruped robots.
 - **Scene builder (`pcd2sim`)**: voxelizes the map, merges voxels into collision boxes, and flattens noisy floors into planar slabs. Builds in seconds.
-- **Simulator (`quadsim`)**: runs an ideal-base quadruped in MuJoCo. A Mid-360-style rolling LiDAR with per-point timestamps is ray-cast with Embree. Also provides an IMU and ground truth.
+- **Simulator (`quadsim`)**: runs the G23 legged robot in MuJoCo at 1 kHz, driven by its own Rust controller over UDP (`robot.type: g23`, the default), or an ideal floating base that follows `/cmd_vel` (`robot.type: ideal`). A Mid-360-style rolling LiDAR with per-point timestamps is ray-cast with Embree. Also provides an IMU and ground truth.
 - **ROS 2 interface**: publishes `livox_ros_driver2/CustomMsg`, `PointCloud2`, IMU, `/clock`, ground-truth odometry and events; takes `/cmd_vel` and `/sim/set_pose`.
 - Designed to plug straight into Point-LIO / FAST-LIO and a Nav2-based 3D navigation stack. Runs in Docker on ROS 2 Humble.
 
-The robot is an **ideal base** (no legs are simulated): it follows `/cmd_vel` and hugs the terrain.
+The map enters MuJoCo as a small pool of proxy boxes moved onto the scene boxes around the robot (floors included for the legged robot, from `contact.npy`); the full map lives in Embree for the LiDAR. In `g23` mode quadsim plays the controller's own simulation process: torque commands in, 1 kHz telemetry out, `MODE STAND` / `MODE RL|LMA` / `AXES` text commands to the controller, with `/cmd_vel` forwarded as `AXES` (`quadsim/g23.py`, docs/usage.md section 3.1). In `ideal` mode no legs are simulated: the base follows `/cmd_vel` and hugs the terrain.
 
 **Usage guide** with every command, flag and environment variable, organised by task: [`docs/usage.md`](docs/usage.md) (Traditional Chinese). Design background: [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md) (Traditional Chinese, §12–§13). Navigation goal-loop test record on dp_1008 with the failure analysis: [`docs/archive/nav-goal-loop-test-2026-10-13.md`](docs/archive/nav-goal-loop-test-2026-10-13.md) (Traditional Chinese).
 
@@ -17,11 +17,12 @@ The robot is an **ideal base** (no legs are simulated): it follows `/cmd_vel` an
 # 1. Build the Docker image (based on syncai-robot-base, adds mujoco and the livox CustomMsg)
 docker build -t quadsim:latest docker/
 
-# 2. Build the default scene: a 1:1 conversion of the hand-edited OctoMap (about 2 s)
-docker/run.sh "python3 -m pcd2sim.build_scene --map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0"
-#    PCD maps: scripts/build_scenes.sh builds every Maps/*.pcd with ground flattening (docs/usage.md section 2)
+# 2. Build the default scene: the dp_1008 PCD at 0.1 m, raw voxel floor with small gaps closed (about 27 s)
+docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008 --no-flatten --close-rounds 1"
+#    Hand-edited OctoMap (1:1, 2 s): --map Maps/dp_1012_handmade.bt --out scenes/dp_1012 --no-flatten --min-neighbors 0
+#    Flattened floors (slabs instead of voxels): drop --no-flatten; every recipe is in docs/usage.md section 2
 
-# 3. Start the sim (defaults to scenes/dp_1012, real time)
+# 3. Start the sim (defaults to scenes/dp_1008, real time); a browser viewer is served on http://<host>:8755
 scripts/run_sim.sh
 scripts/run_sim.sh --scene scenes/dp ros.publish_gt_tf=false   # another scene; no ground-truth TF: leave it to Point-LIO and global localization
 
@@ -29,7 +30,7 @@ scripts/run_sim.sh --scene scenes/dp ros.publish_gt_tf=false   # another scene; 
 docker/run.sh "python3 -m pytest -q"                    # unit tests
 docker/run.sh "python3 scripts/bench.py physics.rtf=0"   # headless benchmark on the default scene
 
-# GUI (needs an X display; run from a desktop terminal, DISPLAY and XAUTHORITY are passed into the container)
+# Desktop GUI (needs an X display; run from a desktop terminal, DISPLAY and XAUTHORITY are passed into the container)
 QUADSIM_GUI=1 scripts/run_sim.sh --viewer                # MuJoCo viewer (camera follows the body; the map is visual only)
 QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_time:=true"
 ```
@@ -39,6 +40,8 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 |---|---|---|
 | `sw` (llvmpipe) | 815 ms/frame | 391 ms/frame |
 | `nvidia` (Thor GPU) | 43 ms/frame | 16 ms/frame |
+
+**Browser viewer (default, no display needed).** Every run also serves a web viewer ([viser](https://github.com/nerfstudio-project/viser), `quadsim/web_viewer.py`) on `http://<host>:8755` (the container uses `--net=host`; the URL is in the start-up log): the map as a height-coloured point cloud (voxel-downsampled beyond `web.max_map_points`, sent once per connection), the robot's visual geoms following the simulation at up to `web.hz`, the latest LiDAR frame (`web.lidar_points` points at `web.lidar_hz`) and the planner's `nav_msgs/Path` from `web.path_topic`, with layer toggles, a follow-robot camera, a drag joystick on the robot (walk-to-the-handle velocity command, zero on release, same path as `/cmd_vel`), stand / walk / lie / damping and RL-policy controls for the G23 controller, and reset buttons (teleport to spawn / re-stand here, same as `set_pose`). Nothing is sent while no browser is connected; with one connected it costs about 2 % of the sim's wall time (reported in the 10 s status line as `web N% of wall`). `--no-web` or `web.enabled=false` turns it off; the `web:` block of the config sets the port, rates, map mode (`points` / `boxes` / `none`) and caps. A busy port falls through to the next one (logged).
 
 The `viewer:` section of the config sets `shadows` (the map casting shadows on itself costs a second pass over the mesh) and `sync_hz` (the maximum wall-clock rate at which the sim pushes its state to the window; each push takes the render lock). The sim logs `viewer: gl=... map mesh ... faces` at start-up so the path in use is visible. In the MuJoCo viewer, press `3` to show the active collision proxy boxes (red).
 The container uses `--net=host` and the same DDS settings as WebRvizLite: CycloneDDS (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`), `ROS_DOMAIN_ID=1`, and `conf/cyclonedds.xml` (unicast on loopback, multicast off), so the WebRvizLite viewer connects without extra setup. A navigation stack on the host or in another container connects directly as long as it uses the same RMW and domain (override with `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<file under conf/>` when running `docker/run.sh`). **Every other node must set `use_sim_time:=true`**.
@@ -55,8 +58,9 @@ The container uses `--net=host` and the same DDS settings as WebRvizLite: Cyclon
 | Pub | `/sim/map_cloud` | PointCloud2 (latched, voxelized map) | once |
 | Sub | `/cmd_vel` | geometry_msgs/Twist (vx, vy, wz) | — |
 | Sub | `/sim/set_pose` | geometry_msgs/PoseStamped (x, y, yaw; **z is a floor-height hint**) | — |
+| Sub | `/policy_mode` | std_msgs/Int32 (`g23` only): RL policy 0 PPO (default), 1 HIMLoco for stairs, switched live and forwarded to the controller as `MODE n` | — |
 
-**TF**: the static `base_link → livox_frame` is always published. With `publish_gt_tf: true` (default), `map → odom` (identity) and `odom → base_link` (ground truth) are added. With `ros.publish_gt_tf=false`, your localization stack publishes those two.
+**TF**: the static `base_link → livox_frame` is always published. `publish_gt_tf` defaults to `false`: `map → odom` and `odom → base_link` are left to your localization stack (Point-LIO + transform_fusion). With `ros.publish_gt_tf=true` the sim adds `map → odom` (identity) and `odom → base_link` (ground truth).
 
 All parameters (topics, frames, noise, body size, velocity limits, …) live in [`config/sim.yaml`](config/sim.yaml). They can be overridden on the command line, e.g. `scripts/run_sim.sh lidar.range_noise=0.0 robot.vel_limits=[1.0,0.5,1.5]`.
 
@@ -97,7 +101,7 @@ MuJoCo: free-body base ← soft weld ← mocap target (integrated cmd_vel + terr
     - noise spikes next to the floor, small holes, and small clusters floating above the floor are removed
     - voxels in the first layer above the plane with only 1–2 points and nothing on top (the upper tail of the floor noise) are removed too
   - **Gaps**: a Mid-360 cannot see the floor right around the robot, so SLAM floors have columns with no points at all, and the flattening seams leave more. Columns with at least 3 floor neighbours and nothing standing on them are filled as floor (`--ground-fill 12 --ground-fill-nb 3`; dp_1008 1F went from 0.37% to 0.17% no-ground samples along the mapping path). The base additionally tolerates one foot over a remaining gap (`robot.max_feet_over_gap: 1`, that foot takes the height of the plane through the other three) instead of refusing to move with a `stuck/no_ground` event
-  - **Stairs**: a tread is only 24–36 cells, so the default `--ground-min-cells 30` drops it and the landing's grow/fill then buries it; riser points and a sparse noise voxel on top also give the tread cells a ramp of intermediate heights that chains them to the landing. The stair recipe `--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100` keeps small regions, refuses to fill under a column with a solid voxel 0.1–0.3 m up, takes the weighted median instead of the mean for the cell height, splits a non-planar region into its dominant plane plus the rest, and snaps regions of up to 100 cells to a horizontal plane (a free plane fit turns a 2–3 cell deep tread into a ramp). All of it is off by default (old scenes rebuild identically); `scripts/eval_scene.py --stairs-box` measures the result (levels, rises, coverage, ASCII profile). The scenes in use today (`scenes/dp_1012`, `scenes/dp`) skip all of this: they are pure 1:1 builds of hand-edited OctoMaps (`--no-flatten --min-neighbors 0`). Sweep history:  [`docs/archive/scene-tuning-dp_1012-2026-10-16.md`](docs/archive/scene-tuning-dp_1012-2026-10-16.md)
+  - **Stairs**: a tread is only 24–36 cells, so the default `--ground-min-cells 30` drops it and the landing's grow/fill then buries it; riser points and a sparse noise voxel on top also give the tread cells a ramp of intermediate heights that chains them to the landing. The stair recipe `--ground-min-cells 8 --ground-fill-guard 0.3 --ground-surface median --ground-peel 3 --ground-small-flat 100` keeps small regions, refuses to fill under a column with a solid voxel 0.1–0.3 m up, takes the weighted median instead of the mean for the cell height, splits a non-planar region into its dominant plane plus the rest, and snaps regions of up to 100 cells to a horizontal plane (a free plane fit turns a 2–3 cell deep tread into a ramp). All of it is off by default (old scenes rebuild identically); `scripts/eval_scene.py --stairs-box` measures the result (levels, rises, coverage, ASCII profile). The default scene (`scenes/dp_1008`, `--no-flatten --close-rounds 1`) and the hand-edited octree scenes (`scenes/dp_1012`, `scenes/dp`, `--no-flatten --min-neighbors 0`) skip all of this: the floor stays raw voxels (a legged robot steps over the scan noise, and flattening can invent floor), and `contact.npy` marks the boxes a robot can touch (floor − 0.3 m to + 1.2 m). Sweep history:  [`docs/archive/scene-tuning-dp_1012-2026-10-16.md`](docs/archive/scene-tuning-dp_1012-2026-10-16.md)
   - **Synthetic ground plane**: an exported PCD can carry a generated, perfectly flat ground layer below the real floor (dp_1012: z = −0.95, 25 % of the points); every scan hole in the real floor then becomes a pit. `scripts/fix_pcd_plane.py` keeps that layer only where the real floor has no points, lifted to the neighbouring floor height, and drops the rest
   - Turn it off with `build_scene --no-flatten` to keep the raw voxel floor
 - **Spawn and `/sim/set_pose` check whether the body overlaps the map**: if it does, the base moves to the nearest free pose within 1 m (up to 90° turned) and the TF/odom follow the *moved* pose. The start-up log prints `spawn requested [x, y, yaw, z_floor] -> base at [...]`, a ROS warning is logged when the base was moved, and a `spawn` event (`requested`, `pose`, `floor_z`, `moved`) goes out on `/sim/events`; `set_pose` events carry the same fields
@@ -140,7 +144,7 @@ Body roll / pitch standard deviation while walking, before → after ground flat
 | `config/sim.yaml` | all parameters |
 | `config/stairs_dp_full.yaml`, `config/stairs_dp_bt.yaml` | synthetic-stair specs for the dp_full (0.03 m PCD) and dp_bt (0.1 m 1:1 octree) scenes (`scripts/make_stairs.py`, docs/usage.md section 2.5) |
 | `config/nav_waypoints_*.yaml` | waypoint sets for the navigation goal-loop test (`dp_1008*`: 1F of dp_1008; `dp_2f`: 2F of `scenes/dp`); one-off probe sets live in `config/archive/` |
-| `scripts/` | `build_scenes.sh`, `run_sim.sh`, `bench.py`, `nav_goal_loop.sh` / `nav_goal_loop.py` (navigation goal-loop test), `make_waypoints_from_poses.py`, `fix_pcd_plane.py` (synthetic ground layer), `eval_scene.py` (scene quality), `make_stairs.py` (replace scanned stairs with clean 16 cm steps), `bt_to_pcd.py` / `deploy_octomap_surface.py` (hand-edited OctoMap -> surface PCD for the planner) |
+| `scripts/` | `run_sim.sh`, `bench.py`, `nav_goal_loop.sh` / `nav_goal_loop.py` (navigation goal-loop test), `make_waypoints_from_poses.py`, `fix_pcd_plane.py` (synthetic ground layer), `eval_scene.py` (scene quality), `make_stairs.py` (replace scanned stairs with clean 16 cm steps), `bt_to_pcd.py` / `deploy_octomap_surface.py` (hand-edited OctoMap -> surface PCD for the planner) |
 | `docker/` | Dockerfile, `run.sh`, minimal `livox_ros_driver2` message package |
 | `docs/` | `usage.md` (usage guide by task), `pcd-to-sim-architecture.md` (design); `archive/`: dated test records and the dp_1012 build parameter sweep |
 | `tests/` | unit tests (PCD, OctoMap parsing and octree builds, voxels and box merging, ground flattening, proxies, sensor timing, collision check, CustomMsg/PointCloud2 serialization, synthetic stairs) |

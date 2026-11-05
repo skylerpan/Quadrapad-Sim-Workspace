@@ -11,8 +11,9 @@
 |---|---|---|---|
 | 建 Docker 映像檔 | `docker build -t quadsim:latest docker/` | 主機 | [1](#1-環境與容器) |
 | 進容器開 shell | `docker/run.sh` | 主機 | [1](#1-環境與容器) |
-| 把 PCD 地圖轉成場景 | `scripts/build_scenes.sh` | 主機 | [2](#2-建場景pcd--scenes) |
+| 把 PCD / OctoMap 轉成場景 | `docker/run.sh "python3 -m pcd2sim.build_scene ..."` | 主機 | [2](#2-建場景pcd--scenes) |
 | 啟動模擬器 | `scripts/run_sim.sh [參數]` | 主機 | [3](#3-跑模擬) |
+| 用瀏覽器看畫面（headless） | `scripts/run_sim.sh` 之後開 `http://<主機>:8755` | 任何有瀏覽器的機器 | [4.1](#41-瀏覽器-viewerviser預設開) |
 | 開 MuJoCo viewer / RViz | `QUADSIM_GUI=1 scripts/run_sim.sh --viewer` | 主機（桌面終端機） | [4](#4-畫面gui) |
 | 看 topic / frame 名稱 | 讀 `config/sim.yaml` 的 `ros:` 區塊 | — | [5](#5-ros-2-介面) |
 | 跑單元測試 | `docker/run.sh "python3 -m pytest -q"` | 主機 | [6.1](#61-單元測試) |
@@ -48,10 +49,15 @@ DDS 條件：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、domain 1�
 
 把 `Maps/<name>.pcd`（或 OctoMap `.bt` / `.ot`，見 §2.3）轉成模擬用的場景目錄 `scenes/<name>/`。`Maps/*.pcd` 和 `scenes/` 都在 `.gitignore` 裡，要自己放。
 
+**目前的預設配方**（2026-10-29，四足機器人為預設機器人之後）：`--no-flatten --close-rounds 1`，0.1 m。地板保留原始體素、只把 1–2 格的縫補起來，不平面化（有腳的機器人跨得過 ±5 cm 的掃描雜訊，平面化反而會造出假地板），輸出 `contact.npy` 給腳的碰撞用。PCD 的 `--no-flatten` 建置另外做兩件地板修補（octree 輸入預設不做，維持手修樹的 1:1；`--floor-spikes on|off`、`--floor-holes N` 可改）：**刪地板上的小凸起**（坐在地板上、同層 8 連通叢集 ≤ 3 格的可站立體素，`voxel.remove_floor_spikes`）——dp_1008 有 1,406 個，G23 的 PPO 平地 policy 一腳踩上 0.1 m 的孤立凸起就觸發姿態保護；**補地板小破洞**（可達地板旁、整欄從 −0.2 到 +0.8 m 都空、8 連通 ≤ 20 格的洞，以周圍地板的高度補體素，`voxel.fill_floor_holes`，2.4 秒）——dp_1008 補 27,474 格，走廊裡一個 0.4 × 0.2 m 的掃描破洞曾讓 G23 一腳踩空。修補後 dp_1008：29 秒、220,399 個 box、可達 2,058 m²、洞 211 個 / 40 m²（修補前 913 / 87），軌跡 2,757 個取樣只剩 5 個沒地板。dp_1008 用這個配方 27 秒、22 萬個 box，六種配方的幾何比較在 [2.2](#22-評估場景scriptseval_scenepy)。樓梯另外用 [2.5](#25-人工樓梯scriptsmake_stairspy) 的 `make_stairs.py` 換成精確 box。
+
 ```bash
-scripts/build_scenes.sh                       # Maps/*.pcd 全部建，額外參數會傳給 build_scene
-scripts/build_scenes.sh --voxel 0.1 --ground-fill 12
-docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008"   # 只建一張
+docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008 --no-flatten --close-rounds 1"
+```
+
+```bash
+docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008"   # PCD，預設參數（0.1 m、地面平面化）
+docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1008.pcd --out scenes/dp_1008 --voxel 0.1 --ground-fill 12"
 docker/run.sh "python3 -m pcd2sim.build_scene --help"
 ```
 
@@ -91,10 +97,11 @@ docker/run.sh "python3 -m pcd2sim.build_scene --help"
 | 檔案 | 內容 |
 |---|---|
 | `boxes.npy` | float32 [M,6]（cx, cy, cz, hx, hy, hz）碰撞 / LiDAR box，map frame |
+| `contact.npy` | bool [M]：機器人碰得到的 box（地板上方 `--contact-above` 1.2 m、下方 `--contact-below` 0.3 m 的帶內；地板 = 同欄位或 `--contact-xy` 0.3 m 內鄰欄位最近的可站立體素，附近完全沒地板的欄位整欄保留）。帶內 / 帶外分開合併，所以一個 box 不會跨帶。天花板和高處的牆只給 LiDAR 看 |
 | `ground.npz` | 平面化後的地板平板（LiDAR、腳下地形射線、viewer 用） |
 | `voxels.npz` | 體素 key + 平均 intensity（反射率）+ 平均 z |
 | `map_ds.pcd` | 體素中心 + intensity（RViz、定位測試用） |
-| `meta.json` | 統計、地板傾角、重力向量、出生點。**是 build cache，不要手改**，下次建置會蓋掉 |
+| `meta.json` | 統計、地板傾角、重力向量、出生點、`format_version`（`pcd2sim.SCENE_FORMAT`，目前 3；quadsim 載入時比對，2 只能給理想底盤用並印警告，其他版本拒絕）。**是 build cache，不要手改**，下次建置會蓋掉 |
 
 dp_1008（1,420 萬點）在 Jetson 上約 22 s、峰值記憶體 1.5 GB。`meta.json` 的 `build_args` 記著這個場景用了哪些參數。
 
@@ -121,12 +128,27 @@ docker/run.sh "python3 -m pcd2sim.build_scene --pcd Maps/dp_1012_fixed.pcd --out
 | `walk` | `--auto`：從出生點沿壓平的地板格做 BFS（8 鄰、高度差 ≤ 0.2 m，樓梯也算），每 0.3 m 一格從 BFS 的上一格「踩進去」（`IdealBase.reset` + `_check`）。機身在那格本來就放不下的（牆邊、家具）不算；有腳踩在沒平板的欄位的算 `edge_fraction`（地板邊緣或破洞）；其餘是有效取樣，`no_ground / step_up / step_down / slope / collision` 的數量就是地板缺陷，另外報有腳下方 3×3 射線打不到東西的比例 |
 | `stairs_walk` | 每個 stairs box 再走一次：用設定檔的機器人限制，以及 `--climb`（預設 `robot.max_step_up=0.22,robot.max_slope_deg=50`、不檢查碰撞）—— 分開「幾何有問題」和「機器人限制不夠」 |
 | `spawn` | 設定檔出生點：有沒有找到地板、有沒有被移動、地板高度 |
+| `geometry` | `--geometry`：**不帶任何機器人**的幾何數字（`pcd2sim/geometry.py`），拿來比較建置配方。地板格 = 場景自己的可站立體素（有 `ground.npz` 時是 slab 格）；從出生點 8 鄰、高度差 ≤ 0.2 m 做 BFS 得到可達面積；可達地板旁邊「整欄什麼都沒有」（地板上下 −0.3 / +0.8 m 內沒有任何體素）的欄位是破洞，從地板邊一圈圈往外長到 1.5 m，長到 1.5 m 還沒停的是地圖邊緣（open edge）不算洞，其餘依大小分桶（1 / 2–4 / 5–20 / 21–100 / >100 格）並列出最大的幾個。加 `--poses` 時沿 SLAM 軌跡每 `--sample` 0.3 m 取樣：腳下找不到地板、欄位裡有東西擋住（obstacle）、地板相對 LiDAR 高度的離散（floor noise），加 `--pcd` 再算和原始點雲地板的差（residual） |
 
 ```bash
 docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1012 --pcd Maps/dp_1012_fixed.pcd --find-stairs"   # 掃樓梯候選，印出可以直接用的 --stairs-box
 docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1012 --pcd Maps/dp_1012_fixed.pcd --auto --stairs-box=-6,-3,-18,-14,-0.5,6.3"
 docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1008 --poses Maps/dp_1008/poses.txt"              # 沿 SLAM keyframe 軌跡重播
+docker/run.sh "python3 scripts/eval_scene.py --scene scenes/dp_1008 --geometry --poses Maps/dp_1008/poses.txt --pcd Maps/dp_1008.pcd"   # 純幾何：可達面積、破洞、軌跡下的地板
 ```
+
+dp_1008 六種建置的 `--geometry` 對照（2026-10-29，`--spawn 0,0,0,-0.5`，軌跡 2,757 個取樣）：
+
+| 建置 | 建置秒數 | box | 可達 m² | 洞數 / m² | 洞 > 1 m² | 軌跡無地板 | 地板離散 p95 | 對原始 p95 |
+|---|---|---|---|---|---|---|---|---|
+| 預設（平面化 + 補洞） | 23 | 231 k | 1,806 | 959 / 78 | 16 | 10 | 0.113 | 0.104 |
+| 平面化、不補洞 | 19 | 243 k | 1,239 | 2,906 / 139 | 15 | 19 | 0.114 | 0.105 |
+| 完全不過濾 | 16 | 300 k | 1,286 | 3,309 / 132 | 14 | 6 | 0.032 | 0.024 |
+| `--no-flatten` | 20 | 285 k | 1,717 | 4,051 / 159 | 17 | 9 | 0.032 | 0.024 |
+| `--no-flatten --close-rounds 1` | 27 | 220 k | 2,003 | 913 / 87 | 12 | 8 | 0.033 | 0.022 |
+| `--no-flatten --close-rounds 2` | 33 | 204 k | 2,044 | 589 / 85 | 13 | 8 | 0.035 | 0.025 |
+
+補洞 1 輪把表面接起來，box 反而比不補少（合併得更好）、可達面積最大、洞數降到四分之一；2 輪只再少一點點卻超過 30 秒。平面化場景的地板和 LiDAR 軌跡、原始點雲的差都在 10 cm 級，體素地板在 3 cm 級。大於 1 m² 的洞（掃描起點正下方那類）每種配方都剩十幾個，軌跡上 2,757 個取樣只有 8 個沒地板，所以先不另外補。
 
 ### 2.2b OctoMap 轉回表面點雲（`scripts/bt_to_pcd.py`）
 
@@ -248,10 +270,18 @@ scripts/run_sim.sh --scene scenes/dp_bt_s16 robot.collision_pool=512 robot.colli
 
 `dp_bt_s16`（2026-10-28，`config/stairs_dp_bt.yaml`）：東側 E1（16 × 0.156 m，x 5.7–7.0，y −11.8 → −7.6，1F −0.2 → 平台 2.3）+ E2（19 × 0.158 m，x 3.9–5.1，到 2F 5.3）；西側 W1–W4（9/8/8/8 階，0.156 / 0.1625 m）+ 半層平台 1.2 / 2.5 / 3.8 → 2F 5.1。高度跟著這份掃描各接點的地板走（和 dp_full 的 PCD 差 0.1–0.25 m）；L2 掃到東半 2.4、西半 2.6，做成一片平的 2.5。平台拆成幾塊矩形避開扶手柱和西側兩段梯之間的半高分隔牆，梯腳 / 梯頭各有一塊接近墊壓平 ±0.1 m 的地板雜訊。`tests/test_stairs_dp_bt_s16.py` 直走上下 E1、上 W1、上 W2；`eval_scene.py` 的樓梯統計要 slab，對這種場景印不出東西，階高用 `tests/test_make_stairs.py` 的精確模式測試和爬梯測試保證。
 
+**自動產生 spec 草稿**（`--draft`，2026-10-29）：spec 的腳印和高度不用全部手量。`make_stairs.py --scene <場景> --draft out.yaml` 從場景自己的地板（可站立體素，或平面化場景的 slab 格）找樓梯：地板粗化到 0.1 m 格，每格對 0.3 m 鄰域擬合平面取梯度，坡度 0.3–1.2（樓梯約 0.5–0.7）且方向一致的連通格子就是一段 flight——不管掃描結果是一階一階、0.1 m octree 量化成 0.1 / 0.2 的高度層、還是平面化後黏成的斜坡都一樣。軸線取梯度方向（12° 內吸附到 x / y 軸），高度對沿軸距離擬合直線；z0 取梯腳前方找到的地板層、z1 取梯頭後方的平台層，階數 = round((z1 − z0) / riser)，start / end 是直線經過 z0 + rise/2 與 z1 + rise/2 的位置，寬度是 flight 格子的橫向範圍；被掃描破洞切成兩段的同軸 flight 會自動接回。平台是梯端地板層長到完整範圍的軸對齊矩形（> 25 m² 視為開放樓面不寫）。每個數字的依據寫在 YAML 註解裡，可疑處標 **CHECK**（找不到腳 / 頭的地板層、非軸對齊、擬合殘差大、踏板深度異常、面積太小）。**草稿一定要人對著地圖確認**：腳印是 0.1 m 估計，平台框會含最上一階（同高），多餘的小 staircase（路緣、坡道、雜訊）直接刪掉。
+
+```bash
+docker/run.sh "python3 scripts/make_stairs.py --scene scenes/dp_bt --draft scenes/dp_bt/draft.yaml"
+```
+
+實測（2026-10-29）對手寫 spec：`scenes/dp_bt` 六段 flight 全部找到——W1 和手寫完全一樣（(−10.75, −12.2)→(−10.75, −10.05)，9 × 0.156，−0.2 → 1.2），E1 被破洞切成兩段後自動接回成 16 × 0.1625、腳印差 0.3 m，E2 的 z0 讀到平台中間掃描凹下去的 2.0（手寫 2.3），W2–W4 階數差 1、高度跟著各接點的掃描地板走；另外列出約 20 個小 staircase 候選（多數標 CHECK）。`scenes/dp_full_003`（平面化、樓梯黏成斜坡）抓到 E1 的 12 / 16 階（x 和手寫差 0.03 m）、E2 18 階、W1 8 / 9 階，其餘段落是帶 CHECK 的碎片。
+
 ## 3. 跑模擬
 
 ```bash
-scripts/run_sim.sh                                   # 用 config/sim.yaml（預設 scene: scenes/dp_1012、rtf 1.0）
+scripts/run_sim.sh                                   # 用 config/sim.yaml（預設 scene: scenes/dp_1008、rtf 1.0）
 scripts/run_sim.sh --scene scenes/dp                 # 換場景
 scripts/run_sim.sh --rtf 0 --duration 60             # 全速跑 60 秒 sim time 後結束
 scripts/run_sim.sh ros.publish_gt_tf=false           # 不發真值 map→odom→base_link TF（交給 Point-LIO / 定位 stack）
@@ -268,14 +298,104 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 | `--rtf <f>` | 即時倍率；0 = 能多快跑多快 |
 | `--duration <s>` | 跑這麼多 sim 秒後自動結束（0 = 不停） |
 | `--viewer` | 開 MuJoCo viewer（需要 `QUADSIM_GUI=1`，見第 4 章） |
+| `--no-web` | 不開瀏覽器 viewer（預設開在 8755 埠，見 [4.1](#41-瀏覽器-viewerviser預設開)；等同 `web.enabled=false`） |
 | `key=value ...` | 任何設定檔欄位的覆寫（見第 9 章） |
 
-出生點：`config/sim.yaml` 的 `spawn: [x, y, yaw, z_floor]`（目前 `[0, 0, 0, -0.4]`，dp_1012 1F）；設成 `null` 會用 `meta.json` 裡 build_scene 算出的點。`z_floor` 要給**目標樓層的地板高度**（會從它上方 0.5 m 往下找到下方 1 m）；給到兩層之間會站在雜物或牆緣上。出生點或 `set_pose` 和地圖重疊時，機身會自動移到 1 m 內最近的空位（最多轉 90°）。
+### 3.1 機器人類型（`robot.type`）
+
+| `robot.type` | 內容 |
+|---|---|
+| `g23`（預設） | `robot/g23/` 的 G23 機器狗模型（來源見 `provenance.json`），物理 1 kHz。腿由 `g2_deploy_rs` 的 Rust 控制器驅動：quadsim 扮演它自帶的 `mujoco_simulation_G23.py`，在 `robot.controller.cmd_port`（20001）收 240 bytes 的力矩指令（kp / q / kd / dq / tau 各 12 個 float32，力矩 = kp(q−q) + kd(dq−dq) + tau，套 J60 速度-力矩包絡），每個物理步對 `robot.controller.telemetry`（30010 控制器、30011 web GUI）送 228 bytes 的狀態（t、rpy、加速度、角速度、12 關節位置 / 速度 / 力矩、機身位置 / 速度、四腳接觸）。出生後 `start_delay` 秒送 `MODE STAND`、再 `stand_delay` 秒送 `MODE RL` 或 `MODE LMA`（`robot.gait`），之後把 `/cmd_vel` 轉成 `AXES vx vy wz`（m/s、m/s、rad/s）送到 `robot.controller.command_addr`（50051，和他們 ROS bridge 同一個埠）：`/cmd_vel` 在 `robot.cmd_timeout`（0.5 s）內有來就每個控制週期轉送，過期時送一次 `AXES 0 0 0` 然後不再送，讓控制器自己的 300 ms watchdog 把速度指令標成 inactive（持續送零會讓 RL policy 原地踏步）。`robot.auto_stand: false` 就不自動送 MODE，自己用 GUI / 鍵盤操作。代理池從場景的 `contact.npy`（含地板）取 box，機器人站在體素地板上；場景必須是格式 3 |
+| `ideal` | 浮動底盤，不模擬腿：跟隨 `/cmd_vel`、腳下射線貼合地形、太高的台階 / 太陡 / 撞牆會拒絕並發事件。`eval_scene.py` 和 `bench.py` 固定用這個 |
+
+兩種模式對 ROS 的介面完全一樣（第 5 章）。`g23` 模式多兩種事件：`controller`（`state`：`connected` 第一次收到力矩指令、`stand` / `rl` / `lma` 送出模式指令、`lost` 超過 1 秒沒收到指令）和 `fall`（機身法線的 z 分量 < 0.5，每次出生 / set_pose 後只報一次）。`/sim/set_pose` 在 g23 模式會把機器人以預設關節角放到新位置、重新跑站立序列。
+
+`robot.policy_mode`（RL 用）是起步時的 policy：0 = PPO 平地（**預設**），1 = HIMLoco 爬梯 / 崎嶇地形，4 = IsaacSim。要上下樓梯時由導航端切換：對 `ros.topics.policy_mode`（預設 `/robot01/policy_mode`，`std_msgs/Int32`）發 1，quadsim 轉成 `MODE 1` 送給控制器，它在 RL 模式中每個控制步都讀這個值所以立刻生效，下完樓梯再發 0 切回 PPO（事件 `controller` / `state: policy`，`live: true`）。對應實機 SDK 的 `/set_policy_mode` 服務。PPO 在地板修補前 2 m 內就被 0.1 m 凸起觸發 safety，修補後正常；HIMLoco 2026-10-29 沿 dp_1008 SLAM 軌跡走 81 m 無事。
+
+控制器還沒接上時機器人只會軟倒在地上（沒有力矩）；`tests/test_g23.py` 用一個假控制器（PD 撐住預設姿勢）驗證協定、站立和事件。站立序列要等到收到第一筆力矩指令（`connected`）才開始計時，所以控制器慢慢起來也沒關係。
+
+**和參考模擬器的對齊**（原則：quadsim 的 G23 要和 `g2_deploy_rs/interface/robot/simulation/mujoco_simulation_G23.py` 一樣，控制器才看到同一隻狗；有差異要寫在這張表，有疑問先跑 `scripts/parity_g23.py`（下面），行為層再用 `scripts/idle_drift_theirs.py` 在同一個容器跑他們的 sim 對照，不要單方面「改好」機器人）：
+
+| 項目 | 他們的 sim | quadsim |
+|---|---|---|
+| 模型 | `robot/g23/mjcf/g23_mjcf.xml` | 同一份（`robot/g23/`，provenance.json 有 sha） |
+| 時間步 / 積分器 | 1 ms / xml 預設（Euler） | 同 |
+| 重力 | 垂直向下 | 同（`robot.level_gravity: true`；false 時沿場景地板法線，給理想底盤用） |
+| 地板 | 無限平面 | 場景 box 的代理池（含地板，`contact.npy`），摩擦同為 MuJoCo 預設、機器人碰撞 class 取最大 |
+| 關節模型 | `G2_SIM_MOTOR_MODEL` j60：armature 1.1e-4·減速比²、乾摩擦 0.40/0.40/0.45、黏滯阻尼；ideal = 無 | 同一個環境變數、同數值（`robot.motor_model` 非 null 時覆寫） |
+| 力矩 | kp(q−q)+kd(dq−dq)+tau，J60 速度-力矩包絡，可選 `G2_SIM_CMD_DELAY_MS` 延遲線、`G2_SIM_TORQUE_BW_HZ` 一階濾波 | 同 |
+| 機身 COM 偏移 / IMU 位置 | `G2_SIM_TORSO_COM_OFFSET`（也讀 g2_control.env，同一套優先序）、`G2_SIM_IMU_POS` | 同 |
+| IMU 模型 | `G2_SIM_IMU_AHRS_TAU`（互補濾波 roll/pitch）、`G2_SIM_IMU_RATE_HZ`（取樣保持）、`G2_SIM_IMU_DELAY_MS` | 同 |
+| telemetry | 1 kHz 228 bytes 到 30010 / 30011；ASCII 狀態行到 ROS bridge 50010（`G2_SIM_ROS_ASCII_TELEMETRY`，預設開）；`SIM_POSE` 到 30012 | 同（三個目的地都預設開；`robot.controller.*` 可覆寫） |
+| 馬達溫度 | `G2_SIM_MOTOR_TEMP=1` 熱模型，只影響 ASCII 行的 JOINT_TEMP | **沒做**，JOINT_TEMP 固定 0 |
+| 推力測試 | 鍵盤 Enter 側推 | 沒有（用 `/sim/set_pose` 或自己發力） |
+| 起始姿勢 | torso 在 xml 位置落下、關節預設角 | torso 在地板上 0.40 m 落下、關節預設角 |
+| 關節模型套用時機 | 編譯**之後**改 `dof_armature` 等（compiler 算的 `dof_invweight0` / `body_invweight0` 沒含 armature，接觸與摩擦的正則化跟著變） | 同：在 `G23Backend` 對編譯後的模型套，不在 MjSpec 裡（2026-10-30 之前在 spec 裡，接觸剛度差 30%） |
+
+啟動 log 的 `reference sim options: ...` 會印解析後的設定。
+
+**證偽測試** `scripts/parity_g23.py`：在同一個 process 直接 import 他們的 `MuJoCoSimulation` 類別（flat 場景、不開 socket）和 quadsim 的後端，三層比對，任何一行不是零就是不一樣：
+
+```bash
+QUADSIM_G23=1 docker/run.sh "python3 scripts/parity_g23.py"      # 約 40 s
+```
+
+| 層 | 內容 | 2026-10-30 結果 |
+|---|---|---|
+| A 模型 | 兩邊套完關節模型 / COM / IMU 後，每個 joint、body、geom、actuator、sensor、option 欄位逐一比 | 0 差異 |
+| B telemetry | 把兩邊設成同一個狀態，228 bytes 封包、ASCII 狀態行、`SIM_POSE` 行 | 位元組相同 |
+| C 動力學 | 同一起始狀態、同一串 1 kHz 指令（PD 撐住 → 1 Hz 關節正弦 → 120 N 側推翻倒），逐步比軌跡；另跑「他們的模型 + box 地板」當第三條線，分辨機器人模型差異和地板幾何差異 | quadsim 對「他們 + box 地板」6 s 內 ≤ 1e-11（浮點累積）；「他們 + box 地板」對「他們 + 平面」1e-4（box / 平面碰撞幾何，翻倒時才出現） |
+
+這個測試抓到兩個差異（都已修）：armature 在 spec 裡套 vs 編譯後套（上表）；代理池改 box 大小時沒改代理 body 的 BVH 節點，MuJoCo mid-phase 用編譯時的 5 cm 盒子剔除，多 geom 的 body（torso、hip）只有離代理中心 5 cm 內才會碰到（腳是單 geom，所以站得住、翻倒時機身卻穿地）。改了 quadsim/g23.py 或 proxies.py 就重跑一次。
+
+**站立自旋是 policy 的**（2026-10-30，在他們的 sim 用 `idle_drift_theirs.py` 量，35 s × 3）：HIMLoco J60 模型 1.42–1.43 °/s、`G2_SIM_MOTOR_MODEL=ideal` 1.44–1.51 °/s，PPO 兩者都 0.00；關節乾摩擦 / 阻尼 / 轉子慣量拿掉自旋不變，所以不是 sim 的關節模型，是 `policy_himloco.onnx` 本身的不對稱（它沒帶訓練 metadata，查不到來源）。sim 這邊不補 yaw 修正，導航端持續送 cmd_vel 修航向。
+
+**看他們的 sim 本人** `scripts/run_theirs.py`：在同一個容器開他們的 `mujoco_simulation_G23.py`（viewer）和 Rust 控制器，送站立序列後掛著；和 quadsim g23 模式用同樣的埠（20001 / 30010 / 50051），先把 quadsim 的容器停掉：
+
+```bash
+QUADSIM_G23=1 QUADSIM_GUI=1 docker/run.sh "python3 scripts/run_theirs.py --scene stair"   # flat | stair | terrain
+python3 scripts/run_theirs.py --send "MODE 1"                       # 在主機上也能送（host network）
+python3 scripts/run_theirs.py --send "AXES 0.4 0 0" --repeat 8      # 10 Hz 連送 8 秒（控制器 300 ms watchdog）
+```
+
+`stair` 是他們的 mixed terrain：出生點前方 1 m 三條各 5 階的樓梯，y=+2.2 10 cm、y=0 15 cm、y=−2.2 20 cm，後方一片 4–14 cm 的亂石磚；`terrain` 是坡道 / 拱橋 / 斜坡。`--policy` 預設 0（PPO），`--no-stand` 只開兩個程式自己下 MODE。`scripts/idle_drift_theirs.py` 用同一組啟動函式。
+
+### 3.2 控制器：建置與一鍵啟動
+
+控制器（`g2_deploy_rs`，Rust）在**容器裡編、容器裡跑**，host 不需要 Rust 或 OCS2。第二個映像 `quadsim-g23:latest`（`docker/Dockerfile.g23`，FROM quadsim:latest 加 Rust 工具鏈、cmake / ninja / Eigen、python3-venv）由 `docker/build_g23.sh` 建；控制器 repo 以 volume 掛在容器的 `/g2`（host 路徑 `G2_DEPLOY_RS`，預設本 repo 旁邊的 `../g2_deploy_rs/g2_deploy_rs`），編譯產物（`target/`、`onnxruntime-linux-*`、`.venv_lma`、`build/lma_bridge`）留在那個目錄、屬於你。
+
+```bash
+docker/build_g23.sh            # 映像（沒有才建）+ ONNX Runtime 下載 + cargo build --release（RL policy 用；幾分鐘）
+docker/build_g23.sh --lma      # 再加 LMA：cmeel 的 Pinocchio / Boost venv + OCS2 C++ bridge 從原始碼編（很久，每個 job 約 3 GB RAM）
+docker/build_g23.sh --image    # 只重建映像
+scripts/run_sim.sh             # 之後照常啟動：偵測到 quadsim-g23 映像就用它並掛 /g2，sim_node 自己把控制器當子行程帶起來
+```
+
+`scripts/run_sim.sh` 的規則：命令列沒有 `robot.type=ideal` 且 `quadsim-g23` 映像存在 → `QUADSIM_G23=1`（`docker/run.sh` 選那個映像、掛 `/g2`）；否則用 `quadsim:latest` 並印警告（機器人會沒有控制器）。sim_node 在 g23 模式且 `robot.controller.spawn`（預設 true）時，找 `/g2/target/release/g2_deploy_rs`（或 `robot.controller.exec`）以 `sim ros` 參數、工作目錄 `/g2` 啟動它，環境變數預設 `G2_LMA_STATE_SOURCE=ground_truth`（`robot.controller.env` 可加），`ORT_DYLIB_PATH` 自動指到 repo 裡下載好的 onnxruntime；它的輸出以 `[g2]` 前綴併進 sim 的 log，Ctrl-C 一起關；它自己掛掉會發 `controller` 事件（`state: exited`）並讓 sim 以 exit code 1 結束。找不到 binary 時只印警告，你可以在另一個終端自己跑控制器（它連 localhost UDP 即可，容器是 `--net=host`）。
+
+### 3.3 機器人層評估（`scripts/walk_g23.py`）
+
+headless、即時、不用 ROS 也不用導航堆疊：Simulator 開 g23 模式、自己帶起控制器，等站立 → 步態完成後，以 pure pursuit（對 sim 真值）沿 `Maps/<map>/poses.txt`、waypoint yaml 或直線送 cmd_vel（bang-bang：policy 對很小的非零指令不穩，所以 wz 只送 0 或 ±`--wz` 0.6、vx 只送 0 或 `--vx` 0.4）。記錄 `fall`（翻倒或步態開啟 2 秒後高度 < `robot.fall_height` 達 1 秒）、控制器的 `[SAFETY]` 鎖定（`safety`）、腳的接觸力尖峰、機身高度 / pitch、沿路徑的進度，寫到 `results/walk_g23/<時間>.json`，有跌倒或 safety 就停。這是 Phase 1 幾何指標之外的「機器人層」：機器人真的在哪裡倒、為什麼。
+
+```bash
+docker/build_g23.sh                                                                        # 一次
+QUADSIM_G23=1 docker/run.sh "python3 scripts/walk_g23.py --poses Maps/dp_1008/poses.txt --seconds 150"
+QUADSIM_G23=1 docker/run.sh "python3 scripts/walk_g23.py --line 3 --vx 0.3"              # 直走 3 m
+QUADSIM_G23=1 docker/run.sh "python3 scripts/walk_g23.py --poses ... robot.policy_mode=0"  # 換 policy
+```
+
+2026-10-29 的紀錄（dp_1008、RL、`lidar.points_per_sec=100000`，RTF 全程 1.00）：直走 3 m 無事；沿軌跡 PPO 在 1.8 m 觸發 safety（地板凸起），加凸起過濾後 2.4 m（更大的一片 0.1 m 凸起），換 HIMLoco 走到 38 m 在走廊的 0.4 × 0.2 m 掃描破洞踩空，加補洞後 **81 m / 240 秒沒有任何 safety 或跌倒**（時間到才停，機身 0.39 m、pitch p95 7°、腳力尖峰 p99 123 N）。即時切換驗證（`--switch 1:1 --switch 7:0`）：PPO 起步、1.2 m 切 HIMLoco、7.2 m 切回 PPO，控制器都即時換 runner；但 PPO 在修補後的地板上還是會踩到 0.1 m 的雜物（出生點附近 (1.2, −0.6) 一片 0.8 × 0.3 m、走廊 (2.7, −6.9)）就觸發姿態保護，HIMLoco 走得過。所以 PPO 當預設時，導航端要在這類地形前切 1，或等 PPO policy 改善。
+
+即時性：g23 模式下 LiDAR 射線在工作執行緒跑（物理迴圈只記錄位姿），每 10 秒的 log 多印達成的 `rtf` 和 LiDAR 執行緒佔用；達成的 rtf 低於設定值的 98% 會印警告，因為控制器是 wall-clock 1 kHz，模擬變慢它就收到遲到的 telemetry。
+
+出生點：`config/sim.yaml` 的 `spawn: [x, y, yaw, z_floor]`（目前 `[0, 0, 0, -0.5]`，dp_1008 1F 原點地板 −0.45；dp_1012 用 −0.4）；設成 `null` 會用 `meta.json` 裡 build_scene 算出的點。`z_floor` 要給**目標樓層的地板高度**（會從它上方 0.5 m 往下找到下方 1 m）；給到兩層之間會站在雜物或牆緣上。出生點或 `set_pose` 和地圖重疊時，機身會自動移到 1 m 內最近的空位（最多轉 90°）。
 
 啟動 log 要看的幾行：
 
 ```
-scene scenes/dp_1012 (44116 boxes), spawn requested [x, y, yaw, z_floor] [0.0, 0.0, 0.0, -0.4] -> base at [0.0, 0.0, 0.1] yaw 0.00 (floor z -0.2, moved False), rtf 1.0, gt_tf True, custom_msg True
+scene scenes/dp_1008 (220128 boxes), spawn requested [x, y, yaw, z_floor] [0.0, 0.0, 0.0, -0.5] -> base at [0.0, 0.0, -0.15] yaw 0.00 (floor z -0.45, moved False), rtf 1.0, gt_tf False, custom_msg True
+web viewer: http://<主機>:8755 (map points (<= 1500000 points / 400000 boxes), poses <= 30 Hz, ...)   # 瀏覽器 viewer，見 4.1
+web viewer: map 1280894 points (of 1705933, 0.11 m cells) in 0.3 s
 viewer: gl=nvidia (docker/run.sh QUADSIM_GL), map mesh 3100000 faces, shadows False, sync <= 30 Hz   # 只有 --viewer 時出現
 event: {'type': 'spawn', ...}                   # 同一筆也會發到 /sim/events
 sim t=10.0s pose=[...]                          # 每 10 sim 秒一行
@@ -284,6 +404,31 @@ sim t=10.0s pose=[...]                          # 每 10 sim 秒一行
 結束用 Ctrl-C（再按一次強制）。
 
 ## 4. 畫面（GUI）
+
+### 4.1 瀏覽器 viewer（viser，預設開）
+
+sim 不需要顯示器或 GL：啟動後（任何模式，包含 headless）都會在 **`http://<主機>:8755`** 提供一個瀏覽器 viewer（[viser](https://github.com/nerfstudio-project/viser)，`quadsim/web_viewer.py`）。容器用 `--net=host`，所以同一台機器開 `http://localhost:8755`，別台機器開主機的 IP 即可；啟動 log 的 `web viewer: http://...` 就是網址。
+
+```bash
+scripts/run_sim.sh                       # 預設就開；瀏覽器開 http://<主機>:8755
+scripts/run_sim.sh --no-web              # 不開（或 web.enabled=false）
+scripts/run_sim.sh web.port=9000 web.map=boxes web.max_map_points=500000   # 設定都在 config/sim.yaml 的 web: 區塊
+```
+
+畫面內容：
+
+- **地圖**：`map_ds.pcd` 當點雲畫，顏色照高度。超過 `web.max_map_points`（預設 150 萬）就體素降採樣（dp_1008 的 170 萬點 → 128 萬點、0.11 m；0.03 m 場景 1,700 萬點也能開）。整張地圖在連線時送一次（約 20 MB），在背景執行緒建好，sim 不等它。`web.map=boxes` 改畫場景的 box（離出生點最近的 `web.max_map_boxes` 個）：每個 box 一個 instance（GPU instancing，比整塊 mesh 便宜），顏色用和點雲一樣的高度色再加棋盤式明暗，相鄰同高的 box 也分得開，所以 box 的邊、階梯的踏面都看得到；`none` 不畫。
+- **機器人**：MuJoCo 模型的 visual geom（G23 的 STL、理想底盤的 box），每個 body 一個 frame，姿態最多 `web.hz`（30）Hz 更新，沒變就不送。碰撞 geom 和代理 box 不畫。
+- **LiDAR**：最新一幀轉到 map 座標，均勻抽到 `web.lidar_points`（8000）點，最多 `web.lidar_hz`（10）Hz。
+- **規劃路徑**：訂閱 `web.path_topic`（預設 `/robot01/planned_path`，nav_msgs/Path），畫成綠線；設成空字串關掉。
+- 右上面板：sim 時間、即時倍率、機身位置、LiDAR 點數，圖層開關（地圖 / LiDAR / 路徑 / 相機跟隨機身）。
+- **Teleop（搖桿）**：機器人身上有一個可以拖的把手（transform gizmo）。把它拖到想去的地方，機器人就朝把手走（把手在機身座標的方向決定轉速、距離決定速度，到了就自動減到 0；把手在後方會先原地轉）；放開就歸零、把手跳回機身。拖著的時候 sim 每 tick 重送命令（不會碰到 `robot.cmd_timeout`）並蓋過 `/cmd_vel`，放開後交還給 ROS；瀏覽器中途斷線也視同放開。`Max speed` / `Max turn` 滑桿是上限，Stop 按鈕立刻歸零。走的是和 `/cmd_vel` 同一條路（g23 模式轉成 AXES 給控制器）。
+- **Motion**（只有 g23）：Stand / Walk / Lie down / Damping 四個鈕，各送 `RESET_SAFETY`+`MODE STAND`、`MODE <policy>`+`MODE RL`、`MODE LIE`、`MODE R` 給控制器（和他們的 ROS bridge 同一組字串）；Stand 之後不會自動進步態，要按 Walk。`RL policy` 下拉選單換 PPO / HIMLoco / IsaacSim（走路中即時切換，等同 `/robot01/policy_mode`）。
+- **Reset**：「Reset to spawn」把機器人瞬移回設定檔的出生點，「Re-stand here」在原地 set_pose（倒了可以重新站起來；3 秒防連點）。兩者等同發 `/robot01/set_pose`，會有 `set_pose` 事件；跑著定位 stack 時瞬移會讓 Point-LIO 失準，要重新 seed。
+
+成本：沒有瀏覽器連線時什麼都不送（log 顯示 `web 0% of wall (0 clients)`）；有連線時每 10 秒的狀態行會多 `web N% of wall (M clients)`，G23 模式實測約 2%，rtf 不變。埠被占用（同一台跑第二個 sim）會自動用下一個，log 有 WARN。沒裝 viser 只會 WARN 一行然後照常跑；映像檔的 Dockerfile 已經裝了。
+
+### 4.2 MuJoCo viewer / RViz（X display）
 
 要在**有 X display 的桌面終端機**執行，`DISPLAY` 和 `XAUTHORITY` 會自動帶進容器。
 
@@ -320,7 +465,7 @@ MuJoCo viewer 把整張地圖當一個 mesh 畫（dp_1008 約 310 萬個三角�
 | 訂閱 | `/cmd_vel` | `cmd_vel` | geometry_msgs/Twist（vx, vy, wz）；超過 `robot.cmd_timeout`（0.5 s）沒收到就歸零 | — |
 | 訂閱 | `/sim/set_pose` | `set_pose` | geometry_msgs/PoseStamped（x, y, yaw；**z 是地板高度提示**，多樓層時用來選層） | — |
 
-Frame（`ros.frames`）：`map`、`odom`、`base_link`、`livox_frame`。靜態 `base_link → livox_frame` 一律發布；`publish_gt_tf: true`（預設）時再加 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。用 `ros.publish_gt_tf=false` 關掉後，這兩段由 Point-LIO / 定位 stack 發。
+Frame（`ros.frames`）：`map`、`odom`、`base_link`、`livox_frame`。靜態 `base_link → livox_frame` 一律發布；`publish_gt_tf` 預設 `false`：`map → odom` 和 `odom → base_link` 由 Point-LIO / 定位 stack 發。用 `ros.publish_gt_tf=true` 打開後，sim 才會再發 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。
 
 `/sim/events` 的 `type`：
 
@@ -364,7 +509,7 @@ docker/run.sh "python3 scripts/bench.py --scene scenes/dp_1008 --seconds 30 phys
 
 前置條件：
 
-1. sim 用 `scripts/run_sim.sh ros.publish_gt_tf=false` 啟動（TF 交給定位），`ros.topics` 的 LiDAR / IMU / cmd_vel 名稱要和導航 stack 用的一致（見第 5、9 章）。
+1. sim 用 `scripts/run_sim.sh` 啟動（`publish_gt_tf` 預設 false，TF 交給定位），`ros.topics` 的 LiDAR / IMU / cmd_vel 名稱要和導航 stack 用的一致（見第 5、9 章）。
 2. 導航 stack 起好：定位（Point-LIO）、全域規劃（`octo_planner_rviz_node`）、控制（`syncai_controller_3d`），且 planner 的地圖和 sim 場景來自同一份 PCD。測試程式的 `--*-topic` 預設是 `robot01` 導航 stack 的名稱，接別的 stack 用這些參數改。
 3. 測試期間 **不要按 teleop**（鍵盤節點也會發 cmd_vel）。
 4. 定位已收斂：preflight 會比對 tracked pose 和真值，差超過 `--loc-preflight`（0.5 m）或 pose 太舊就以 exit 2 結束。
@@ -455,9 +600,10 @@ python3 scripts/make_waypoints_from_poses.py Maps/dp_1008/poses.txt --spacing 8 
 | `scene`、`spawn` | 預設場景目錄、出生點 `[x, y, yaw, z_floor]` |
 | `physics` | `timestep`（400 Hz）、`control_hz`（50）、`rtf` |
 | `robot` | 理想底盤：機身尺寸、站高（沿腳平面法線量，機身底面在樓梯上和腳平面平行）、腳位、`max_step_up/down`、`max_feet_over_gap`、`max_slope_deg`（四隻腳的平面：手畫 0.2 m 深踏板是 46°，預設 50）、`attitude_tau`、`vel_limits` / `acc_limits`、`cmd_tau`、`cmd_timeout`、碰撞代理池大小。roll / pitch / 高度取四隻腳高度（各 3×3 射線取中位數）構成的平面，碰撞盒跟著機身一起傾斜 |
-| `lidar` | Mid-360 參數：安裝位置、頻率、點數、FOV、距離、雜訊（掃描樣式固定為合成的非重複樣式） |
+| `lidar` | Mid-360 參數：安裝位置 `mount_xyz` / `mount_rpy`（base_link 座標，照機器人 URDF 的 `base_link → lidar_top`：0.195 / 0 / 0.155 m、pitch 0.25 rad；點雲在感測器座標，傾斜由 TF 帶）、頻率、點數、FOV、距離、雜訊（掃描樣式固定為合成的非重複樣式） |
 | `imu` | 頻率、雜訊、bias random walk（加速度單位固定為 g，和 livox_ros_driver2 相同） |
-| `viewer` | `shadows`、`sync_hz` |
+| `viewer` | `shadows`、`sync_hz`、`max_map_boxes`（MuJoCo viewer，`--viewer`） |
+| `web` | 瀏覽器 viewer：`enabled`、`port`（8755）、`hz`、`lidar_hz`、`lidar_points`、`map`（points / boxes / none）、`max_map_points`、`max_map_boxes`、`map_precision`、`path_topic`（[4.1](#41-瀏覽器-viewerviser預設開)） |
 | `ros` | frame 名、`publish_gt_tf`、`publish_custom_msg`、`publish_pointcloud2`、`pointcloud2_format`、`publish_map_cloud`、各 topic 名 |
 
 指令列覆寫：`區塊.欄位=值`，可以多個，`run_sim.sh`、`bench.py` 都接受。值用 YAML 解析，所以：
@@ -475,6 +621,7 @@ scripts/run_sim.sh --config config/sim_other.yaml              # 整份換掉
 | 現象 | 原因 / 處理 |
 |---|---|
 | `QUADSIM_GUI=1 but DISPLAY is not set` | 不是在桌面終端機執行。改在有 X 的終端機跑，或不開 GUI |
+| 瀏覽器開 `http://<主機>:8755` 沒畫面 | 看啟動 log 的 `web viewer: http://...`：埠被占用時會改用下一個（8756…）並有 WARN；`web viewer disabled` 表示容器沒有 viser（重建映像檔 `docker build -t quadsim:latest docker/`，再 `docker/build_g23.sh --image`）。地圖是在背景載入，面板的 Map 欄位從 `loading...` 變成點數才算好 |
 | viewer 一幀要幾百 ms | 走到 `sw` 路徑。看啟動 log 的 `viewer: gl=`，有 NVIDIA GPU 就設 `QUADSIM_GL=nvidia`；確認 `viewer.shadows: false` |
 | RViz 點雲、格線畫不出來 | GL 退到 2.1 fallback。用 `QUADSIM_GL=nvidia` 或 `sw`，不要用沒 `/dev/dri` 的 `hw` |
 | 一起步就 `stuck` / `no_ground` | 場景地板有破洞。用目前預設（`--ground-fill 12`）重建場景，並確認 `robot.max_feet_over_gap: 1`。用 `scripts/eval_scene.py --auto` 找出缺陷在哪（[2.2](#22-評估場景scriptseval_scenepy)） |

@@ -3,16 +3,18 @@ import os
 import numpy as np
 import pytest
 
-SCENE = os.path.join(os.path.dirname(__file__), "..", "scenes", "dp_1012")
+from quadsim.config import load_config
+
+SCENE = os.path.join(os.path.dirname(__file__), "..", load_config(None, [])["scene"])   # the config default scene
 pytestmark = pytest.mark.skipif(not os.path.exists(os.path.join(SCENE, "meta.json")),
-                                reason="scenes/dp_1012 not built")
+                                reason=f"{os.path.relpath(SCENE)} (config/sim.yaml scene) not built")
 
 
 def test_low_obstacle_just_above_body_bottom_blocks():
     from quadsim.config import load_config
     from quadsim.proxies import BoxIndex
     from quadsim.sim import Simulator
-    cfg = load_config(None, [])
+    cfg = load_config(None, ["robot.type=ideal"])
     cfg["scene"] = SCENE
     s = Simulator(cfg)
     x, y, z_floor = 0.0, 0.0, 0.0
@@ -29,7 +31,7 @@ def test_set_pose_into_an_obstacle_moves_to_a_free_pose():
     from quadsim.config import load_config
     from quadsim.proxies import BoxIndex
     from quadsim.sim import Simulator
-    cfg = load_config(None, [])
+    cfg = load_config(None, ["robot.type=ideal"])
     cfg["scene"] = SCENE
     s = Simulator(cfg)
     x, y, z_floor = s.base.x, s.base.y, s.base.ground.z0

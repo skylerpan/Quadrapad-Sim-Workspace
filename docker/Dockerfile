@@ -2,7 +2,7 @@
 FROM syncai-robot-base:latest
 
 USER root
-RUN pip3 install --no-cache-dir mujoco==3.15.0 scipy open3d pytest
+RUN pip3 install --no-cache-dir mujoco==3.15.0 scipy open3d pytest viser==1.1.1
 
 # Message-only livox_ros_driver2 so /livox/lidar can be published as CustomMsg.
 # Optional: if the build fails the sim falls back to PointCloud2 only.

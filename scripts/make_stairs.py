@@ -3,6 +3,11 @@
 Usage (inside the container):
   python3 scripts/make_stairs.py --scene scenes/dp_full_003 --out scenes/dp_full_003_s16 --spec config/stairs_dp_full.yaml
   python3 scripts/make_stairs.py --scene scenes/dp_full_003_s16 --spec config/stairs_dp_full.yaml --map east   # inspect only
+  python3 scripts/make_stairs.py --scene scenes/dp_bt --draft scenes/dp_bt/draft.yaml         # spec draft from the floor
+
+--draft writes a spec draft found in the scene's own floor (pcd2sim.stairs: flights from the local floor gradient,
+landings from the levels at their ends, every number with its evidence as a comment and weak spots marked CHECK);
+a human checks it against the map before running make_stairs on it.
 
 The spec (YAML) lists staircases made of flights and landings:
   riser: 0.16            target riser; a flight with rise R gets n = round(R / riser) steps of R / n
@@ -40,8 +45,11 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from pcd2sim import SCENE_FORMAT, geometry, stairs as stairs_draft  # noqa: E402
+from pcd2sim.build_scene import merge_split  # noqa: E402
 from pcd2sim.pcd_io import read_pcd, write_pcd  # noqa: E402
-from pcd2sim.voxel import VoxelGrid, _merge_axis, boxes_to_world, encode, merge_boxes  # noqa: E402
+from pcd2sim.voxel import (VoxelGrid, _merge_axis, boxes_to_world, contact_mask, encode, merge_boxes,  # noqa: E402
+                           standable_mask)
 
 SLAB_THICKNESS = 0.2
 
@@ -147,15 +155,19 @@ def load_spec(path: str) -> dict:
 
 # -- scene I/O ----------------------------------------------------------------------------------------
 def load_scene(scene: str):
+    """(boxes, grid, slabs, meta, contact_v, contact_b): the contact masks (format 3) are None on older scenes."""
     boxes = np.load(os.path.join(scene, "boxes.npy"))
     d = np.load(os.path.join(scene, "voxels.npz"))
     grid = VoxelGrid(d["keys"].astype(np.int32), np.ones(len(d["keys"]), np.int32), d["intensity"], d["zmean"],
                      d["origin"].astype(np.float64), float(d["voxel"]), d["dims"].astype(np.int64))
+    contact_v = d["contact"].astype(bool) if "contact" in d.files else None
+    cp = os.path.join(scene, "contact.npy")
+    contact_b = np.load(cp).astype(bool) if os.path.exists(cp) else None
     gp = os.path.join(scene, "ground.npz")
     slabs = np.load(gp)["slabs"] if os.path.exists(gp) else None
     with open(os.path.join(scene, "meta.json")) as f:
         meta = json.load(f)
-    return boxes, grid, slabs, meta
+    return boxes, grid, slabs, meta, contact_v, contact_b
 
 
 # -- geometry -----------------------------------------------------------------------------------------
@@ -383,7 +395,12 @@ def apply(scene: str, out: str, spec: dict, log=print, exact: bool | None = None
     if os.path.abspath(scene) == os.path.abspath(out):
         raise SystemExit("--out must differ from --scene (the original scene is kept)")
     t0 = time.time()
-    boxes, grid, slabs, meta = load_scene(scene)
+    boxes, grid, slabs, meta, contact_v, contact_b = load_scene(scene)
+    if contact_v is None:
+        # pre-format-3 scene: band test with the build_scene defaults (the synthetic steps are always in it)
+        contact_v = contact_mask(grid, standable_mask(grid))
+        log(f"no contact mask in {scene} (format {meta.get('format_version')}): computed with the defaults, "
+            f"{int(contact_v.sum())} of {len(contact_v)} voxels in the band")
     if exact is None:
         exact = slabs is None
     if exact and slabs is not None:
@@ -457,11 +474,13 @@ def apply(scene: str, out: str, spec: dict, log=print, exact: bool | None = None
     out_keys = np.concatenate([grid.keys[keep_old].astype(np.int32), keys.astype(np.int32)])
     out_inten = np.concatenate([grid.intensity[keep_old], np.full(len(keys), fill_i, np.float32)])
     out_zmean = np.concatenate([grid.zmean[keep_old], zmean_new])
+    out_contact_v = np.concatenate([contact_v[keep_old], np.ones(len(keys), dtype=bool)])
 
     if exact:
         # the surviving original geometry is re-merged from its voxels (a 1:1 build's boxes are exactly
         # merge_boxes(voxels)); the synthetic elements are exact AABBs, raster fallbacks are merged from their voxels
-        old_boxes = boxes_to_world(merge_boxes(grid.keys[keep_old].astype(np.int64)), grid).astype(np.float32)
+        old_boxes, old_contact = merge_split(grid.subset(keep_old), np.ones(len(keep_old), dtype=bool),
+                                             contact_v[keep_old])
         parts = [el.exact_boxes(float(spec["thickness"])) for el, ex in zip(spec["elements"], exact_el) if ex]
         raster_keys = [k for k, ex in zip(new_keys, exact_el) if not ex]
         if raster_keys:
@@ -470,18 +489,26 @@ def apply(scene: str, out: str, spec: dict, log=print, exact: bool | None = None
             parts.append(boxes_to_world(merge_boxes(rk), grid))
         new_boxes = np.concatenate(parts).astype(np.float32)
         out_boxes = np.concatenate([old_boxes, new_boxes])
+        out_contact_b = np.concatenate([old_contact, np.ones(len(new_boxes), dtype=bool)])
         log(f"boxes: {len(boxes)} -> {len(old_boxes)} re-merged from the surviving voxels + {len(new_boxes)} synthetic "
             f"= {len(out_boxes)}; voxels: {len(grid.keys)} - {int(drop_v.sum()) + int(collide.sum())} + {len(keys)} = {len(out_keys)}")
     else:
         new_boxes = boxes_to_world(merge_boxes(keys), grid).astype(np.float32)
         out_boxes = np.concatenate([boxes[~drop_b], new_boxes])
+        if contact_b is None:
+            # a flattened pre-format-3 scene: its boxes were merged across the band, so they cannot be split
+            # here; the whole kept map counts as touchable (over-inclusive, never drops a box)
+            contact_b = np.ones(len(boxes), dtype=bool)
+            log(f"no contact.npy in {scene}: every kept box is flagged touchable")
+        out_contact_b = np.concatenate([contact_b[~drop_b], np.ones(len(new_boxes), dtype=bool)])
         log(f"boxes: {len(boxes)} - {int(drop_b.sum())} + {len(new_boxes)} = {len(out_boxes)}; "
             f"voxels: {len(grid.keys)} - {int(drop_v.sum()) + int(collide.sum())} + {len(keys)} = {len(out_keys)}")
 
     os.makedirs(out, exist_ok=True)
     np.save(os.path.join(out, "boxes.npy"), out_boxes)
+    np.save(os.path.join(out, "contact.npy"), out_contact_b)
     np.savez_compressed(os.path.join(out, "voxels.npz"), keys=out_keys, intensity=out_inten, zmean=out_zmean,
-                        origin=grid.origin, voxel=grid.voxel, dims=dims)
+                        origin=grid.origin, voxel=grid.voxel, dims=dims, contact=out_contact_v)
     if slabs is not None:
         out_slabs = np.concatenate([slabs[~drop_s]] + new_slabs).astype(np.float32)
         np.savez_compressed(os.path.join(out, "ground.npz"), slabs=out_slabs)
@@ -497,8 +524,10 @@ def apply(scene: str, out: str, spec: dict, log=print, exact: bool | None = None
         if os.path.exists(os.path.join(out, extra)):
             os.remove(os.path.join(out, extra))              # stale evaluations of the source scene
     meta = dict(meta)
+    meta["format_version"] = SCENE_FORMAT
     meta["boxes"] = int(len(out_boxes))
     meta["voxels"] = int(len(out_keys))
+    meta["contact"] = dict(meta.get("contact") or {}, voxels=int(out_contact_v.sum()), boxes=int(out_contact_b.sum()))
     meta["synthetic_stairs"] = {"source_scene": os.path.abspath(scene), "mode": "exact_boxes" if exact else "raster",
                                 "riser": spec["riser"], "thickness": spec["thickness"], "clear": list(spec["clear"]),
                                 "elements": report}
@@ -508,10 +537,32 @@ def apply(scene: str, out: str, spec: dict, log=print, exact: bool | None = None
     return meta
 
 
+def draft_spec(scene: str, out: str) -> None:
+    t0 = time.time()
+    grid = geometry.load_grid(scene)
+    gp = os.path.join(scene, "ground.npz")
+    if os.path.exists(gp):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from eval_scene import SlabCells  # noqa: E402  (slab rasteriser lives with the evaluator)
+        sc = SlabCells(np.load(gp)["slabs"], grid.origin, grid.voxel)
+        cells = geometry.slab_floor_cells(grid, np.column_stack([sc.ix, sc.iy]), sc.z)
+    else:
+        cells = geometry.floor_cells(grid)
+    drafts = stairs_draft.draft(cells)
+    text = stairs_draft.to_yaml(drafts, scene)
+    with open(out, "w") as f:
+        f.write(text)
+    print(text)
+    print(f"{len(drafts)} staircase(s), {sum(len(s['flights']) for s in drafts)} flights -> {out} ({time.time() - t0:.1f}s)")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scene", required=True, help="source scene directory")
-    ap.add_argument("--spec", required=True, help="stairs spec yaml")
+    ap.add_argument("--spec", help="stairs spec yaml (required unless --draft)")
+    ap.add_argument("--draft", metavar="OUT.yaml",
+                    help="find the staircases in the scene's floor and write a spec draft to check by hand "
+                         "(pcd2sim.stairs); exits without building")
     ap.add_argument("--out", help="output scene directory (required unless --map)")
     ap.add_argument("--map", metavar="STAIR", help="print height maps (slab tops, or voxel tops when the scene has no "
                                                    "ground.npz) around every element of this stair (name, or * for all) "
@@ -520,6 +571,11 @@ def main(argv=None):
                     help="exact AABB per tread, original boxes re-merged from the surviving voxels "
                          "(default for scenes without ground.npz; refused for flattened scenes)")
     a = ap.parse_args(argv)
+    if a.draft:
+        draft_spec(a.scene, a.draft)
+        return
+    if not a.spec:
+        ap.error("--spec is required (or use --draft)")
     spec = load_spec(a.spec)
     for el in spec["elements"]:
         print(el.describe())

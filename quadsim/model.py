@@ -1,6 +1,8 @@
 """MJCF for the ideal-base quadruped: free body welded to a mocap target + proxy pool."""
 from __future__ import annotations
 
+from quadsim.base import lidar_mount
+
 
 def _f(v) -> str:
     return " ".join(f"{x:.6g}" for x in v)
@@ -9,6 +11,7 @@ def _f(v) -> str:
 def build_mjcf(cfg: dict, gravity, spawn_pos, n_proxies: int) -> str:
     r, li, ph = cfg["robot"], cfg["lidar"], cfg["physics"]
     half = [s / 2 for s in r["body_size"]]
+    lidar_pos, lidar_quat = lidar_mount(li)
     # Shadows mean a second render pass over the whole map mesh (about 2x per frame); off by default.
     shadows = "true" if cfg.get("viewer", {}).get("shadows", False) else "false"
     proxies = "\n".join(
@@ -33,7 +36,7 @@ def build_mjcf(cfg: dict, gravity, spawn_pos, n_proxies: int) -> str:
       <freejoint name="base"/>
       <geom name="base_geom" type="box" size="{_f(half)}" mass="{r['mass']}" contype="1" conaffinity="2"
             friction="0.6 0.005 0.0001" rgba="0.95 0.6 0.15 1"/>
-      <site name="lidar" pos="{_f(li['mount_xyz'])}" size="0.03" rgba="0.1 0.1 0.9 1"/>
+      <site name="lidar" pos="{_f(lidar_pos)}" quat="{_f(lidar_quat)}" size="0.03" rgba="0.1 0.1 0.9 1"/>
     </body>
 {proxies}
   </worldbody>
@@ -48,17 +51,44 @@ def build_mjcf(cfg: dict, gravity, spawn_pos, n_proxies: int) -> str:
 """
 
 
-def _add_hexahedra(spec, name: str, corners, rgba):
-    """One visual-only mesh geom from [K,8,3] corners (corner index = 4*ix + 2*iy + iz)."""
-    import mujoco
+def box_corners(boxes):
+    """[M,6] (cx, cy, cz, hx, hy, hz) -> [M,8,3] corners, corner index = 4*ix + 2*iy + iz."""
     import numpy as np
 
-    # outward-facing triangles of a box with corner index = 4*ix + 2*iy + iz
+    b = np.asarray(boxes, dtype=np.float64)
+    c, h = b[:, None, :3], b[:, None, 3:6]
+    signs = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)], dtype=np.float64)
+    return c + h * signs[None]
+
+
+def hexahedra_arrays(corners):
+    """[K,8,3] corners (index = 4*ix + 2*iy + iz) -> (vertices [K*8,3] float64, outward triangles [K*12,3] int32)."""
+    import numpy as np
+
+    corners = np.asarray(corners, dtype=np.float64)
     tri = np.array([[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1],
                     [2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]], dtype=np.int32)
     faces = (tri[None] + 8 * np.arange(len(corners), dtype=np.int32)[:, None, None]).reshape(-1, 3)
+    return corners.reshape(-1, 3), faces
+
+
+def nearest_boxes(boxes, xy, n: int):
+    """The n boxes whose centres are nearest (in xy) to a point; all of them when there are no more than n."""
+    import numpy as np
+
+    if len(boxes) <= n:
+        return boxes
+    d2 = ((boxes[:, :2] - np.asarray(xy)[:2]) ** 2).sum(axis=1)
+    return boxes[np.argpartition(d2, n)[:n]]
+
+
+def _add_hexahedra(spec, name: str, corners, rgba):
+    """One visual-only mesh geom from [K,8,3] corners (corner index = 4*ix + 2*iy + iz)."""
+    import mujoco
+
+    verts, faces = hexahedra_arrays(corners)
     mesh = spec.add_mesh(name=name)
-    mesh.uservert = np.asarray(corners, dtype=np.float64).ravel().tolist()
+    mesh.uservert = verts.ravel().tolist()
     mesh.userface = faces.ravel().tolist()
     mesh.inertia = mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL
     spec.worldbody.add_geom(name=name, type=mujoco.mjtGeom.mjGEOM_MESH, meshname=name,
@@ -67,11 +97,6 @@ def _add_hexahedra(spec, name: str, corners, rgba):
 
 def add_map_mesh(spec, boxes, slabs=None, max_boxes: int = 400_000):
     """Visual-only map for the MuJoCo viewer: scene boxes and floor slabs as meshes (no collision)."""
-    import numpy as np
-
-    b = np.asarray(boxes[:max_boxes], dtype=np.float64)
-    c, h = b[:, None, :3], b[:, None, 3:6]
-    signs = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)], dtype=np.float64)
-    _add_hexahedra(spec, "map_vis", c + h * signs[None], [0.55, 0.58, 0.62, 1.0])
+    _add_hexahedra(spec, "map_vis", box_corners(boxes[:max_boxes]), [0.55, 0.58, 0.62, 1.0])
     if slabs is not None and len(slabs):
         _add_hexahedra(spec, "ground_vis", slabs, [0.42, 0.47, 0.42, 1.0])

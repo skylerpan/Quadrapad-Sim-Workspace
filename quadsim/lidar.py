@@ -7,6 +7,9 @@ expressed in the sensor frame at their emission time, like the real driver.
 """
 from __future__ import annotations
 
+import queue
+import threading
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -67,7 +70,12 @@ class LidarFrame:
 
 
 class RollingLidar:
-    def __init__(self, cfg: dict, ray_scene, intensity_lookup, voxel: float):
+    """Rolling LiDAR. record_pose() is called every physics step; process() casts the rays emitted since
+    the last call and returns the completed frames. With `threaded=True` the casting runs on a worker thread:
+    process() hands the recorded poses over and returns the frames the worker finished so far (one control
+    tick late), so a 1 kHz physics loop never waits for Embree."""
+
+    def __init__(self, cfg: dict, ray_scene, intensity_lookup, voxel: float, threaded: bool = False):
         self.cfg = cfg
         self.pattern = ScanPattern(cfg)
         self.scene = ray_scene
@@ -81,33 +89,100 @@ class RollingLidar:
         self._t_done = None                             # rays emitted before this time are processed
         self._frame_idx = None
         self._buf: list[tuple] = []
+        self.threaded = threaded
+        self._epoch = 0                                  # bumped by reset(): frames of an old epoch are dropped
+        self._lock = threading.Lock()                    # guards the pose lists between record_pose and the worker
+        self._cast = threading.Lock()                    # held while casting; reset() waits for it
+        self._jobs: queue.Queue = queue.Queue()
+        self._done: queue.Queue = queue.Queue()
+        self._worker = None
+        self.busy_s = 0.0                                # wall time the worker spent casting (for reports)
+        if threaded:
+            self._worker = threading.Thread(target=self._run, daemon=True)
+            self._worker.start()
 
     def reset(self, t: float):
-        self._pose_t.clear(); self._pose_p.clear(); self._pose_R.clear()
-        self._t_done = t
-        self._frame_idx = int(np.floor(t / self.frame_period))
-        self._buf.clear()
+        with self._cast, self._lock:
+            self._pose_t.clear(); self._pose_p.clear(); self._pose_R.clear()
+            self._t_done = t
+            self._frame_idx = int(np.floor(t / self.frame_period))
+            self._buf.clear()
+            self._epoch += 1
+        if self.threaded:                                # frames of the old epoch are dropped when they come back
+            while not self._done.empty():
+                try:
+                    self._done.get_nowait()
+                except queue.Empty:
+                    break
 
     def record_pose(self, t: float, pos: np.ndarray, R: np.ndarray):
         """Sensor pose at sim time t (poses must be recorded in increasing t)."""
-        self._pose_t.append(t)
-        self._pose_p.append(pos.copy())
-        self._pose_R.append(R.copy())
+        with self._lock:
+            self._pose_t.append(t)
+            self._pose_p.append(pos.copy())
+            self._pose_R.append(R.copy())
 
     def process(self) -> list[LidarFrame]:
-        """Cast every ray emitted up to the last recorded pose; return completed frames."""
-        if not self._pose_t:
+        """Cast every ray emitted up to the last recorded pose; return completed frames. Threaded: queue
+        the work and return what the worker has finished."""
+        if not self.threaded:
+            return self._process_poses(*self._take_poses())
+        with self._lock:
+            pending = len(self._pose_t) - 1
+            epoch = self._epoch
+        if pending:
+            self._jobs.put(epoch)
+        frames = []
+        while True:
+            try:
+                e, fr = self._done.get_nowait()
+            except queue.Empty:
+                break
+            if e == epoch:
+                frames.extend(fr)
+        return frames
+
+    def _run(self):
+        import time
+        while True:
+            epoch = self._jobs.get()
+            if epoch is None:
+                return
+            t0 = time.perf_counter()
+            with self._cast:
+                with self._lock:
+                    if epoch != self._epoch:
+                        continue
+                    pt, pp, pR = self._take_poses()
+                fr = self._process_poses(pt, pp, pR)
+            self.busy_s += time.perf_counter() - t0
+            if fr:
+                self._done.put((epoch, fr))
+
+    def _take_poses(self):
+        """Recorded poses as arrays; keeps only the newest one for the rays emitted right after it.
+        Call with self._lock held in threaded mode."""
+        if self.threaded:
+            pt, pp, pR = np.asarray(self._pose_t), np.asarray(self._pose_p), np.asarray(self._pose_R)
+            self._pose_t = self._pose_t[-1:]; self._pose_p = self._pose_p[-1:]; self._pose_R = self._pose_R[-1:]
+            return pt, pp, pR
+        with self._lock:
+            pt, pp, pR = np.asarray(self._pose_t), np.asarray(self._pose_p), np.asarray(self._pose_R)
+            self._pose_t = self._pose_t[-1:]; self._pose_p = self._pose_p[-1:]; self._pose_R = self._pose_R[-1:]
+        return pt, pp, pR
+
+    def _process_poses(self, pt: np.ndarray, pp: np.ndarray, pR: np.ndarray) -> list[LidarFrame]:
+        if len(pt) == 0:
             return []
-        t_end = self._pose_t[-1]
+        t_end = float(pt[-1])
         times, dirs, line = self.pattern.rays(self._t_done, t_end)
         frames: list[LidarFrame] = []
         if len(times):
-            pt = np.asarray(self._pose_t)
             hi = np.clip(np.searchsorted(pt, times, "left"), 0, len(pt) - 1)
             lo = np.maximum(hi - 1, 0)
             idx = np.where(np.abs(pt[lo] - times) <= np.abs(pt[hi] - times), lo, hi)   # nearest pose
-            P = np.asarray(self._pose_p)[idx]
-            R = np.asarray(self._pose_R)[idx]
+            P = pp[idx]
+            R = pR[idx]
             d_world = np.einsum("nij,nj->ni", R, dirs)
             t_hit, normals = self.scene.cast(P, d_world)
             c = self.cfg
@@ -119,8 +194,6 @@ class RollingLidar:
             refl = self.intensity.reflectivity(P[ok] + d_world[ok] * (t_hit[ok] + self.inside)[:, None])
             self._buf.append((times[ok], dirs[ok] * r[:, None], refl, line[ok]))
         self._t_done = t_end
-        # keep only the newest pose (needed for rays emitted right after t_end)
-        self._pose_t = self._pose_t[-1:]; self._pose_p = self._pose_p[-1:]; self._pose_R = self._pose_R[-1:]
         frame_end = (self._frame_idx + 1) * self.frame_period
         while t_end >= frame_end:
             frames.append(self._pop_frame(frame_end))

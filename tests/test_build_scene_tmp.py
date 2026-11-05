@@ -25,7 +25,14 @@ def test_tmp_dir_removed_on_success(tmp_path):
     meta = build(pcd, out, voxel=0.1, close_rounds=1, workers=1)
     assert not os.path.exists(os.path.join(out, ".tmp"))
     assert meta["noise_filter"]["closed_added"] >= 0
-    assert os.path.exists(os.path.join(out, "boxes.npy"))
+    boxes = np.load(os.path.join(out, "boxes.npy"))
+    contact = np.load(os.path.join(out, "contact.npy"))
+    assert meta["format_version"] == 3 and contact.dtype == bool and len(contact) == len(boxes)
+    assert 0 < contact.sum() < len(boxes) and meta["contact"]["boxes"] == int(contact.sum())
+    top = boxes[:, 2] + boxes[:, 5]
+    assert (top[contact] <= 0.1 + 1.2 + 0.1 + 1e-6).all()             # floor top + band + one voxel of rounding
+    assert not contact[top > 2.5].any()                               # the ceiling is LiDAR-only
+    assert np.load(os.path.join(out, "voxels.npz"))["contact"].dtype == bool
 
 
 def test_keep_tmp_and_resume(tmp_path, capsys):

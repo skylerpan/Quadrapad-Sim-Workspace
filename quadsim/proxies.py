@@ -63,6 +63,9 @@ class ProxyPool:
         self.geom = np.array([mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"proxy_{i}") for i in range(n)])
         body = np.array([model.geom_bodyid[g] for g in self.geom])
         self.mocap = np.array([model.body_mocapid[b] for b in body])
+        # the body's bounding-volume node (one geom at the body origin -> one node); MuJoCo's mid-phase tests
+        # it against the other body's BVH, so it has to grow with the geom or multi-geom bodies miss the proxy
+        self.bvh = np.array([model.body_bvhadr[b] for b in body])
         self.assigned = np.full(n, -1, dtype=np.int64)
         self.overflow = 0
         self.park_all()
@@ -96,6 +99,8 @@ class ProxyPool:
             m.geom_size[g] = box[3:]
             m.geom_rbound[g] = float(np.linalg.norm(box[3:]))
             m.geom_aabb[g] = (0.0, 0.0, 0.0, box[3], box[4], box[5])
+            if self.bvh[i] >= 0:
+                m.bvh_aabb[self.bvh[i]] = (0.0, 0.0, 0.0, box[3], box[4], box[5])
             d.mocap_pos[self.mocap[i]] = box[:3]
             self.assigned[i] = bid
         return len(ids)
