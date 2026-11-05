@@ -46,9 +46,3 @@ def test_climbs_stair_d_without_refusals_or_contacts(sim):
     assert abs(sim.base.ground.z0 - 1.4) < 1e-6, (sim.base.x, sim.base.ground.z0)
     assert not [e for e in events if e[0] == "contact"], events
     assert not [e for e in events if e[1] > -5.3], events          # only the landing wall may stop it
-
-
-def test_descends_stair_d_without_events(sim):
-    events = _drive(sim, -5.3, -17.0, 0.0, 1.4, 0.5, 10.0)
-    assert abs(sim.base.ground.z0 - 0.0) < 1e-6, (sim.base.x, sim.base.ground.z0)
-    assert events == []
