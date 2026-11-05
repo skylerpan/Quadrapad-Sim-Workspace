@@ -101,10 +101,10 @@ def test_velocity_lines_follow_cmd_vel_and_stop_once():
         g.close(), fake.close()
 
 
-def test_rl_him_velocity_is_predivided_by_the_controllers_command_scale():
-    # the controller multiplies rl_him's command by (2, 2, 0.25) before the policy; the reference stack feeds it
-    # raw, so quadsim divides first. rl_fcn is scaled by 1 on both sides and goes through unchanged.
-    for behavior, expected in (("rl_him", "vel 0.200 0.100 2.400"), ("rl_fcn", "vel 0.400 0.200 0.600")):
+def test_velocity_lines_are_sent_raw_for_every_behavior():
+    # since controller 94c5531 (2026-11-05) rl_him's command reaches its policy unscaled, like the reference stack
+    # (before that the controller multiplied by (2, 2, 0.25) and quadsim pre-divided); rl_fcn always went raw
+    for behavior, expected in (("rl_him", "vel 0.400 0.200 0.600"), ("rl_fcn", "vel 0.400 0.200 0.600")):
         fake = _fake()
         cfg, g = _backend(**{"robot.behavior": behavior})
         try:
@@ -140,8 +140,8 @@ def test_a_policy_switch_during_a_cmd_vel_stream_reaches_the_controller():
             if fake.behavior == "rl_him":
                 break
         assert fake.behavior == "rl_him"
-        _exchange(g, 2.0, (0.4, 0.0, 0.0), fresh=True)                     # the vel lines keep flowing (rl_him: /2)
-        _wait(lambda: fake.vel == (0.2, 0.0, 0.0))
+        _exchange(g, 2.0, (0.4, 0.0, 0.0), fresh=True)                     # the vel lines keep flowing, raw
+        _wait(lambda: fake.vel == (0.4, 0.0, 0.0))
     finally:
         g.close(), fake.close()
 
