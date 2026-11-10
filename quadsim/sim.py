@@ -13,7 +13,7 @@ from pcd2sim import SCENE_FORMAT
 
 from .base import IdealBase, body_lift, rot_zyx
 from .config import load_scene_meta
-from .g23 import RefSimOptions, build_g23_spec
+from .g23 import JOINTS, RefSimOptions, build_g23_spec
 from .gnss import GnssFix, GnssModel, sky_directions, sky_fraction
 from .backends import make_backend
 from .lidar import LidarFrame, RollingLidar
@@ -454,3 +454,10 @@ class Simulator:
         mujoco.mju_quat2Mat(R, q[3:7])          # from qpos: d.xmat still holds the pre-step pose
         v_body = R.reshape(3, 3).T @ self.d.qvel[0:3]
         return q[0:3].copy(), q[3:7].copy(), v_body, self.d.qvel[3:6].copy()
+
+    def joint_states(self):
+        """(names, q, dq, tau) of the 12 leg joints, or None for the ideal base (no legs)."""
+        if not self.legged:
+            return None
+        jq, jv = self.g23.jq, self.g23.jv
+        return JOINTS, self.d.qpos[jq].copy(), self.d.qvel[jv].copy(), self.d.qfrc_actuator[jv].copy()

@@ -7,7 +7,7 @@ import math
 
 import numpy as np
 from geometry_msgs.msg import TwistWithCovarianceStamped
-from sensor_msgs.msg import NavSatFix, NavSatStatus, PointCloud2, PointField
+from sensor_msgs.msg import JointState, NavSatFix, NavSatStatus, PointCloud2, PointField
 
 # --- livox_ros_driver2/CustomMsg as raw CDR -----------------------------------
 # CustomPoint: uint32 offset_time, float32 x y z, uint8 reflectivity tag line (19 B, 4-aligned -> 20)
@@ -127,4 +127,13 @@ def gnss_twist(fix, frame_id: str, vel_sigma: float) -> TwistWithCovarianceStamp
     cov = [0.0] * 36
     cov[0] = cov[7] = cov[14] = vel_sigma ** 2
     m.twist.covariance = cov
+    return m
+
+
+def joint_state_msg(t_stamp: float, names: list[str], q, dq, tau) -> JointState:
+    """sensor_msgs/JointState for the leg joints: position / velocity / effort in rad, rad/s, N*m."""
+    m = JointState()
+    m.header.stamp.sec, m.header.stamp.nanosec = stamp_parts(t_stamp)
+    m.name = list(names)
+    m.position, m.velocity, m.effort = [float(v) for v in q], [float(v) for v in dq], [float(v) for v in tau]
     return m

@@ -26,7 +26,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 from rosgraph_msgs.msg import Clock
-from sensor_msgs.msg import Imu, NavSatFix, PointCloud2
+from sensor_msgs.msg import Imu, JointState, NavSatFix, PointCloud2
 from std_msgs.msg import Int32, String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
@@ -35,7 +35,8 @@ from quadsim.base import mount_pose
 
 from .config import load_config
 from .controller_proc import ControllerProcess
-from .ros_io import gnss_navsatfix, gnss_twist, lidar_pointcloud2, serialize_custom_msg, stamp_parts, xyzi_pointcloud2
+from .ros_io import (gnss_navsatfix, gnss_twist, joint_state_msg, lidar_pointcloud2, serialize_custom_msg,
+                     stamp_parts, xyzi_pointcloud2)
 from .sim import Simulator
 
 try:
@@ -61,6 +62,9 @@ class SimNode(Node):
         self.pub_clock = self.create_publisher(Clock, tp["clock"], 10)
         self.pub_imu = self.create_publisher(Imu, tp["imu"], sensor_qos)
         self.pub_odom = self.create_publisher(Odometry, tp["gt_odom"], 10)
+        # the leg angles, at the odom rate: robot_state_publisher and the console draw the legs from them
+        self.pub_joints = (self.create_publisher(JointState, tp["joint_states"], 10)
+                           if sim.legged and tp.get("joint_states") else None)
         self.pub_fix = self.pub_fix_vel = None
         if sim.gnss is not None:                    # gnss.datum set: the receiver's fix and ENU velocity
             self.pub_fix = self.create_publisher(NavSatFix, tp["gnss_fix"], sensor_qos)
@@ -222,6 +226,8 @@ class SimNode(Node):
         tw.linear.x, tw.linear.y, tw.linear.z = map(float, v_body)
         tw.angular.x, tw.angular.y, tw.angular.z = map(float, w_body)
         self.pub_odom.publish(od)
+        if self.pub_joints is not None:
+            self.pub_joints.publish(joint_state_msg(t, *self.sim.joint_states()))
         if self.tf is not None:
             ident = TransformStamped()
             ident.header.stamp = od.header.stamp

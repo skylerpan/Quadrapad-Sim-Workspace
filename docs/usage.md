@@ -500,6 +500,7 @@ MuJoCo viewer 把整張地圖當一個 mesh 畫（dp_1008 約 310 萬個三角�
 | 發布 | `/robot01/gnss/fix` | `gnss_fix` | sensor_msgs/NavSatFix（`gnss` 區塊有 datum 才發；RTK fixed 是 `STATUS_GBAS_FIX`，沒 fix 是 `STATUS_NO_FIX` + NaN；協方差對角線是接收器的 sigma²） | 10 Hz |
 | 發布 | `/robot01/gnss/fix_velocity` | `gnss_velocity` | geometry_msgs/TwistWithCovarianceStamped（ENU 速度，和 ublox 驅動的 `fix_velocity` 一樣） | 10 Hz |
 | 發布 | `/sim/ground_truth/odom` | `gt_odom` | nav_msgs/Odometry，map frame，**只用於評估** | 50 Hz |
+| 發布 | `/robot01/joint_states` | `joint_states` | sensor_msgs/JointState，12 個腿部關節（rad），只有 g23；robot_state_publisher 和 console（經 ui_bridge 轉成 motor_states）用它畫腿 | 50 Hz（`odom_hz`） |
 | 發布 | `/sim/events` | `events` | std_msgs/String（JSON），transient_local | 事件時 |
 | 發布 | `/sim/map_cloud` | `map_cloud` | PointCloud2，latched 的體素化地圖 | 一次 |
 | 訂閱 | `/cmd_vel` | `cmd_vel` | geometry_msgs/Twist（vx, vy, wz）；超過 `robot.cmd_timeout`（0.5 s）沒收到就歸零 | — |

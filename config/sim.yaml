@@ -142,6 +142,7 @@ ros:
     gnss_fix: /robot01/gnss/fix                 # sensor_msgs/NavSatFix (gnss section), like the ublox driver's `fix`
     gnss_velocity: /robot01/gnss/fix_velocity   # geometry_msgs/TwistWithCovarianceStamped, ENU, like its `fix_velocity`
     gt_odom: /sim/ground_truth/odom
+    joint_states: /robot01/joint_states         # sensor_msgs/JointState, the 12 leg joints at odom_hz (g23 only; "" = off)
     events: /sim/events
     map_cloud: /sim/map_cloud
     cmd_vel: /robot01/cmd_vel
