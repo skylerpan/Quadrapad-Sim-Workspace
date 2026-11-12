@@ -29,11 +29,11 @@ def build_mjcf(cfg: dict, gravity, spawn_pos, n_proxies: int) -> str:
   <option timestep="{ph['timestep']}" gravity="{_f(gravity)}" integrator="implicitfast"/>
   <visual>
     <global offwidth="1280" offheight="720"/>
-    <headlight ambient="0.3 0.3 0.3" diffuse="0.45 0.45 0.45"/>
+    <headlight ambient="0.25 0.25 0.25" diffuse="0.35 0.35 0.35"/>
   </visual>
   <statistic center="{_f(spawn_pos)}" extent="10"/>
   <worldbody>
-    <light pos="0 0 50" dir="0 0 -1" directional="true" castshadow="{shadows}"/>
+    <light pos="0 0 50" dir="0 0 -1" directional="true" diffuse="0.4 0.4 0.4" castshadow="{shadows}"/>
     <body name="target" mocap="true" pos="{_f(spawn_pos)}">
       <geom type="box" size="{_f(half)}" contype="0" conaffinity="0" group="2" rgba="0.2 0.9 0.2 0.15"/>
     </body>
@@ -94,9 +94,15 @@ def nearest_boxes(boxes, xy, n: int):
     return boxes[nearest_box_indices(boxes, xy, n)]
 
 
+MAP_MATERIAL = "map_matte"         # no specular: a map seen from above keeps its colours instead of glaring white
+
+
 def _add_hexahedra(spec, name: str, corners, rgba):
-    """One visual-only mesh geom from [K,8,3] corners (corner index = 4*ix + 2*iy + iz)."""
+    """One visual-only mesh geom from [K,8,3] corners (corner index = 4*ix + 2*iy + iz), matte."""
     import mujoco
+
+    if spec.material(MAP_MATERIAL) is None:
+        spec.add_material(name=MAP_MATERIAL, specular=0.0, shininess=0.0, reflectance=0.0)
 
     verts, faces = hexahedra_arrays(corners)
     mesh = spec.add_mesh(name=name)
@@ -104,7 +110,7 @@ def _add_hexahedra(spec, name: str, corners, rgba):
     mesh.userface = faces.ravel().tolist()
     mesh.inertia = mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL
     spec.worldbody.add_geom(name=name, type=mujoco.mjtGeom.mjGEOM_MESH, meshname=name,
-                            contype=0, conaffinity=0, group=0, rgba=rgba)
+                            contype=0, conaffinity=0, group=0, rgba=rgba, material=MAP_MATERIAL)
 
 
 HEIGHT_BANDS = 16                 # the MuJoCo map is split into this many height bands per colour
