@@ -17,7 +17,8 @@ from .g23 import JOINTS, RefSimOptions, build_g23_spec
 from .gnss import GnssFix, GnssModel, resolve_datum, sky_directions, sky_fraction
 from .backends import make_backend
 from .lidar import LidarFrame, RollingLidar
-from .model import add_map_mesh, build_mjcf, nearest_boxes
+from .map_colors import parse_map_color
+from .model import add_map_mesh, build_mjcf, nearest_box_indices
 from .proxies import BoxIndex, ProxyPool
 from .raycast import RayScene, VoxelLookup
 
@@ -82,6 +83,12 @@ class Simulator:
         ground = os.path.join(scene_dir, "ground.npz")      # flattened floor slabs (absent in --no-flatten scenes)
         slabs = np.load(ground)["slabs"] if os.path.exists(ground) else None
         self.boxes, self.slabs = boxes, slabs            # kept for the viewers (visual map)
+        colors_path = os.path.join(scene_dir, "colors.npy")   # scene colour per box (A = 0: none), OSM scenes
+        self.colors = np.load(colors_path) if os.path.exists(colors_path) else None
+        if self.colors is not None and len(self.colors) != len(boxes):
+            raise ValueError(f"{colors_path} has {len(self.colors)} rows for {len(boxes)} boxes: rebuild the scene")
+        self.map_color = parse_map_color(cfg.get("viewer", {}).get("map_color", "osm"))
+        self.map_paint = None                            # the MuJoCo viewer's map geoms (visual_map only)
         self.rays = RayScene(boxes, slabs)
         self.voxels = VoxelLookup(os.path.join(scene_dir, "voxels.npz"))
         self.index = BoxIndex(boxes)
@@ -117,8 +124,12 @@ class Simulator:
         if visual_map:                      # only for the viewer: headless runs keep the small model
             max_vis = int(cfg.get("viewer", {}).get("max_map_boxes", 400_000))
             # draw the boxes nearest the spawn (a 0.03 m map has millions)
-            add_map_mesh(spec, nearest_boxes(boxes, pos, max_vis), slabs, max_boxes=max_vis)
+            near = nearest_box_indices(boxes, pos, max_vis)
+            self.map_paint = add_map_mesh(spec, boxes[near], slabs,
+                                          None if self.colors is None else self.colors[near], max_boxes=max_vis)
         self.m = spec.compile()
+        if self.map_paint is not None:
+            self.map_paint.apply(self.m, self.map_color)
         self.d = mujoco.MjData(self.m)
         self.proxies = ProxyPool(self.m, self.d, self.contact_index, r["collision_pool"])
         self.lidar_site = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "lidar")
