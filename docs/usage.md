@@ -298,7 +298,7 @@ scripts/run_sim.sh --scene scenes/osm_tucheng_dp gnss.sky.mode=map spawn=gate   
 - **下載一次**：Overpass 的回應存在 `Maps/<out 名>/overpass.json`（`--osm` 可指定），檔案在就不再下載；要更新就刪掉。建置是純本機運算，重跑結果逐位元組相同。
 - **建物 → box**：輪廓投影到目標 map 座標（WGS84 → ENU → map，`quadsim.gnss`），在對齊 map 軸的 0.5 m 格網（`--cell`）上取格心在輪廓內的格子，每格是地面到屋頂的柱子，`pcd2sim.voxel.merge_boxes` 合併。不經點雲 / 體素化：2 × 2 km 用 0.1 m 體素放不進記憶體。地面是 20 m 平板（`--tile`），全部進 contact set；中庭（multipolygon 的 inner）不挖。
 - **高度**：`height` tag → `building:levels` × 3 m（`--level-height`）→ `--default-height`（6 m）。`meta.json` 的 `osm.height_source` 記各用了幾棟。
-- **datum 跟著場景**：`meta.json` 的 `geo` 就是這個場景的 datum，`quadsim.gnss.resolve_datum` 優先用它，沒有 `geo` 的舊場景（dp）才用 `config/sim.yaml` 的 `gnss.datum`。`scripts/gnss_map_odom.py` / `gnss_ekf_check.py` 用 `--scene`、`launch/gnss_ekf.launch.py` 用 `scene:=` 讀同一個場景。
+- **datum 跟著場景**：`meta.json` 的 `geo` 就是這個場景的 datum，`quadsim.gnss.resolve_datum` 優先用它，沒有 `geo` 的舊場景（dp）才用 `config/sim.yaml` 的 `gnss.datum`。`scripts/gnss_ekf_check.py` 和 `scripts/export_datum.py` 用 `--scene` 讀同一個場景；導航堆疊那邊的 datum 是定位地圖旁的 `<map>.geo.yaml`（3.4），用 `export_datum.py` 從場景匯出，兩邊才會一致。
 - **具名 spawn**：`config/sim.yaml` 的 `spawns` 存 `[x, y, yaw, z_floor]`，`spawn=<名字>` 選用；`gate` = dp 大門口 (34.5, 41.0)，在參考點 A / B 之間、`--clear` 清過的範圍裡，面朝外（yaw π/2），地面 −0.76 m。預設的 `spawn`（dp 1F (0, 0)）不變。名字打錯會列出有哪些。
 - **spawn**：獨立場景寫的是離中心最近、離建物 1 m 以上的格點；`config/sim.yaml` 的 `spawn` 是 dp 的，跑獨立場景要加 `spawn=null`。疊合場景沿用 base 的 spawn。
 - **疊合（`--base`）**：base 的 box、contact、`voxels.npz` 原封不動排在最前面，OSM 的建物在 base 每個 box 的 xy 範圍外擴 `--margin`（2 m）內全部挖掉；地面高 = base spawn 的地板高（dp −0.4，`--ground-z` 覆寫）。base 沒有 `geo` 時用 config 的 `gnss.datum`。
@@ -453,27 +453,27 @@ sim t=10.0s pose=[...]                          # 每 10 sim 秒一行
 
 ### 3.4 GNSS 融合測試（robot_localization）
 
-用 ROS 2 的 robot_localization 把 sim 的 GNSS（第 5 章 `/robot01/gnss/fix`）和導航堆疊的 odometry 融合成一個 map 座標的估計，和真值、導航自己的 `tracked_pose` 比。robot_localization 裝在 quadsim-g23 映像裡（`docker/Dockerfile.g23`），在 quadsim 容器跑，不動 robot01；它**不發 TF**（`publish_tf: false`，map → odom 還是 transform_fusion 的），只是比對。
+GNSS 融合在導航堆疊那邊：獨立 repo `SyncAI-Robot-Global-Localization` 的套件 `syncai_gnss_localization`，掛進 SyncAI-Device-Workspace 的 `src/`（`docker-compose.robots.yml` 的 `GNSS_LOC_DIR`），由獨立的 `location_3d_gnss.launch.py` 啟動（原本的 `location_3d.launch.py` 不變）。它用 robot_localization 的標準組合：
+
+- `navsat_transform_node`：`/robot01/gnss/fix` → `/robot01/odometry/gps`（fix 換成 map 座標的 base 位置，天線偏移經 TF `base_link → gnss_link` 扣掉）。
+- `ekf_node`（`ekf_global`，`world_frame: map`、`two_d_mode`、不發 TF）：融合 `/robot01/odom`（差分）、LiDAR 定位的位姿（`/robot01/gnss_fusion/lidar_pose`，只有配準被接受時才有）和 `/robot01/odometry/gps`，輸出 `/robot01/odometry/filtered`。
+- `localization_bridge`：把 EKF 對 LiDAR 位姿的平面修正量套到 `map_to_odom` 上，發成 `map_to_odom_fused`。
+- `gnss_seed`：冷啟動或 LiDAR 定位丟失且和 GNSS 差太多時，發 `/robot01/initialpose`。
+
+預設是**比對模式**：map → odom 和 `tracked_pose` 還是 LiDAR 定位的，多出來的只是 topic。加 `drive_tf:=true` 後 transform_fusion 改讀 `map_to_odom_fused`，TF 和 `tracked_pose` 才跟著 EKF 走。sim 這邊不再自己跑 EKF（原本的 `launch/gnss_ekf.launch.py`、`config/gnss_ekf.yaml`、`scripts/gnss_map_odom.py` 已移除），只負責發 GNSS 和打分數。
 
 ```bash
 scripts/run_sim.sh web.hz=10 web.lidar_hz=2 web.lidar_points=2000 gnss.sky.mode=always   # 室內地圖要強制有天空
-# robot01 裡重開 nav-sim（docker exec -it robot01 byobu → scripts/tmuxp/start.sh sim），tracked_pose 偏掉就發 /robot01/initialpose
-QUADSIM_G23=1 docker/run.sh "ros2 launch launch/gnss_ekf.launch.py"      # scripts/gnss_map_odom.py + ekf_map（config/gnss_ekf.yaml）
-QUADSIM_G23=1 docker/run.sh "python3 scripts/gnss_ekf_check.py"          # 開車 27 s：直走、轉 90°、直走、停，每秒印誤差，結果進 results/gnss_ekf/
+python3 scripts/export_datum.py -o <定位地圖>.geo.yaml       # 場景的 datum 匯出成導航堆疊的 sidecar（dp 已有一份）
+# nav3d 容器裡：ros2 launch syncai_launch_ws location_3d_gnss.launch.py sim:=true [drive_tf:=true]
+QUADSIM_G23=1 docker/run.sh "python3 scripts/gnss_ekf_check.py --expect datum_err=0.05"   # 開車 27 s，每秒印誤差，結果進 results/gnss_ekf/
 ```
 
-**fix 怎麼進 map 座標**：`scripts/gnss_map_odom.py` 用場景的 datum（`meta.json` 的 `geo`，沒有就用 sim.yaml 的 `gnss.datum`；地圖原點的經緯度和地圖 x 軸方位，見 2.6）把每筆 NavSatFix 經 `quadsim.gnss` 轉成 map 座標的 `nav_msgs/Odometry`（`/odometry/gps`），天線偏移用 odom 的 yaw 扣掉，協方差帶 fix 自己的 sigma。datum 是地圖的屬性，只寫在一個地方；上實機時同一支節點改讀地圖自己的 datum。**沒有用** robot_localization 自帶的 `navsat_transform_node`：它的 datum 錨在機器人啟動時的位姿（手動 `datum` 的意思是「機器人此刻在這個經緯度、朝這個方向」，自動模式則拿第一筆 fix），第一筆 fix 的雜訊會變成永久偏移；而且 humble 的套件在 `use_local_cartesian` 模式會丟 `MGRS string too short` 直接 abort。`ekf_map` 吃 `/robot01/odom` 的 yaw、vx、vy、vyaw 和 `/odometry/gps` 的 x、y，`two_d_mode`。
+**datum**：地圖的屬性，寫在定位地圖旁的 `<map>.geo.yaml`（`datum: {lat, lon, alt, yaw_deg}`，和 `config/sim.yaml` 的 `gnss.datum`、場景 `meta.json` 的 `geo` 同一組鍵）。`navsat_transform_node` 設 `wait_for_datum: true` 加 `datum: [lat, lon, yaw]`，map 原點就固定在 datum 的經緯度、map +x 軸朝正東逆時針 `yaw`，和機器人當下在哪無關；UTM 的子午線收斂角節點自己會補（dp 這裡 −0.67°，啟動 log 印 `meridian convergence of -0.0116 ... heading factor is now 0.5294`）。`use_local_cartesian` 要維持 `false`：humble 版的 local cartesian 模式是壞的（`MGRS string too short`，而且 fix 還是用 UTM 換算）。UTM 和 sim 用的 ENU 切平面差約 1 cm / 100 m。
 
-2026-11-05 的結果（scenes/dp 原點附近，`gnss.rtk: false` 單機：白雜訊 1.5 m + 時間常數 100 s 的慢漂 1 m；控制器 94c5531 rl_fcn，指令 0.3 m/s 實走約 0.12 m/s，每趟 1.5 m；對真值的誤差，27 s 270 筆）：
+**`gnss_ekf_check.py` 的欄位**（對真值）：`ekf_*` = `/robot01/odometry/filtered`、`nav_*` = `/robot01/tracked_pose`、`fix_dxy` = 原始 fix 經場景 datum 換到 map。不需要真值的兩個：`ekf_nav_dxy` = EKF 和 `tracked_pose` 的差；`datum_err` = `/robot01/odometry/gps` 和本 repo 對**同一筆 fix** 的精確 WGS84 換算的差，只反映 datum / 投影有沒有對上，不含接收器雜訊（應 < 5 cm）。`--expect key=上限` 超過就以非零結束。
 
-| | navsat_transform 第一趟 | navsat_transform 第二趟（8 分鐘後） | 固定 datum（gnss_map_odom） |
-|---|---|---|---|
-| EKF `/odometry/filtered` xy RMS / 最大 | 0.86 / 1.48 m | 3.41 / 4.06 m | **0.79 / 1.38 m** |
-| 原始 fix 換到 map 座標 xy RMS / 最大 | 2.64 / 8.83 m | 2.47 / 5.72 m | 2.25 / 4.87 m |
-| 導航 `tracked_pose` xy RMS（參考） | 0.10 m | 0.08 m | 0.06 m |
-| EKF yaw RMS（= odom yaw） | 0.9° | 0.9° | 0.9° |
-
-navsat_transform 兩趟差這麼多就是 datum 錨在第一筆 fix：第一趟 datum 誤差和慢漂剛好抵消，第二趟同向相加。固定 datum 後 EKF 剩下的誤差就是慢漂本身（σ 1 m），白雜訊被濾掉；heading 完全來自 odom，GNSS 不觀測 yaw。要再往下：RTK（`gnss.rtk: true`，fix 1 cm，慢漂 1 cm）、融合 `fix_velocity`。
+**2026-11-05 的舊結果和當時的誤判**。第一版在 sim 這邊直接跑 `navsat_transform_node` + EKF（EKF 只吃 odom 和 GNSS，沒有 LiDAR 位姿），兩趟 EKF xy RMS 0.86 m 和 3.41 m，於是改成自寫的固定 datum 轉換（0.79 m）。當時的結論「手動 `datum` 的意思是機器人此刻在這個經緯度」是錯的：那次設定是 `wait_for_datum: false`，原點才會錨在第一筆 fix、把它的雜訊變成永久偏移。`wait_for_datum: true` 的 datum 就是 map 原點（`syncai_gnss_localization` 的 `test/navsat_datum_launchtest.py` 用真的節點驗過：機器人放在別處，原點不動；100 m 外誤差 < 3 cm）。那三趟的 0.8 m 等級誤差是單機 GNSS 的慢漂（σ 1 m）本身，EKF 沒有 LiDAR 位姿時就只能跟著它。
 
 ## 4. 畫面（GUI）
 
@@ -542,7 +542,7 @@ MuJoCo viewer 把整張地圖當一個 mesh 畫（dp_1008 約 310 萬個三角�
 
 Frame（`ros.frames`）：`map`、`odom`、`base_link`、`livox_frame`、`gnss_link`。靜態 `base_link → livox_frame`（有 GNSS 時加 `→ gnss_link`）一律發布；`publish_gt_tf` 預設 `false`：`map → odom` 和 `odom → base_link` 由 Point-LIO / 定位 stack 發。用 `ros.publish_gt_tf=true` 打開後，sim 才會再發 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。
 
-**GNSS（`gnss` 區塊，`quadsim/gnss.py`，2026-11-05）。** 模擬一顆 u-blox ZED-F9P 或 ZED-F9R（`gnss.model`），訊息和上游 ublox ROS 2 驅動的 `fix` / `fix_velocity` 相同，所以為實機寫的消費端不用分支。`datum`（地圖原點的 WGS84 經緯度、橢球高、地圖 x 軸相對正東的方位角）把 map 座標轉成 ENU 再經 ECEF 轉成經緯度；`datum: null` 就沒有 GNSS。dp 地圖的 datum 由兩個參考點解出（map (29.10, 39.50) ↔ 24.961306 / 121.422022、map (39.90, 40.30) ↔ 24.961353 / 121.422095）：原點 24.960860 / 121.421968、方位角 31.0°；兩點的距離差 17 %，原點帶約 1.5 m 誤差，橢球高 130 m 是佔位值。天線是 base 上的 `gnss` site（`gnss.mount_xyz`，目前是佔位的機身後上方，URDF 還沒有 gnss link），靜態 TF `base_link → robot01/gnss_link`。**fix 品質由地圖決定**：每次取樣從天線往天頂錐內射 9 條射線（`sky`：半角 60°、50 m 內打到東西就不算天空），天空比例 ≥ `good` 是 `rtk_fixed`（`rtk: true`）或 `single`、≥ `degraded` 是 `rtk_float` / `single`、≥ `poor` 是 `single`、再低就沒 fix；dp 室內原點 9 條全打到 9 m 內，所以沒 fix，走到門口才會有。`sky.mode: always` 強制有天空（室內地圖測協定用）、`none` 強制沒有。雜訊按 fix 類型（`noise`）：白雜訊加一階 Gauss-Markov 偏差（多路徑那種慢漂）；F9R 在天空消失後靠 IMU 航位推算撐 `holdover.secs`（`dead_reckoning`，位置隨機漫步、sigma 漸增），F9P 立刻沒 fix。導航堆疊目前沒有任何東西吃 GNSS：要接的話，robot01.ini 的 `[map]` 要有同一組 datum、URDF 要有 gnss link、global_localization 可以拿 fix 當 seed。
+**GNSS（`gnss` 區塊，`quadsim/gnss.py`，2026-11-05）。** 模擬一顆 u-blox ZED-F9P 或 ZED-F9R（`gnss.model`），訊息和上游 ublox ROS 2 驅動的 `fix` / `fix_velocity` 相同，所以為實機寫的消費端不用分支。`datum`（地圖原點的 WGS84 經緯度、橢球高、地圖 x 軸相對正東的方位角）把 map 座標轉成 ENU 再經 ECEF 轉成經緯度；`datum: null` 就沒有 GNSS。dp 地圖的 datum 由兩個參考點解出（map (29.10, 39.50) ↔ 24.961306 / 121.422022、map (39.90, 40.30) ↔ 24.961353 / 121.422095）：原點 24.960860 / 121.421968、方位角 31.0°；兩點的距離差 17 %，原點帶約 1.5 m 誤差，橢球高 130 m 是佔位值。天線是 base 上的 `gnss` site（`gnss.mount_xyz`，目前是佔位的機身後上方，URDF 還沒有 gnss link），靜態 TF `base_link → robot01/gnss_link`。**fix 品質由地圖決定**：每次取樣從天線往天頂錐內射 9 條射線（`sky`：半角 60°、50 m 內打到東西就不算天空），天空比例 ≥ `good` 是 `rtk_fixed`（`rtk: true`）或 `single`、≥ `degraded` 是 `rtk_float` / `single`、≥ `poor` 是 `single`、再低就沒 fix；dp 室內原點 9 條全打到 9 m 內，所以沒 fix，走到門口才會有。`sky.mode: always` 強制有天空（室內地圖測協定用）、`none` 強制沒有。雜訊按 fix 類型（`noise`）：白雜訊加一階 Gauss-Markov 偏差（多路徑那種慢漂）；F9R 在天空消失後靠 IMU 航位推算撐 `holdover.secs`（`dead_reckoning`，位置隨機漫步、sigma 漸增），F9P 立刻沒 fix。導航堆疊用 `syncai_gnss_localization` 吃 GNSS（3.4）：datum 在定位地圖旁的 `<map>.geo.yaml`，要和這裡同一組；實機的 URDF 還沒有 gnss link（sim 自己發 `base_link → gnss_link`）。
 
 `/sim/events` 的 `type`：
 
