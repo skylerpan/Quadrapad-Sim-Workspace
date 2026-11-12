@@ -46,6 +46,19 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 The `viewer:` section of the config sets `shadows` (the map casting shadows on itself costs a second pass over the mesh) and `sync_hz` (the maximum wall-clock rate at which the sim pushes its state to the window; each push takes the render lock). The sim logs `viewer: gl=... map mesh ... faces` at start-up so the path in use is visible. In the MuJoCo viewer, press `3` to show the active collision proxy boxes (red).
 The container uses `--net=host` and the same DDS settings as WebRvizLite: CycloneDDS (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`), `ROS_DOMAIN_ID=1`, and `conf/cyclonedds.xml` (unicast on loopback, multicast off), so the WebRvizLite viewer connects without extra setup. A navigation stack on the host or in another container connects directly as long as it uses the same RMW and domain (override with `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<file under conf/>` when running `docker/run.sh`). **Every other node must set `use_sim_time:=true`**.
 
+## Standalone bundle (no Docker, PoC)
+`pixi run bundle` packs everything a run needs into one self-extracting file, `dist/quadsim-<yyyymmdd>-<sha>-linux-<arch>.run`. It contains ROS 2 Humble from [RoboStack](https://robostack.github.io/) (pixi-pack of `pixi.toml`'s default env), MuJoCo, open3d, the livox CustomMsg, the app with `scenes/dp`, and the G23 controller (SyncAI-Device-MotorControl `robotdog_control` + its models and ONNX Runtime). It needs Linux with glibc >= 2.35 (Ubuntu 22.04+) on the same arch, and nothing else is installed.
+```bash
+# build (this machine's arch; Docker is used here only to build the controller with docker/build_g23.sh)
+pixi run bundle                                     # also: pixi run test, pixi run sim [args] from the checkout
+# run anywhere: the first start unpacks into ${QUADSIM_HOME:-~/.local/share/quadsim}/<ver> (--reinstall redoes it)
+./quadsim-<ver>-linux-aarch64.run --scene scenes/dp ros.publish_gt_tf=false     # args as scripts/run_sim.sh
+./quadsim-<ver>-linux-aarch64.run shell ros2 topic hz /livox/lidar              # ros2 CLI in the same ROS/DDS env
+```
+**DDS is adjustable**: the first match wins, and the launcher prints which one it used. `--dds-config <xml>` (`none` = Cyclone defaults, multicast) > an already-set `CYCLONEDDS_URI` > `CYCLONEDDS_CONFIG=<file under conf/>` > `conf/cyclonedds.xml`. `ROS_DOMAIN_ID` defaults to 1. If the XML's `<Domain Id>` differs from `ROS_DOMAIN_ID`, the launcher warns, because Cyclone would silently ignore that block (`quadsim/dds_config.py`).
+
+**Mac (Apple silicon)**: Docker Desktop runs the same linux-aarch64 `.run` with `dist/compose/compose.yaml`. It is plain `debian:bookworm-slim`, so there is no image to build. Copy `dist/` to the Mac, then run `cd compose && docker compose up` and open http://localhost:8755. DDS stays inside the container (bridge network), and `docker compose exec quadsim /opt/quadsim.run shell` gives a ros2 shell. Put DDS XML files in `compose/dds/` and select one in `compose/.env` (`CYCLONEDDS_URI=file:///dds/<file>.xml`).
+
 ## ROS 2 interface
 | Direction | Topic | Type | Rate |
 |---|---|---|---|
@@ -148,5 +161,6 @@ Body roll / pitch standard deviation while walking, before → after ground flat
 | `config/nav_waypoints_*.yaml` | waypoint sets for the navigation goal-loop test (`dp_1008*`: 1F of dp_1008; `dp_2f`: 2F of `scenes/dp`); one-off probe sets live in `config/archive/` |
 | `scripts/` | `run_sim.sh`, `bench.py`, `nav_goal_loop.sh` / `nav_goal_loop.py` (navigation goal-loop test), `make_waypoints_from_poses.py`, `fix_pcd_plane.py` (synthetic ground layer), `eval_scene.py` (scene quality), `make_stairs.py` (replace scanned stairs with clean 16 cm steps), `bt_to_pcd.py` / `deploy_octomap_surface.py` (hand-edited OctoMap -> surface PCD for the planner) |
 | `docker/` | Dockerfile, `run.sh`, minimal `livox_ros_driver2` message package |
+| `pixi.toml`, `packaging/` | Docker-free env (RoboStack) and the standalone bundle: `quadsim` launcher, `build_bundle.sh`, `run_header.sh`, `compose/` for the Mac |
 | `docs/` | `usage.md` (usage guide by task), `pcd-to-sim-architecture.md` (design); `archive/`: dated test records and the dp_1012 build parameter sweep |
 | `tests/` | unit tests (PCD, OctoMap parsing and octree builds, voxels and box merging, ground flattening, proxies, sensor timing, collision check, CustomMsg/PointCloud2 serialization, synthetic stairs) |

@@ -45,6 +45,27 @@ DDS 條件：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、domain 1�
 
 要在同一台機器上另外起一個不互相干擾的 sim（例如跑測試時），給不同的 domain：`ROS_DOMAIN_ID=77 docker/run.sh ...`。
 
+### 1.1 免 Docker：pixi 環境與單檔 `.run`（PoC）
+
+`pixi.toml` 用 RoboStack（prefix.dev 上的 conda-forge 套件）提供 ROS 2 Humble，跟容器是兩條並行的路，docker 流程完全不變。pixi 安裝在使用者目錄，裝法：`curl -fsSL https://pixi.sh/install.sh | sh`，打包還需要 `pixi global install -c https://prefix.dev/conda-forge pixi-pack`。
+
+| 指令 | 做什麼 |
+|---|---|
+| `pixi run test` | 單元測試，結果跟容器內相同（會先 build livox CustomMsg 到 `build/livox/`） |
+| `pixi run sim [參數]` | 從 checkout 直接跑 sim，參數和 `scripts/run_sim.sh` 一樣；控制器預設用 `../SyncAI-Device-MotorControl` |
+| `pixi run bundle` | 產出 `dist/quadsim-<版本>-linux-<arch>.run`，加上給 Mac 用的 `dist/compose/` |
+
+`.run` 第一次執行會在 `${QUADSIM_HOME:-~/.local/share/quadsim}/<版本>` 解壓。安裝程序用 flock 鎖住，`.complete` 最後才寫，所以裝到一半中斷的話，下次會整個重做；`--reinstall` 可強制重裝。
+
+DDS 依序取第一個符合的：`--dds-config <xml>`／`none` > `CYCLONEDDS_URI` > `CYCLONEDDS_CONFIG`（`app/conf/` 底下的檔名）> `conf/cyclonedds.xml`。`ROS_DOMAIN_ID` 預設 1，跟 XML 的 Domain Id 不一致時會警告。`./quadsim-*.run shell <cmd>` 會在同一套 ROS/DDS 環境裡執行指令。
+
+在同一台機器上測試、又不想干擾正在跑的 sim 時：`ROS_DOMAIN_ID=42`，加上一份 Domain Id 也是 42 的 XML（`--dds-config`），再改掉 `web.port` 和 `robot.controller.motorcontrol.*` 的四個 UDP 埠。
+
+限制：
+- 只驗證過 linux-aarch64（Jetson、bare `ubuntu:22.04`、compose 的 `debian:bookworm-slim`），linux-64 和 Mac 實機還沒驗證。
+- bundle 約 660 MB，主要是 conda-forge 版 open3d 帶進來的 qt6、vtk 和 llvm。PyPI wheel 的 RUNPATH 寫死 `/usr/lib/llvm-7/lib`，還需要系統的 libgomp、libGL、libX11，所以不能用。
+- 不包含 g2_deploy_rs。
+
 ## 2. 建場景（PCD / OctoMap → scenes/）
 
 把 `Maps/<name>.pcd`（或 OctoMap `.bt` / `.ot`，見 §2.3）轉成模擬用的場景目錄 `scenes/<name>/`。`Maps/*.pcd` 和 `scenes/` 都在 `.gitignore` 裡，要自己放。

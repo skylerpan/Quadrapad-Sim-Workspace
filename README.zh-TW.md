@@ -46,6 +46,19 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 設定檔的 `viewer:` 區塊可以設 `shadows`（地圖對自己投影要多畫一遍整個 mesh）和 `sync_hz`（sim 把狀態推給視窗的最高 wall-clock 頻率；每次推送都會取算繪鎖）。sim 啟動時會記錄 `viewer: gl=... map mesh ... faces`，一眼就能看出用的是哪條路徑。MuJoCo viewer 裡，按 `3` 可以顯示目前生效的碰撞代理 box（紅色）。
 容器使用 `--net=host`，DDS 設定與 WebRvizLite 相同：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、`ROS_DOMAIN_ID=1`、`conf/cyclonedds.xml`（loopback 單播、關閉 multicast），所以 WebRvizLite 檢視器不需額外設定即可連上。主機或其他容器裡的導航堆疊，只要使用相同的 RMW 與 domain 就能直接連上（執行 `docker/run.sh` 時可用 `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<conf/ 下的檔名>` 覆寫）。**其他所有節點都要設 `use_sim_time:=true`**。
 
+## 免 Docker 單檔執行（PoC）
+`pixi run bundle` 會把執行需要的東西全部打包成一個自解壓檔 `dist/quadsim-<yyyymmdd>-<sha>-linux-<arch>.run`，內容包括：[RoboStack](https://robostack.github.io/) 的 ROS 2 Humble（用 pixi-pack 打包 `pixi.toml` 的 default 環境）、MuJoCo、open3d、livox CustomMsg、程式本體加上 `scenes/dp`，以及 G23 控制器（SyncAI-Device-MotorControl 的 `robotdog_control` 和它的模型、ONNX Runtime）。目標機器只要是同架構、glibc 2.35 以上的 Linux（Ubuntu 22.04 以上），不用另外安裝任何東西。
+```bash
+# 打包（打的是本機的架構；docker 只用在 docker/build_g23.sh 編控制器）
+pixi run bundle                                     # 另有 pixi run test、pixi run sim [參數]（直接從 checkout 跑）
+# 在任何機器上執行：第一次啟動會解壓到 ${QUADSIM_HOME:-~/.local/share/quadsim}/<版本>（--reinstall 會重新解壓）
+./quadsim-<ver>-linux-aarch64.run --scene scenes/dp ros.publish_gt_tf=false     # 參數和 scripts/run_sim.sh 一樣
+./quadsim-<ver>-linux-aarch64.run shell ros2 topic hz /livox/lidar              # 在同一個 ROS/DDS 環境裡用 ros2 CLI
+```
+**DDS 可以調整**，先符合的優先，launcher 啟動時會印出最後用的是哪一份：`--dds-config <xml>`（給 `none` 就用 Cyclone 預設值，也就是 multicast）> 外部已經設好的 `CYCLONEDDS_URI` > `CYCLONEDDS_CONFIG=<conf/ 底下的檔名>` > `conf/cyclonedds.xml`。`ROS_DOMAIN_ID` 預設是 1。如果 XML 裡的 `<Domain Id>` 跟 `ROS_DOMAIN_ID` 不一樣，launcher 會發出警告，因為 Cyclone 會不聲不響地忽略那段設定（`quadsim/dds_config.py`）。
+
+**Mac（Apple silicon）**：用 Docker Desktop 搭配 `dist/compose/compose.yaml` 跑同一個 linux-aarch64 `.run`。它直接用 `debian:bookworm-slim`，不需要 build image。把 `dist/` 整個複製到 Mac，執行 `cd compose && docker compose up`，再打開 http://localhost:8755。DDS 只在容器內部（bridge network），要用 ros2 shell 就執行 `docker compose exec quadsim /opt/quadsim.run shell`。自己的 DDS XML 放在 `compose/dds/`，在 `compose/.env` 裡用 `CYCLONEDDS_URI=file:///dds/<檔名>.xml` 指定。
+
 ## ROS 2 介面
 | 方向 | Topic | 型別 | 頻率 |
 |---|---|---|---|
@@ -148,5 +161,6 @@ MuJoCo：自由剛體機身 ← 柔性 weld ← mocap 目標（cmd_vel 積分 + 
 | `config/nav_waypoints_*.yaml` | 導航下點迴圈測試的 waypoint 集（`dp_1008*`：dp_1008 的 1F；`dp_2f`：`scenes/dp` 的 2F）；一次性的探點集在 `config/archive/` |
 | `scripts/` | `run_sim.sh`、`bench.py`、`nav_goal_loop.sh` / `nav_goal_loop.py`（導航下點迴圈測試）、`make_waypoints_from_poses.py`、`fix_pcd_plane.py`（合成地面層）、`eval_scene.py`（場景品質）、`make_stairs.py`（把掃描樓梯換成乾淨的 16 cm 人工階梯）、`bt_to_pcd.py` / `deploy_octomap_surface.py`（手修 OctoMap → 表面 PCD 部署給 planner） |
 | `docker/` | Dockerfile、`run.sh`、最小化的 `livox_ros_driver2` 訊息套件 |
+| `pixi.toml`、`packaging/` | 免 Docker 的環境（RoboStack）與單檔 bundle：`quadsim` launcher、`build_bundle.sh`、`run_header.sh`、給 Mac 用的 `compose/` |
 | `docs/` | `usage.md`（依任務分章的使用手冊）、`pcd-to-sim-architecture.md`（設計）；`archive/`：有日期的測試紀錄和 dp_1012 建場景參數掃描 |
 | `tests/` | 單元測試（PCD、體素和 box 合併、地面平面化、碰撞代理、感測器時間、碰撞檢查、CustomMsg/PointCloud2 序列化、人工樓梯） |
