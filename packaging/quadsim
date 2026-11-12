@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# quadsim without Docker. In the bundle this is <ver>/bin/quadsim next to env/ (the packed pixi env), app/ and
+# controller/mc; in a checkout it runs inside `pixi run sim`, which has already activated the env.
+#   quadsim [--dds-config <xml>|none] [sim_node args...]      e.g. quadsim --scene scenes/dp ros.publish_gt_tf=false
+#   quadsim [--dds-config ...] shell [cmd...]                 ros2 CLI / scripts with the same ROS + DDS environment
+# DDS: --dds-config > CYCLONEDDS_URI > CYCLONEDDS_CONFIG (name under app/conf) > conf/cyclonedds.xml; ROS_DOMAIN_ID
+# defaults to 1 (quadsim/dds_config.py). Relative paths (--scene, overrides) resolve against app/.
+set -euo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+if [[ -f "$HERE/../env/activate.sh" ]]; then
+  APP="$(cd "$HERE/../app" && pwd)"
+  set +u; source "$HERE/../env/activate.sh"; set -u
+else
+  APP="$(cd "$HERE/.." && pwd)"
+  [[ -n "${CONDA_PREFIX:-}" ]] || { echo "quadsim: run it with 'pixi run sim' in a checkout" >&2; exit 2; }
+fi
+LIVOX="$APP/build/livox/install/local_setup.bash"
+if [[ -f "$LIVOX" ]]; then
+  set +u; source "$LIVOX"; set -u
+else
+  echo "[quadsim] no livox CustomMsg ($LIVOX): /livox/lidar as PointCloud2 only" >&2
+fi
+cd "$APP"
+exec python -m quadsim.launch "$@"
