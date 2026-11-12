@@ -140,12 +140,13 @@ def overpass_query(bbox: tuple[float, float, float, float]) -> str:
             f'relation["building"]["type"="multipolygon"]({b}););out tags geom;')
 
 
-def fetch_overpass(path: str, bbox: tuple[float, float, float, float], urls=OVERPASS_URLS) -> None:
-    """Download once: an existing file is the cache (delete it to refetch). Written whole or not at all."""
+def fetch_overpass(path: str, query: str, urls=OVERPASS_URLS) -> None:
+    """Download an Overpass query once: an existing file is the cache (delete it to refetch). Written whole or not
+    at all."""
     if os.path.exists(path):
         return
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    body = urllib.parse.urlencode({"data": overpass_query(bbox)}).encode()
+    body = urllib.parse.urlencode({"data": query}).encode()
     errors = []
     for url in urls:
         try:
@@ -465,7 +466,7 @@ def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: 
     lo, hi = scene_square(centre, radius, cell)
     gz = ground_z if ground_z is not None else (b.floor_z if b else 0.0)
     cut = Cut(b.boxes, cell, margin) if b else None
-    fetch_overpass(osm_path, overpass_bbox(frame, lo, hi))
+    fetch_overpass(osm_path, overpass_query(overpass_bbox(frame, lo, hi)))
     with open(osm_path) as f:
         answer = json.load(f)
     buildings, rejected = parse_overpass(answer, frame, default_height, level_height)
