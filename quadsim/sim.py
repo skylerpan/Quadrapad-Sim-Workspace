@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import time
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import mujoco
 import numpy as np
@@ -14,7 +14,7 @@ from pcd2sim import SCENE_FORMAT
 from .base import IdealBase, body_lift, rot_zyx
 from .config import load_scene_meta
 from .g23 import JOINTS, RefSimOptions, build_g23_spec
-from .gnss import GnssFix, GnssModel, sky_directions, sky_fraction
+from .gnss import GnssFix, GnssModel, resolve_datum, sky_directions, sky_fraction
 from .backends import make_backend
 from .lidar import LidarFrame, RollingLidar
 from .model import add_map_mesh, build_mjcf, nearest_boxes
@@ -152,7 +152,9 @@ class Simulator:
         self.gyro_bias = np.zeros(3)
         # the GNSS receiver (quadsim/gnss.py): only with a datum; the antenna is the `gnss` site
         gn = cfg.get("gnss") or {}
-        self.gnss = GnssModel(gn, np.random.default_rng(cfg["lidar"].get("seed", 0) + 2)) if gn.get("datum") else None
+        self.datum = resolve_datum(self.meta, gn.get("datum"))       # the scene's geo, else gnss.datum
+        self.gnss = (GnssModel({**gn, "datum": asdict(self.datum)}, np.random.default_rng(cfg["lidar"].get("seed", 0) + 2))
+                     if self.datum is not None else None)
         if self.gnss is not None:
             if self.gnss_site < 0:
                 raise ValueError("gnss.datum is set but gnss.mount_xyz is not: the antenna has no place on the base")

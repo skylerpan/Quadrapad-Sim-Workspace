@@ -27,8 +27,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import NavSatFix
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from quadsim.config import load_config  # noqa: E402
-from quadsim.gnss import Datum, enu_to_map, lla_to_enu  # noqa: E402
+from quadsim.config import load_config, load_scene_meta  # noqa: E402
+from quadsim.gnss import enu_to_map, lla_to_enu, resolve_datum  # noqa: E402
 
 PATTERN = [(10.0, 0.3, 0.0), (4.0, 0.0, 0.5), (10.0, 0.3, 0.0), (3.0, 0.0, 0.0)]      # (seconds, vx, wz)
 
@@ -46,7 +46,9 @@ class Check(Node):
         super().__init__("gnss_ekf_check")
         self.set_parameters([rclpy.parameter.Parameter("use_sim_time", value=True)])
         tp = cfg["ros"]["topics"]
-        self.datum = Datum.from_cfg(cfg["gnss"]["datum"])
+        self.datum = resolve_datum(load_scene_meta(cfg["scene"]), cfg["gnss"].get("datum"))
+        if self.datum is None:
+            raise SystemExit(f"no datum: scene {cfg['scene']} has no geo and config gnss.datum is null")
         self.mount = np.asarray(cfg["gnss"]["mount_xyz"], float)
         q = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self.gt = self.ekf = self.nav = self.fix = None
@@ -145,11 +147,14 @@ def summarize(rows: list[dict]) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=None)
+    ap.add_argument("--scene", default=None, help="the sim's scene (its meta.json geo is the datum); default config scene")
     ap.add_argument("--no-drive", action="store_true", help="observe only, send no cmd_vel")
     ap.add_argument("--seconds", type=float, default=30.0, help="--no-drive: how long to observe")
     ap.add_argument("--wait", type=float, default=60.0, help="give up after this many wall seconds without data")
     a = ap.parse_args()
     cfg = load_config(a.config, [])
+    if a.scene:
+        cfg["scene"] = a.scene
     rclpy.init()
     node = Check(cfg, not a.no_drive, a.seconds)
     wall0 = time.time()

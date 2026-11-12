@@ -2,7 +2,8 @@
 
 Glossary
   datum        lat / lon / ellipsoid alt of the map origin plus the heading of the map x axis from east
-               (degrees, counter-clockwise). Without a datum there is no GNSS (config/sim.yaml gnss.datum).
+               (degrees, counter-clockwise): the scene's meta.json `geo`, else config/sim.yaml gnss.datum
+               (resolve_datum). Without a datum there is no GNSS.
   antenna      the `gnss` site on the base (gnss.mount_xyz); the sim hands its map position and velocity in.
   sky          the fraction of rays in a cone around zenith that leave the scene without a hit: 0 indoors,
                1 in the open. The sim casts them in the LiDAR's Embree scene; `sky.mode: always` skips that.
@@ -49,6 +50,15 @@ class Datum:
         if not (-90.0 <= datum.lat <= 90.0 and -180.0 <= datum.lon <= 180.0):
             raise ValueError(f"gnss.datum lat/lon out of range: {d!r}")
         return datum
+
+
+def resolve_datum(scene_meta: dict, cfg_datum: dict | None) -> Datum | None:
+    """The one place that picks the datum: a georeferenced scene carries its own (meta.json `geo`, written by
+    pcd2sim.osm_scene); a scene without one (dp, built from a scan) falls back to config gnss.datum."""
+    geo = scene_meta.get("geo")
+    if geo:
+        return Datum.from_cfg(geo)
+    return Datum.from_cfg(cfg_datum) if cfg_datum else None
 
 
 @dataclass
