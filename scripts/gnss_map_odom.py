@@ -28,7 +28,7 @@ from sensor_msgs.msg import NavSatFix, NavSatStatus
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from quadsim.config import load_config  # noqa: E402
-from quadsim.gnss import Datum, lla_to_enu  # noqa: E402
+from quadsim.gnss import Datum, enu_to_map, lla_to_enu  # noqa: E402
 
 BIG = 1e6
 
@@ -36,9 +36,7 @@ BIG = 1e6
 def fix_to_map(lat: float, lon: float, datum: Datum, mount_xy, yaw: float) -> tuple[float, float]:
     """The base position in the map frame for an antenna fix: lat/lon -> ENU -> map (minus the datum heading),
     then the antenna offset rotated by the robot's yaw is taken off."""
-    e, n, _ = lla_to_enu(lat, lon, datum.alt, datum)
-    c, s = math.cos(-math.radians(datum.yaw_deg)), math.sin(-math.radians(datum.yaw_deg))
-    ax, ay = c * e - s * n, s * e + c * n
+    ax, ay, _ = enu_to_map(lla_to_enu(lat, lon, datum.alt, datum), datum)
     cy, sy = math.cos(yaw), math.sin(yaw)
     return ax - (cy * mount_xy[0] - sy * mount_xy[1]), ay - (sy * mount_xy[0] + cy * mount_xy[1])
 

@@ -28,7 +28,7 @@ from sensor_msgs.msg import NavSatFix
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from quadsim.config import load_config  # noqa: E402
-from quadsim.gnss import Datum, lla_to_enu  # noqa: E402
+from quadsim.gnss import Datum, enu_to_map, lla_to_enu  # noqa: E402
 
 PATTERN = [(10.0, 0.3, 0.0), (4.0, 0.0, 0.5), (10.0, 0.3, 0.0), (3.0, 0.0, 0.0)]      # (seconds, vx, wz)
 
@@ -48,7 +48,6 @@ class Check(Node):
         tp = cfg["ros"]["topics"]
         self.datum = Datum.from_cfg(cfg["gnss"]["datum"])
         self.mount = np.asarray(cfg["gnss"]["mount_xyz"], float)
-        self.yaw = math.radians(self.datum.yaw_deg)
         q = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self.gt = self.ekf = self.nav = self.fix = None
         self.create_subscription(Odometry, tp["gt_odom"], self._gt, 10)
@@ -80,9 +79,7 @@ class Check(Node):
         """The raw fix as a base position in the map frame: lat/lon -> ENU -> map, minus the antenna offset."""
         if self.fix is None or math.isnan(self.fix.latitude):
             return None
-        e, n, _ = lla_to_enu(self.fix.latitude, self.fix.longitude, self.datum.alt, self.datum)
-        c, s = math.cos(-self.yaw), math.sin(-self.yaw)
-        ant = np.array([c * e - s * n, s * e + c * n])
+        ant = enu_to_map(lla_to_enu(self.fix.latitude, self.fix.longitude, self.datum.alt, self.datum), self.datum)[:2]
         cy, sy = math.cos(gt_yaw), math.sin(gt_yaw)
         return ant - np.array([cy * self.mount[0] - sy * self.mount[1], sy * self.mount[0] + cy * self.mount[1]])
 
