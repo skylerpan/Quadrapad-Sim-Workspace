@@ -24,7 +24,7 @@ import shutil
 import urllib.parse
 import urllib.request
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -32,6 +32,7 @@ from quadsim.config import load_config, load_scene_meta
 from quadsim.gnss import Datum, enu_to_lla, enu_to_map, lla_to_enu, map_to_enu, resolve_datum
 
 from . import SCENE_FORMAT
+from .clearing import clear_boxes, parse_rects, points_kept, rect_boxes
 from .osm_buildings import Building, parse_overpass, parse_streets_gl_url
 from .osm_colors import GROUND_RGB, GroundClass
 from .osm_ground import overpass_ground_query, paint_ground, parse_overpass_ground
@@ -192,18 +193,57 @@ class Cut:
 
 
 @dataclass(frozen=True)
+class MapPoints:
+    """A scene's map_ds.pcd and its colours, row for row (A = 0: none)."""
+    xyz: np.ndarray
+    intensity: np.ndarray
+    rgba: np.ndarray
+
+
+@dataclass(frozen=True)
 class Base:
-    """A scanned scene to lay the OSM area around, kept as it is."""
+    """A scanned scene to lay the OSM area around, kept as it is but for its clear rectangles (pcd2sim.clearing).
+    boxes, contact and rgba are row for row."""
     path: str
     datum: Datum
     boxes: np.ndarray
     contact: np.ndarray
+    rgba: np.ndarray                             # uint8 [N, 4], the scan's own colours or none (A = 0)
     voxel: float
     spawn: list[float]                           # [x, y, floor z]
+    points: MapPoints | None                     # None: the base has no map_ds.pcd
+    clear: np.ndarray = field(default_factory=lambda: np.zeros((0, 4)))
 
     @property
     def floor_z(self) -> float:
         return float(self.spawn[2])
+
+    def cleared(self, rects) -> "Base":
+        """This scan with what stands on the ground (below the floor + Apron.LOW_BAND) cut out of the rectangles."""
+        rects = parse_rects(rects)
+        below = self.floor_z + Apron.LOW_BAND
+        boxes, rows = clear_boxes(self.boxes, rects, below)
+        points = self.points
+        if points is not None:
+            k = points_kept(points.xyz, rects, below)
+            points = MapPoints(points.xyz[k], points.intensity[k], points.rgba[k])
+        return replace(self, boxes=boxes.astype(self.boxes.dtype), contact=self.contact[rows], rgba=self.rgba[rows],
+                       points=points, clear=rects)
+
+
+def _rgba_file(path: str, n: int) -> np.ndarray:
+    """A scene's colours (uint8 [n, 4]), else none (A = 0)."""
+    rgba = np.load(path) if os.path.exists(path) else None
+    return rgba if rgba is not None and rgba.shape == (n, 4) else np.zeros((n, 4), np.uint8)
+
+
+def _load_points(path: str) -> MapPoints | None:
+    src = os.path.join(path, "map_ds.pcd")
+    if not os.path.exists(src):
+        return None
+    xyz, inten = read_pcd(src)
+    inten = inten.astype(np.float32) if inten is not None else np.full(len(xyz), 100.0, np.float32)
+    return MapPoints(xyz.astype(np.float32), inten, _rgba_file(os.path.join(path, "map_ds_colors.npy"), len(xyz)))
 
 
 def load_base(path: str, fallback_datum: dict | None) -> Base:
@@ -213,8 +253,10 @@ def load_base(path: str, fallback_datum: dict | None) -> Base:
         raise ValueError(f"base scene {path} has no geo and no fallback datum: OSM cannot be placed on it")
     if not meta.get("spawn"):
         raise ValueError(f"base scene {path} has no spawn: its floor height is unknown")
-    return Base(path, datum, np.load(os.path.join(path, "boxes.npy")), np.load(os.path.join(path, "contact.npy")),
-                float(meta["voxel"]), [float(v) for v in meta["spawn"]])
+    boxes = np.load(os.path.join(path, "boxes.npy"))
+    return Base(path, datum, boxes, np.load(os.path.join(path, "contact.npy")),
+                _rgba_file(os.path.join(path, "colors.npy"), len(boxes)), float(meta["voxel"]),
+                [float(v) for v in meta["spawn"]], _load_points(path))
 
 
 def overlay_fit(base: Base, buildings: list[Building], cell: float, min_height: float = 2.0) -> dict:
@@ -438,25 +480,15 @@ def _write_voxels(out: str, voxel: float, base: Base | None) -> None:
                         contact=np.zeros(0, bool))
 
 
-def _base_rgba(base: Base, name: str, n: int) -> np.ndarray:
-    """The base scene's own colours (`name` next to its boxes / points), else none (A = 0)."""
-    path = os.path.join(base.path, name)
-    rgba = np.load(path) if os.path.exists(path) else None
-    return rgba if rgba is not None and rgba.shape == (n, 4) else np.zeros((n, 4), np.uint8)
-
-
 def _write_map_points(out: str, osm: ColouredBoxes, base: Base | None) -> None:
     """map_ds.pcd (the base's points, then every OSM box's top centre) and map_ds_colors.npy row for row."""
     xyz = np.column_stack([osm.boxes[:, :2], osm.boxes[:, 2] + osm.boxes[:, 5]]).astype(np.float32)
     inten = np.full(len(xyz), 100.0, np.float32)
     rgba = osm.rgba
-    src = os.path.join(base.path, "map_ds.pcd") if base is not None else None
-    if src and os.path.exists(src):
-        bxyz, binten = read_pcd(src)
-        xyz = np.vstack([bxyz.astype(np.float32), xyz])
-        inten = np.concatenate([binten.astype(np.float32) if binten is not None else np.full(len(bxyz), 100.0,
-                                                                                            np.float32), inten])
-        rgba = np.vstack([_base_rgba(base, "map_ds_colors.npy", len(bxyz)), rgba])
+    if base is not None and base.points is not None:
+        xyz = np.vstack([base.points.xyz, xyz])
+        inten = np.concatenate([base.points.intensity, inten])
+        rgba = np.vstack([base.points.rgba, rgba])
     write_pcd(os.path.join(out, "map_ds.pcd"), xyz, inten)
     np.save(os.path.join(out, "map_ds_colors.npy"), rgba)
 
@@ -471,7 +503,7 @@ def write_scene(out: str, osm: ColouredBoxes, base: Base | None, voxel: float, s
         boxes, rgba, contact = osm.boxes, osm.rgba, np.ones(len(osm.boxes), bool)
     else:
         boxes = np.vstack([base.boxes, osm.boxes])
-        rgba = np.vstack([_base_rgba(base, "colors.npy", len(base.boxes)), osm.rgba])
+        rgba = np.vstack([base.rgba, osm.rgba])
         contact = np.concatenate([base.contact, np.ones(len(osm.boxes), bool)])
     np.save(os.path.join(out, "boxes.npy"), boxes.astype(np.float32))
     np.save(os.path.join(out, "contact.npy"), contact)
@@ -551,6 +583,11 @@ def _ground_z(ground_z: float | None, b: Base | None) -> float:
     return b.floor_z if b else 0.0
 
 
+def _cut(b: Base | None, cell: float, margin: float) -> Cut | None:
+    """Where OSM lays no building: around the scan and its clear rectangles."""
+    return Cut(np.vstack([b.boxes, rect_boxes(b.clear)]), cell, margin) if b else None
+
+
 def _apron(b: Base | None, cell: float, blend: float, gz: float) -> Apron | None:
     return Apron(b.boxes, b.floor_z, cell, blend, gz) if b else None
 
@@ -560,7 +597,8 @@ def _base_meta(b: Base | None, buildings: list[Building], cell: float, registrat
     """meta.json records of a base scene: where it came from, how well OSM fits it, its registration."""
     if b is None:
         return {}
-    meta = {"base": {"path": os.path.abspath(b.path), "boxes": int(len(b.boxes)), "margin": margin, "blend": blend},
+    meta = {"base": {"path": os.path.abspath(b.path), "boxes": int(len(b.boxes)), "margin": margin, "blend": blend,
+                     "clear": b.clear.tolist()},
             "overlay": overlay_fit(b, buildings, cell)}
     if registration is not None:
         meta["registration"] = registration
@@ -570,14 +608,17 @@ def _base_meta(b: Base | None, buildings: list[Building], cell: float, registrat
 def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: float = 0.5, tile: float = 20.0,
           default_height: float = 6.0, level_height: float = 3.0, alt: float = 0.0, ground_z: float | None = None,
           base: str | None = None, fallback_datum: dict | None = None, margin: float = 2.0,
-          blend: float = 10.0, register: bool = False, ground_path: str | None = None) -> dict:
+          blend: float = 10.0, register: bool = False, ground_path: str | None = None, clear=None) -> dict:
     """An OSM scene around (lat, lon). Stand-alone: map = ENU there, ground at ground_z (default 0). With a base
     scene: its map frame (datum + heading), its floor height and spawn, OSM buildings cut out `margin` around its
     boxes, OSM ground up to the scan's edge and easing from the edge's height to ground_z over `blend` metres.
     register: OSM is the reference, the base's datum is moved so its building lands on its OSM outline (the map
     coordinates of the scan stay as they are; meta.json geo is the corrected datum).
     ground_path: an Overpass ground answer (osm_ground; downloaded once when missing) paints the ground in its OSM
-    colours; None = bare ground."""
+    colours; None = bare ground.
+    clear: rectangles [x0, y0, x1, y1] of the base's map frame (a gate) where the scan's ground-standing boxes and
+    points are cut away (after registration, which fits the whole scan): the OSM ground runs through them, eased to
+    the scan's edge heights, and no OSM building comes within margin of them."""
     b = load_base(base, fallback_datum) if base else None
     frame = b.datum if b else Datum(lat, lon, alt, 0.0)            # stand-alone: map = ENU at the centre
     centre, lo, hi = _square(lat, lon, radius, cell, frame)
@@ -592,7 +633,9 @@ def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: 
         if registration["ok"]:
             centre, lo, hi = _square(lat, lon, radius, cell, frame)
             buildings, rejected = parse_overpass(answer, frame, default_height, level_height)
-    blds = buildings_to_boxes(buildings, cell, gz, clip=(lo, hi), cut=Cut(b.boxes, cell, margin) if b else None)
+    if b and clear is not None:
+        b = b.cleared(clear)
+    blds = buildings_to_boxes(buildings, cell, gz, clip=(lo, hi), cut=_cut(b, cell, margin))
     paint, ground_meta = _ground_paint(ground_path, frame, lo, hi, cell)
     osm = ColouredBoxes.concat([ground_boxes(lo, hi, tile, gz, cell, _apron(b, cell, blend, gz), paint), blds])
     extra = {"geo": _geo_meta(frame, b, registration, radius, lat, lon),
@@ -629,6 +672,9 @@ def main(argv=None):
                     help="OSM ground eases from the scan edge's height to the flat ground over this distance (m)")
     ap.add_argument("--register", action="store_true",
                     help="OSM is the reference: move the base's datum so its building lands on its OSM outline")
+    ap.add_argument("--clear", nargs=4, type=float, action="append", metavar=("X0", "Y0", "X1", "Y1"),
+                    help="with --base: a rectangle of its map frame (a gate) where the scan's ground-standing boxes "
+                         "and points are cut away so the OSM ground runs through; repeatable")
     ap.add_argument("--config", default=None, help="config with the fallback gnss.datum (default config/sim.yaml)")
     a = ap.parse_args(argv)
     lat, lon = parse_streets_gl_url(a.url) if a.url else a.center
@@ -636,7 +682,7 @@ def main(argv=None):
     ground = None if a.no_ground else (a.osm_ground or os.path.join(os.path.dirname(osm), "overpass_ground.json"))
     fallback = (load_config(a.config, []).get("gnss") or {}).get("datum") if a.base else None
     meta = build(lat, lon, a.radius, a.out, osm, a.cell, a.tile, a.default_height, a.level_height, a.alt,
-                 a.ground_z, a.base, fallback, a.margin, a.blend, a.register, ground)
+                 a.ground_z, a.base, fallback, a.margin, a.blend, a.register, ground, a.clear)
     o = meta["osm"]
     print(f"wrote {a.out}: {o['buildings']} buildings ({o['height_source']}, {o['rejected']} refused) -> "
           f"{o['building_boxes']} boxes + ground, spawn {meta['spawn']}")
