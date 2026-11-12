@@ -19,17 +19,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import urllib.parse
 import urllib.request
 from collections import Counter
+from dataclasses import dataclass
 
 import numpy as np
 
-from quadsim.gnss import Datum, enu_to_lla, map_to_enu
+from quadsim.config import load_config, load_scene_meta
+from quadsim.gnss import Datum, enu_to_lla, enu_to_map, lla_to_enu, map_to_enu, resolve_datum
 
 from . import SCENE_FORMAT
 from .osm_buildings import Building, parse_overpass, parse_streets_gl_url
-from .pcd_io import write_pcd
+from .pcd_io import read_pcd, write_pcd
 from .voxel import merge_boxes
 
 OVERPASS_URLS = ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter")
@@ -71,11 +74,14 @@ def _columns_to_boxes(keys: np.ndarray, cell: float, z0: float, z1: float) -> np
 
 
 def buildings_to_boxes(buildings: list[Building], cell: float, ground_z: float,
-                       clip: Clip | None = None) -> np.ndarray:
-    """float32 [M,6] (cx, cy, cz, hx, hy, hz): every building as merged full-height columns on a cell grid."""
+                       clip: Clip | None = None, cut: "Cut | None" = None) -> np.ndarray:
+    """float32 [M,6] (cx, cy, cz, hx, hy, hz): every building as merged full-height columns on a cell grid,
+    without the cells a base scene keeps (cut)."""
     parts = []
     for b in buildings:
         keys = footprint_cells(b.footprint, cell, clip)
+        if cut is not None:
+            keys = keys[cut.keep(keys)]
         if len(keys):
             parts.append(_columns_to_boxes(keys, cell, ground_z, ground_z + b.height_m))
     if not parts:
@@ -135,7 +141,96 @@ def fetch_overpass(path: str, bbox: tuple[float, float, float, float], urls=OVER
     raise RuntimeError("Overpass download failed: " + "; ".join(errors))
 
 
+# -- base scene ------------------------------------------------------------------------------------------------
+class Cut:
+    """The grid cells OSM leaves to a base scene: every base box's xy extent grown by margin, rasterised by cell
+    centre on the same grid as the OSM footprints."""
+
+    def __init__(self, base_boxes: np.ndarray, cell: float, margin: float):
+        lo = base_boxes[:, :2] - base_boxes[:, 3:5] - margin
+        hi = base_boxes[:, :2] + base_boxes[:, 3:5] + margin
+        c0 = np.ceil(lo / cell - 0.5).astype(np.int64)            # cells whose centre lies in [lo, hi]
+        c1 = np.floor(hi / cell - 0.5).astype(np.int64) + 1
+        self.i0 = c0.min(axis=0)
+        self.mask = np.zeros(c1.max(axis=0) - self.i0, dtype=bool)
+        for (a0, b0), (a1, b1) in zip(c0 - self.i0, c1 - self.i0):
+            self.mask[a0:a1, b0:b1] = True
+        self.lo_m, self.hi_m = self.i0 * cell, (self.i0 + np.array(self.mask.shape)) * cell
+
+    def keep(self, keys: np.ndarray) -> np.ndarray:
+        k = keys - self.i0
+        inside = np.all((k >= 0) & (k < self.mask.shape), axis=1)
+        cut = np.zeros(len(keys), dtype=bool)
+        cut[inside] = self.mask[k[inside, 0], k[inside, 1]]
+        return ~cut
+
+
+@dataclass(frozen=True)
+class Base:
+    """A scanned scene to lay the OSM area around, kept as it is."""
+    path: str
+    datum: Datum
+    boxes: np.ndarray
+    contact: np.ndarray
+    voxel: float
+    spawn: list[float]                           # [x, y, floor z]
+
+    @property
+    def floor_z(self) -> float:
+        return float(self.spawn[2])
+
+
+def load_base(path: str, fallback_datum: dict | None) -> Base:
+    meta = load_scene_meta(path)
+    datum = resolve_datum(meta, fallback_datum)
+    if datum is None:
+        raise ValueError(f"base scene {path} has no geo and no fallback datum: OSM cannot be placed on it")
+    if not meta.get("spawn"):
+        raise ValueError(f"base scene {path} has no spawn: its floor height is unknown")
+    return Base(path, datum, np.load(os.path.join(path, "boxes.npy")), np.load(os.path.join(path, "contact.npy")),
+                float(meta["voxel"]), [float(v) for v in meta["spawn"]])
+
+
+def overlay_fit(base: Base, buildings: list[Building], cell: float, min_height: float = 2.0) -> dict:
+    """How well the scan's building matches OSM: the OSM outline overlapping the scan's tall cells (walls, roof:
+    tops more than min_height above the floor) the most, their IoU and the distance between their centroids."""
+    tall = base.boxes[base.boxes[:, 2] + base.boxes[:, 5] > base.floor_z + min_height]
+    if not len(tall):
+        return {"osm_id": None}
+    scan = Cut(tall, cell, 0.0)
+    scan_keys = np.argwhere(scan.mask) + scan.i0
+    best = None
+    for b in buildings:
+        keys = footprint_cells(b.footprint, cell)
+        inter = int((~scan.keep(keys)).sum()) if len(keys) else 0
+        if inter and (best is None or inter > best[1]):
+            best = (b, inter, keys)
+    if best is None:
+        return {"osm_id": None}
+    b, inter, keys = best
+    offset = (keys.mean(axis=0) - scan_keys.mean(axis=0)) * cell
+    return {"osm_id": b.osm_id, "iou": round(inter / (len(keys) + len(scan_keys) - inter), 3),
+            "offset_m": round(float(np.hypot(*offset)), 2), "offset_xy": [round(float(v), 2) for v in offset]}
+
+
 # -- scene ------------------------------------------------------------------------------------------------------
+def ground_boxes(lo: np.ndarray, hi: np.ndarray, tile: float, z: float, cell: float, cut: Cut | None,
+                 thickness: float = 0.2) -> np.ndarray:
+    """Ground tiles over the square; the tiles that reach into the cut are rebuilt from cells around it."""
+    tiles = ground_tiles(lo, hi, tile, z, thickness)
+    if cut is None:
+        return tiles
+    tlo, thi = tiles[:, :2] - tiles[:, 3:5], tiles[:, :2] + tiles[:, 3:5]
+    near = np.all((tlo < cut.hi_m) & (thi > cut.lo_m), axis=1)
+    parts = [tiles[~near]]
+    for t0, t1 in zip(tlo[near], thi[near]):
+        keys = footprint_cells(np.array([[t0[0], t0[1]], [t1[0], t0[1]], [t1[0], t1[1]], [t0[0], t1[1]]]), cell)
+        keys = keys[cut.keep(keys)]
+        if len(keys):
+            parts.append(_columns_to_boxes(keys, cell, z - thickness, z).astype(np.float32))
+    return np.vstack(parts)
+
+
 def spawn_point(building_boxes: np.ndarray, centre: np.ndarray, lo: np.ndarray, hi: np.ndarray,
                 step: float = 1.0) -> np.ndarray:
     """The grid point nearest the centre that is SPAWN_CLEARANCE away from every building box."""
@@ -154,20 +249,42 @@ def spawn_point(building_boxes: np.ndarray, centre: np.ndarray, lo: np.ndarray, 
     raise RuntimeError("no free spawn point in the scene square")
 
 
-def write_scene(out: str, boxes: np.ndarray, contact: np.ndarray, voxel: float, spawn: list[float],
+def _write_voxels(out: str, voxel: float, base: Base | None) -> None:
+    dst = os.path.join(out, "voxels.npz")
+    if base is not None:                         # the scan's LiDAR intensity and surface heights
+        shutil.copyfile(os.path.join(base.path, "voxels.npz"), dst)
+        return
+    np.savez_compressed(dst, keys=np.zeros((0, 3), np.int32), intensity=np.zeros(0, np.float32),
+                        zmean=np.zeros(0, np.float32), origin=np.zeros(3), voxel=voxel, dims=np.ones(3, np.int64),
+                        contact=np.zeros(0, bool))
+
+
+def _write_map_points(out: str, osm_boxes: np.ndarray, base: Base | None) -> None:
+    xyz = np.column_stack([osm_boxes[:, :2], osm_boxes[:, 2] + osm_boxes[:, 5]]).astype(np.float32)
+    inten = np.full(len(xyz), 100.0, np.float32)
+    src = os.path.join(base.path, "map_ds.pcd") if base is not None else None
+    if src and os.path.exists(src):
+        bxyz, binten = read_pcd(src)
+        xyz = np.vstack([bxyz.astype(np.float32), xyz])
+        inten = np.concatenate([binten.astype(np.float32) if binten is not None else np.full(len(bxyz), 100.0,
+                                                                                            np.float32), inten])
+    write_pcd(os.path.join(out, "map_ds.pcd"), xyz, inten)
+
+
+def write_scene(out: str, osm_boxes: np.ndarray, base: Base | None, voxel: float, spawn: list[float],
                 meta_extra: dict) -> dict:
-    """The scene files quadsim.sim reads. voxels.npz is empty: OSM has no LiDAR intensity or surface detail."""
+    """The scene files quadsim.sim reads: the base scene's boxes first and unchanged, then the OSM boxes (all
+    contact). Without a base, voxels.npz is empty: OSM has no LiDAR intensity or surface detail."""
     os.makedirs(out, exist_ok=True)
+    boxes = osm_boxes if base is None else np.vstack([base.boxes, osm_boxes])
+    contact = np.ones(len(osm_boxes), bool) if base is None else np.concatenate([base.contact, np.ones(len(osm_boxes), bool)])
     np.save(os.path.join(out, "boxes.npy"), boxes.astype(np.float32))
-    np.save(os.path.join(out, "contact.npy"), contact.astype(bool))
+    np.save(os.path.join(out, "contact.npy"), contact)
     stale = os.path.join(out, "ground.npz")
     if os.path.exists(stale):
         os.remove(stale)
-    np.savez_compressed(os.path.join(out, "voxels.npz"), keys=np.zeros((0, 3), np.int32),
-                        intensity=np.zeros(0, np.float32), zmean=np.zeros(0, np.float32), origin=np.zeros(3),
-                        voxel=voxel, dims=np.ones(3, np.int64), contact=np.zeros(0, bool))
-    tops = np.column_stack([boxes[:, :2], boxes[:, 2] + boxes[:, 5]]).astype(np.float32)
-    write_pcd(os.path.join(out, "map_ds.pcd"), tops, np.full(len(tops), 100.0, np.float32))
+    _write_voxels(out, voxel, base)
+    _write_map_points(out, osm_boxes, base)
     lo, hi = boxes[:, :3] - boxes[:, 3:], boxes[:, :3] + boxes[:, 3:]
     meta = {"format_version": SCENE_FORMAT, "source_format": "osm", "voxel": voxel, "boxes": int(len(boxes)),
             "contact": {"boxes": int(contact.sum())}, "ground": None,
@@ -178,26 +295,42 @@ def write_scene(out: str, boxes: np.ndarray, contact: np.ndarray, voxel: float, 
     return meta
 
 
+def scene_square(centre: np.ndarray, radius: float, cell: float) -> Clip:
+    """[centre - radius, centre + radius] snapped outward to the cell grid, so tiles and cells line up."""
+    return np.floor((centre - radius) / cell) * cell, np.ceil((centre + radius) / cell) * cell
+
+
 def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: float = 0.5, tile: float = 20.0,
-          default_height: float = 6.0, level_height: float = 3.0, alt: float = 0.0, ground_z: float = 0.0) -> dict:
-    """A stand-alone OSM scene: map = ENU at (lat, lon), the square [-radius, radius]^2, flat ground at ground_z."""
-    frame = Datum(lat, lon, alt, 0.0)
-    lo, hi = np.array([-radius, -radius]), np.array([radius, radius])
+          default_height: float = 6.0, level_height: float = 3.0, alt: float = 0.0, ground_z: float | None = None,
+          base: str | None = None, fallback_datum: dict | None = None, margin: float = 2.0) -> dict:
+    """An OSM scene around (lat, lon). Stand-alone: map = ENU there, ground at ground_z (default 0). With a base
+    scene: its map frame (datum + heading), its floor height and spawn, OSM cut out `margin` around its boxes."""
+    b = load_base(base, fallback_datum) if base else None
+    frame = b.datum if b else Datum(lat, lon, alt, 0.0)
+    centre = enu_to_map(lla_to_enu(lat, lon, frame.alt, frame), frame)[:2]
+    lo, hi = scene_square(centre, radius, cell)
+    gz = ground_z if ground_z is not None else (b.floor_z if b else 0.0)
+    cut = Cut(b.boxes, cell, margin) if b else None
     fetch_overpass(osm_path, overpass_bbox(frame, lo, hi))
     with open(osm_path) as f:
         buildings, rejected = parse_overpass(json.load(f), frame, default_height, level_height)
-    bboxes = buildings_to_boxes(buildings, cell, ground_z, clip=(lo, hi))
-    tiles = ground_tiles(lo, hi, tile, ground_z)
-    boxes = np.vstack([tiles, bboxes])
-    spawn = spawn_point(bboxes, np.zeros(2), lo, hi)
-    sources = Counter(b.height_source for b in buildings)
-    return write_scene(out, boxes, np.ones(len(boxes), bool), cell, [spawn[0], spawn[1], ground_z], {
-        "geo": {"lat": lat, "lon": lon, "alt": alt, "yaw_deg": 0.0, "source": "osm", "radius_m": radius},
+    bboxes = buildings_to_boxes(buildings, cell, gz, clip=(lo, hi), cut=cut)
+    osm_boxes = np.vstack([ground_boxes(lo, hi, tile, gz, cell, cut), bboxes])
+    spawn = b.spawn if b else [*spawn_point(bboxes, centre, lo, hi), gz]
+    sources = Counter(x.height_source for x in buildings)
+    extra = {
+        "geo": {"lat": frame.lat, "lon": frame.lon, "alt": frame.alt, "yaw_deg": frame.yaw_deg,
+                "source": "osm" if b is None else f"osm+{os.path.basename(os.path.normpath(b.path))}",
+                "radius_m": radius, "centre": [lat, lon]},
         "osm": {"file": os.path.abspath(osm_path), "buildings": len(buildings), "rejected": rejected,
                 "height_source": {k: sources.get(k, 0) for k in ("tag", "levels", "default")},
                 "default_height": default_height, "level_height": level_height, "cell": cell, "tile": tile,
                 "building_boxes": int(len(bboxes)), "attribution": "(c) OpenStreetMap contributors, ODbL"},
-    })
+    }
+    if b:
+        extra["base"] = {"path": os.path.abspath(b.path), "boxes": int(len(b.boxes)), "margin": margin}
+        extra["overlay"] = overlay_fit(b, buildings, cell)
+    return write_scene(out, osm_boxes, b, b.voxel if b else cell, spawn, extra)
 
 
 def main(argv=None):
@@ -212,14 +345,24 @@ def main(argv=None):
     ap.add_argument("--tile", type=float, default=20.0, help="ground tile side (m)")
     ap.add_argument("--default-height", type=float, default=6.0, help="buildings with no height or levels (m)")
     ap.add_argument("--level-height", type=float, default=3.0, help="metres per building:levels")
-    ap.add_argument("--alt", type=float, default=0.0, help="ellipsoid height of the ground at the centre (m)")
+    ap.add_argument("--alt", type=float, default=0.0, help="stand-alone: ellipsoid height of the ground (m)")
+    ap.add_argument("--ground-z", type=float, default=None, help="ground top in map z (default 0, or the base floor)")
+    ap.add_argument("--base", default=None,
+                    help="a scanned scene (e.g. scenes/dp) to lay the OSM area around, in its map frame; its datum "
+                         "is its meta.json geo, else config gnss.datum")
+    ap.add_argument("--margin", type=float, default=2.0, help="OSM keeps this far from any base box (m)")
+    ap.add_argument("--config", default=None, help="config with the fallback gnss.datum (default config/sim.yaml)")
     a = ap.parse_args(argv)
     lat, lon = parse_streets_gl_url(a.url) if a.url else a.center
     osm = a.osm or os.path.join("Maps", os.path.basename(os.path.normpath(a.out)), "overpass.json")
-    meta = build(lat, lon, a.radius, a.out, osm, a.cell, a.tile, a.default_height, a.level_height, a.alt)
+    fallback = (load_config(a.config, []).get("gnss") or {}).get("datum") if a.base else None
+    meta = build(lat, lon, a.radius, a.out, osm, a.cell, a.tile, a.default_height, a.level_height, a.alt,
+                 a.ground_z, a.base, fallback, a.margin)
     o = meta["osm"]
     print(f"wrote {a.out}: {o['buildings']} buildings ({o['height_source']}, {o['rejected']} refused) -> "
           f"{o['building_boxes']} boxes + ground, spawn {meta['spawn']}")
+    if "overlay" in meta:
+        print(f"overlay fit against the base scan: {meta['overlay']}")
 
 
 if __name__ == "__main__":
