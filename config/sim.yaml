@@ -1,6 +1,8 @@
 # Quadruped navigation sim (MuJoCo, ideal base). All units SI unless noted.
 scene: scenes/dp                 # directory produced by pcd2sim.build_scene. scenes/dp: Maps/dp.bt, 0.2 m, the frame of the robot01 nav stack's localization map (maps/dp/dp.pcd = Maps/dp_full_original.pcd; robot01.ini 2026-10-22), so the sim and the nav stack agree. scenes/dp_1008 (Maps/dp_1008.pcd, 0.1 m, --no-flatten --close-rounds 1, the robot-layer runs of 2026-10-29) is a different frame: localization never converges on it. scenes/dp_1012 = 1:1 build of the hand-edited octree (docs/usage.md section 2)
-spawn: [0.0, 0.0, 0.0, -0.4]  # [x, y, yaw, z_floor]; null = meta.json spawn, yaw 0. z_floor = floor height of that storey (dp 1F at (0,0): -0.40; dp_1008: -0.45; dp_1012: -0.40)
+spawn: [0.0, 0.0, 0.0, -0.4]  # [x, y, yaw, z_floor], or a name in spawns (spawn=gate); null = meta.json spawn, yaw 0. z_floor = floor height of that storey (dp 1F at (0,0): -0.40; dp_1008: -0.45; dp_1012: -0.40)
+spawns:                       # named spawns, same form, in dp's map frame (dp, dp_bt, osm_tucheng_dp)
+  gate: [34.5, 41.0, 1.5708, -0.76]   # dp's gate, between the GNSS reference points A (29.1, 39.5) / B (39.9, 40.3), facing out (+y); cleared in osm_tucheng_dp (--clear 26 38 43 50)
 
 physics:
   timestep: 0.001             # s (1 kHz: the G23 controller expects 1 kHz telemetry; IMU/clock 200 Hz and control 50 Hz divide evenly)
