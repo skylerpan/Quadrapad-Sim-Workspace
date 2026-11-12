@@ -41,10 +41,13 @@ def _mujoco_rgbs(sim):
     return {tuple(np.round(sim.m.geom_rgba[i][:3] * 255).astype(int)) for i in ids}
 
 
-def _web_rgbs(web):
-    h = web.map_handle
-    c = h.colors if hasattr(h, "colors") else h.batched_colors
+def _layer_rgbs(handle):
+    c = handle.colors if hasattr(handle, "colors") else handle.batched_colors
     return {tuple(int(v) for v in x) for x in np.asarray(c).reshape(-1, 3)}
+
+
+def _web_rgbs(web):
+    return set().union(*(_layer_rgbs(h) for h in web.map_layers))
 
 
 def _school_shaded(web):
@@ -82,3 +85,50 @@ def test_a_bad_mode_in_the_config_is_refused_at_start(tmp_path):
     cfg = load_config(None, ["robot.type=ideal", "gnss.datum=null", "viewer.map_color=rainbow"])
     with pytest.raises(ValueError, match="map_color"):
         Simulator(cfg)
+
+
+def test_points_mode_draws_the_scan_as_points_and_the_osm_part_as_boxes(tmp_path):
+    """OSM boxes have one map_ds point each (a 20 m ground tile = one point): in points mode they are drawn as boxes,
+    and their stand-in points are left out of the cloud; the scan stays points."""
+    from pcd2sim.pcd_io import write_pcd
+    from tests.test_osm_overlay import BASE_DATUM, _base, _osm_at_base_xy
+    base, _ = _base(tmp_path)
+    scan = np.random.default_rng(0).uniform([-5, -5, -0.4], [5, 5, 3.0], (500, 3)).astype(np.float32)
+    write_pcd(f"{base}/map_ds.pcd", scan, np.full(len(scan), 50.0, np.float32))
+    out = str(tmp_path / "scene")
+    build(BASE_DATUM.lat, BASE_DATUM.lon, radius=40.0, out=out, base=base,
+          osm_path=_osm_at_base_xy(tmp_path, (25.0, 0.0, 5.0, 2)))
+    cfg = load_config(None, ["robot.type=ideal", "lidar.points_per_sec=1000", "gnss.datum=null", "web.port=8933",
+                             "web.map=points", "viewer.map_color=osm"])
+    cfg["scene"] = out
+    sim = Simulator(cfg)
+    web = WebViewer(cfg, sim)
+    try:
+        t0 = time.time()
+        while web.map_info == "loading" and time.time() - t0 < 20:
+            time.sleep(0.05)
+        cloud, boxes = web.map_layers
+        assert len(np.asarray(cloud.points)) == len(scan)                         # the scan only
+        assert len(np.asarray(boxes.batched_positions)) == int((sim.colors[:, 3] > 0).sum())
+        _choose(sim, web, "Plain")
+        assert all(_layer_rgbs(h) <= {tuple(PLAIN_RGB), tuple((PLAIN_RGB * 0.85 + 0.5).astype(int))}
+                   for h in web.map_layers)
+    finally:
+        web.server.stop()
+
+
+def test_the_map_build_is_logged_with_what_was_drawn(tmp_path):
+    lines = []
+    osm = tmp_path / "overpass.json"
+    osm.write_text(json.dumps({"elements": [square(15.0, 15.0, 5.0)]}))
+    out = str(tmp_path / "scene")
+    build(ENU0.lat, ENU0.lon, radius=30.0, out=out, osm_path=str(osm))
+    cfg = load_config(None, ["robot.type=ideal", "lidar.points_per_sec=1000", "gnss.datum=null", "spawn=null",
+                             "web.port=8934"])
+    cfg["scene"] = out
+    web = WebViewer(cfg, Simulator(cfg), log=lines.append)
+    try:
+        web._map_thread.join(20)
+        assert any(line.startswith("web viewer: map ") and "OSM boxes" in line for line in lines)
+    finally:
+        web.server.stop()
