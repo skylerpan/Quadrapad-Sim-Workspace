@@ -287,9 +287,10 @@ GNSS 的天空比例是從天線往場景射 9 條射線算的（`gnss.sky`）�
 docker/run.sh "python3 -m pcd2sim.osm_scene --url 'https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00' --radius 1000 --out scenes/osm_tucheng"
 scripts/run_sim.sh --scene scenes/osm_tucheng spawn=null gnss.sky.mode=map gnss.rtk=true
 
-# 疊在 dp 上：dp 的 map 座標（yaw 31°）、dp 的地板高 / spawn，dp 掃到的範圍外擴 2 m 讓給 dp；--register 以 OSM 為準修正 datum
+# 疊在 dp 上：dp 的 map 座標（yaw 31°）、dp 的地板高 / spawn，dp 掃到的範圍外擴 2 m 讓給 dp；--register 以 OSM 為準修正 datum；
+# --clear 清出大門（參考點 A (29.1, 39.5) / B (39.9, 40.3) 一帶）讓機器狗走得出去
 docker/run.sh "python3 -m pcd2sim.osm_scene --url 'https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00' --radius 1000 \
-    --base scenes/dp --osm Maps/osm_tucheng/overpass.json --out scenes/osm_tucheng_dp --register"
+    --base scenes/dp --osm Maps/osm_tucheng/overpass.json --out scenes/osm_tucheng_dp --register --clear 26 38 43 50"
 scripts/run_sim.sh --scene scenes/osm_tucheng_dp gnss.sky.mode=map
 ```
 
@@ -300,6 +301,7 @@ scripts/run_sim.sh --scene scenes/osm_tucheng_dp gnss.sky.mode=map
 - **spawn**：獨立場景寫的是離中心最近、離建物 1 m 以上的格點；`config/sim.yaml` 的 `spawn` 是 dp 的，跑獨立場景要加 `spawn=null`。疊合場景沿用 base 的 spawn。
 - **疊合（`--base`）**：base 的 box、contact、`voxels.npz` 原封不動排在最前面，OSM 的建物在 base 每個 box 的 xy 範圍外擴 `--margin`（2 m）內全部挖掉；地面高 = base spawn 的地板高（dp −0.4，`--ground-z` 覆寫）。base 沒有 `geo` 時用 config 的 `gnss.datum`。
 - **接上掃描（`Apron`，`--blend` 10 m）**：OSM 地面不留 margin，一路鋪到掃描邊緣（只有 base 的低處 box——底面在地板 +1.5 m 以下——蓋住的格子不鋪），高度從掃描邊緣的地面（每格在地板 −1.5 / +0.8 m 內最高的 box 頂）以 Laplace 內插平滑地降回 `ground_z`，`--blend` 公尺外完全是平的。以前地面在掃描外留 2 m 的溝、又固定在 −0.4，而 dp 邊緣的地面在 −1.1 到 0 之間，機器人走不出去。
+- **清出大門（`--clear X0 Y0 X1 Y1`，可重複）**：base map 座標的矩形裡，掃描「貼地」的東西（底面在地板 +1.5 m 以下的 box，與 `Apron` 同一條線：地面、路緣、門檻、雜點）和 map_ds 的點被切掉，長 box 只切掉矩形內那段（剩下最多四塊，各自保留 contact 和顏色）；更高的東西（雨遮、天花板）留著。矩形裡改鋪 OSM 地面，高度由 `Apron` 從周圍掃描邊緣平滑補上，OSM 建物也不會鋪進矩形 margin 內。在 `--register` 之後才清，所以 datum 照舊用整個掃描去對。紀錄在 `meta.json` 的 `base.clear`。2026-11-12 dp 大門（y≈44–46 有一排比院子地面 −1.0 m 高 0.6–0.8 m 的路緣 / 門 / 雜點，加上掃描破洞）：清 `26 38 43 50` 之前，從院子 y = 34 往北開的 23 條線全部在 y 39–45 被擋；清了之後 x 27–40 的 13 條全部開到 y≈57 的 OSM 街道上（`tests/test_osm_clear.py` 用同樣的路緣驗：清了走得過、沒清走不過）。
 - **以 OSM 為準（`--register`）**：OSM 是參考，錯的是 base 的 datum。把 base 頂面高於地板 2 m 的格子閉合 / 開運算、取最大一塊、填洞（建物本體，不含樹和雜點），先和 80 m 內的 OSM 輪廓做面積互相關找起點，再對輪廓做去除離群的 ICP（只平移，航向不動）。base 的 map 座標、box、spawn、導航點、樓梯 spec 全部不變，只有這個場景 `meta.json` 的 `geo`（datum 原點）移動，OSM 依修正後的 datum 重新投影；sim 跑這個場景時 GNSS 經緯度就和 OSM 一致。結果記在 `meta.json` 的 `registration`（`shift_m`、輪廓距離中位數前後、2 m 內比例、原 datum）。找不到 80 m 內的 OSM 建物時 `ok: false`、datum 不動。`--register` 本身不改 `config/sim.yaml` 的 `gnss.datum`（其他 dp 場景用的）；2026-11-12 已把它手動改成下面的修正值，所以現在對 dp 再跑 `--register` 只剩約 5 cm 的位移。
 - **疊合品質（`meta.json` 的 `overlay`）**：base 裡頂面高於地板 2 m 的格子（牆、屋頂）和重疊最多的那棟 OSM 輪廓的 IoU、重心距離。量的是 datum 和 OSM 輪廓合起來的誤差。
 - **LiDAR**：OSM 沒有反射率，獨立場景的 `voxels.npz` 是空的（強度 0）；`map_ds.pcd` 是每個 box 的頂面中心。viewer 只畫離 spawn 最近的 `max_map_boxes` 個 box。
