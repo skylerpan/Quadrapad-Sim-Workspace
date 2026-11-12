@@ -19,7 +19,7 @@ if [[ "$REINSTALL" == 1 || ! -f "$DEST/.complete" ]]; then
   rm -rf "$DEST"                          # a half-finished install (no .complete) is thrown away and redone
   mkdir -p "$DEST"
   tail -n +"$(awk '/^__PAYLOAD__$/ { print NR + 1; exit }' "$0")" "$0" | tar -xz -C "$DEST"
-  "$DEST/pixi-unpack" -q "$DEST/environment.tar" -o "$DEST"
+  SSL_CERT_FILE="${SSL_CERT_FILE:-$DEST/cacert.pem}" "$DEST/pixi-unpack" -q "$DEST/environment.tar" -o "$DEST"
   rm -f "$DEST/environment.tar"
   touch "$DEST/.complete"
 fi
