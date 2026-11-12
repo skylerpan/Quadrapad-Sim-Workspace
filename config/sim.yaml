@@ -90,8 +90,10 @@ gnss:                         # u-blox ZED-F9P / F9R on the base (quadsim/gnss.p
   rtk: false                  # true: corrections available (base station / NTRIP): rtk_fixed / rtk_float by sky; false: single
   mount_xyz: [-0.10, 0.0, 0.12]   # antenna in base_link; PLACEHOLDER (rear top of the torso), no gnss link in the URDF yet
   datum:                      # the map origin on WGS84 and the map x axis heading from east (deg, counter-clockwise); null = no GNSS
-    lat: 24.960860            # from the user's two dp.bt reference points (2026-11-05): A map (29.10, 39.50) = 24.961306 / 121.422022,
-    lon: 121.421968           # B map (39.90, 40.30) = 24.961353 / 121.422095; their distances disagree by 17 %, so the origin carries ~1.5 m
+    lat: 24.9607266           # OSM is the reference (2026-11-12): dp's building registered onto its OSM outline (osm_scene --register,
+    lon: 121.4220500          # shift (-0.51, -16.93) m in map, outline median 4.0 m ~ OSM's own accuracy). Before: 24.960860 / 121.421968
+                              # from the user's two dp.bt reference points (2026-11-05): A map (29.10, 39.50) = 24.961306 / 121.422022,
+                              # B map (39.90, 40.30) = 24.961353 / 121.422095; their distances disagree by 17 %, and dp sat ~17 m off OSM
     alt: 130.0                # ellipsoid height: PLACEHOLDER (Zhongli MSL + geoid); not given with the points
     yaw_deg: 31.0
   sky:                        # fix quality from the scene: rays in a cone around zenith that leave the map = sky fraction
