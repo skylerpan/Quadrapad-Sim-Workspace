@@ -33,6 +33,8 @@ from quadsim.gnss import Datum, enu_to_lla, enu_to_map, lla_to_enu, map_to_enu, 
 
 from . import SCENE_FORMAT
 from .osm_buildings import Building, parse_overpass, parse_streets_gl_url
+from .osm_colors import GROUND_RGB, GroundClass
+from .osm_ground import overpass_ground_query, paint_ground, parse_overpass_ground
 from .pcd_io import read_pcd, write_pcd
 from .voxel import merge_boxes
 
@@ -362,24 +364,50 @@ class Apron:
         return keep, z
 
 
+def _cell_boxes(keys: np.ndarray, cls: np.ndarray, z: np.ndarray, cell: float, thickness: float) -> ColouredBoxes:
+    """Ground cells -> boxes merged per (class, height), each in its class colour."""
+    parts = []
+    for c in np.unique(cls):
+        for h in np.unique(z[cls == c]):
+            sel = (cls == c) & (z == h)
+            parts.append(ColouredBoxes.of(_columns_to_boxes(keys[sel], cell, h - thickness, h),
+                                          GROUND_RGB[GroundClass(int(c))]))
+    return ColouredBoxes.concat(parts)
+
+
 def ground_boxes(lo: np.ndarray, hi: np.ndarray, tile: float, z: float, cell: float, apron: Apron | None,
-                 thickness: float = 0.2, z_step: float = 0.01) -> np.ndarray:
-    """Ground tiles over the square; the tiles that reach the apron are rebuilt from cells: none under the scan,
-    heights easing to the scan's edge (rounded to z_step so equal heights merge)."""
+                 paint: np.ndarray | None = None, thickness: float = 0.2, z_step: float = 0.01) -> ColouredBoxes:
+    """The ground over the square in its OSM colours. A tile of one ground class (paint: uint8 class per cell of the
+    square, osm_ground.paint_ground; None = all bare) away from the apron stays one tile; any other tile is rebuilt
+    from its cells, merged per class and height: no ground under the scan, heights easing to the scan's edge
+    (rounded to z_step so equal heights merge)."""
     tiles = ground_tiles(lo, hi, tile, z, thickness)
-    if apron is None or apron.covered.size == 0:
-        return tiles
+    i0 = np.round(np.asarray(lo) / cell).astype(np.int64)                  # the square's first cell on the grid
+    if paint is None:
+        paint = np.full(np.round((np.asarray(hi) - lo) / cell).astype(np.int64), GroundClass.BARE, np.uint8)
     tlo, thi = tiles[:, :2] - tiles[:, 3:5], tiles[:, :2] + tiles[:, 3:5]
-    near = np.all((tlo < apron.hi_m) & (thi > apron.lo_m), axis=1)
-    parts = [tiles[~near]]
-    for t0, t1 in zip(tlo[near], thi[near]):
-        keys = footprint_cells(np.array([[t0[0], t0[1]], [t1[0], t0[1]], [t1[0], t1[1]], [t0[0], t1[1]]]), cell)
-        keep, zc = apron.ground(keys)
-        keys, zc = keys[keep], np.round(zc[keep] / z_step) * z_step
-        for h in np.unique(zc):
-            sel = zc == h
-            parts.append(_columns_to_boxes(keys[sel], cell, h - thickness, h).astype(np.float32))
-    return np.vstack(parts)
+    near = np.zeros(len(tiles), bool)
+    if apron is not None and apron.covered.size:
+        near = np.all((tlo < apron.hi_m) & (thi > apron.lo_m), axis=1)
+    c0 = np.round(tlo / cell).astype(np.int64) - i0
+    c1 = np.round(thi / cell).astype(np.int64) - i0
+    whole, parts = [], []
+    for k in range(len(tiles)):
+        block = paint[c0[k, 0]:c1[k, 0], c0[k, 1]:c1[k, 1]]
+        if not near[k] and block.min() == block.max():
+            whole.append(ColouredBoxes.of(tiles[k:k + 1], GROUND_RGB[GroundClass(int(block.flat[0]))]))
+            continue
+        ix, iy = np.meshgrid(np.arange(c0[k, 0], c1[k, 0]), np.arange(c0[k, 1], c1[k, 1]), indexing="ij")
+        keys = np.column_stack([ix.ravel(), iy.ravel()]) + i0
+        cls = block.ravel()
+        if near[k]:
+            keep, zc = apron.ground(keys)
+            keys, cls, zc = keys[keep], cls[keep], np.round(zc[keep] / z_step) * z_step
+        else:
+            zc = np.full(len(keys), z)
+        if len(keys):
+            parts.append(_cell_boxes(keys, cls, zc, cell, thickness))
+    return ColouredBoxes.concat(whole + parts)
 
 
 def spawn_point(building_boxes: np.ndarray, centre: np.ndarray, lo: np.ndarray, hi: np.ndarray,
@@ -410,32 +438,49 @@ def _write_voxels(out: str, voxel: float, base: Base | None) -> None:
                         contact=np.zeros(0, bool))
 
 
-def _write_map_points(out: str, osm_boxes: np.ndarray, base: Base | None) -> None:
-    xyz = np.column_stack([osm_boxes[:, :2], osm_boxes[:, 2] + osm_boxes[:, 5]]).astype(np.float32)
+def _base_rgba(base: Base, name: str, n: int) -> np.ndarray:
+    """The base scene's own colours (`name` next to its boxes / points), else none (A = 0)."""
+    path = os.path.join(base.path, name)
+    rgba = np.load(path) if os.path.exists(path) else None
+    return rgba if rgba is not None and rgba.shape == (n, 4) else np.zeros((n, 4), np.uint8)
+
+
+def _write_map_points(out: str, osm: ColouredBoxes, base: Base | None) -> None:
+    """map_ds.pcd (the base's points, then every OSM box's top centre) and map_ds_colors.npy row for row."""
+    xyz = np.column_stack([osm.boxes[:, :2], osm.boxes[:, 2] + osm.boxes[:, 5]]).astype(np.float32)
     inten = np.full(len(xyz), 100.0, np.float32)
+    rgba = osm.rgba
     src = os.path.join(base.path, "map_ds.pcd") if base is not None else None
     if src and os.path.exists(src):
         bxyz, binten = read_pcd(src)
         xyz = np.vstack([bxyz.astype(np.float32), xyz])
         inten = np.concatenate([binten.astype(np.float32) if binten is not None else np.full(len(bxyz), 100.0,
                                                                                             np.float32), inten])
+        rgba = np.vstack([_base_rgba(base, "map_ds_colors.npy", len(bxyz)), rgba])
     write_pcd(os.path.join(out, "map_ds.pcd"), xyz, inten)
+    np.save(os.path.join(out, "map_ds_colors.npy"), rgba)
 
 
-def write_scene(out: str, osm_boxes: np.ndarray, base: Base | None, voxel: float, spawn: list[float],
+def write_scene(out: str, osm: ColouredBoxes, base: Base | None, voxel: float, spawn: list[float],
                 meta_extra: dict) -> dict:
     """The scene files quadsim.sim reads: the base scene's boxes first and unchanged, then the OSM boxes (all
-    contact). Without a base, voxels.npz is empty: OSM has no LiDAR intensity or surface detail."""
+    contact), and colors.npy row for row (the base's own colours or none, then OSM's). Without a base, voxels.npz
+    is empty: OSM has no LiDAR intensity or surface detail."""
     os.makedirs(out, exist_ok=True)
-    boxes = osm_boxes if base is None else np.vstack([base.boxes, osm_boxes])
-    contact = np.ones(len(osm_boxes), bool) if base is None else np.concatenate([base.contact, np.ones(len(osm_boxes), bool)])
+    if base is None:
+        boxes, rgba, contact = osm.boxes, osm.rgba, np.ones(len(osm.boxes), bool)
+    else:
+        boxes = np.vstack([base.boxes, osm.boxes])
+        rgba = np.vstack([_base_rgba(base, "colors.npy", len(base.boxes)), osm.rgba])
+        contact = np.concatenate([base.contact, np.ones(len(osm.boxes), bool)])
     np.save(os.path.join(out, "boxes.npy"), boxes.astype(np.float32))
     np.save(os.path.join(out, "contact.npy"), contact)
+    np.save(os.path.join(out, "colors.npy"), rgba.astype(np.uint8))
     stale = os.path.join(out, "ground.npz")
     if os.path.exists(stale):
         os.remove(stale)
     _write_voxels(out, voxel, base)
-    _write_map_points(out, osm_boxes, base)
+    _write_map_points(out, osm, base)
     lo, hi = boxes[:, :3] - boxes[:, 3:], boxes[:, :3] + boxes[:, 3:]
     meta = {"format_version": SCENE_FORMAT, "source_format": "osm", "voxel": voxel, "boxes": int(len(boxes)),
             "contact": {"boxes": int(contact.sum())}, "ground": None,
@@ -454,12 +499,14 @@ def scene_square(centre: np.ndarray, radius: float, cell: float) -> Clip:
 def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: float = 0.5, tile: float = 20.0,
           default_height: float = 6.0, level_height: float = 3.0, alt: float = 0.0, ground_z: float | None = None,
           base: str | None = None, fallback_datum: dict | None = None, margin: float = 2.0,
-          blend: float = 10.0, register: bool = False) -> dict:
+          blend: float = 10.0, register: bool = False, ground_path: str | None = None) -> dict:
     """An OSM scene around (lat, lon). Stand-alone: map = ENU there, ground at ground_z (default 0). With a base
     scene: its map frame (datum + heading), its floor height and spawn, OSM buildings cut out `margin` around its
     boxes, OSM ground up to the scan's edge and easing from the edge's height to ground_z over `blend` metres.
     register: OSM is the reference, the base's datum is moved so its building lands on its OSM outline (the map
-    coordinates of the scan stay as they are; meta.json geo is the corrected datum)."""
+    coordinates of the scan stay as they are; meta.json geo is the corrected datum).
+    ground_path: an Overpass ground answer (osm_ground; downloaded once when missing) paints the ground in its OSM
+    colours; None = bare ground."""
     b = load_base(base, fallback_datum) if base else None
     frame = b.datum if b else Datum(lat, lon, alt, 0.0)
     centre = enu_to_map(lla_to_enu(lat, lon, frame.alt, frame), frame)[:2]
@@ -479,9 +526,19 @@ def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: 
             centre = enu_to_map(lla_to_enu(lat, lon, frame.alt, frame), frame)[:2]
             lo, hi = scene_square(centre, radius, cell)
             buildings, rejected = parse_overpass(answer, frame, default_height, level_height)
-    bboxes = buildings_to_boxes(buildings, cell, gz, clip=(lo, hi), cut=cut).boxes
+    blds = buildings_to_boxes(buildings, cell, gz, clip=(lo, hi), cut=cut)
     apron = Apron(b.boxes, b.floor_z, cell, blend, gz) if b else None
-    osm_boxes = np.vstack([ground_boxes(lo, hi, tile, gz, cell, apron), bboxes])
+    paint, ground_meta = None, None
+    if ground_path:
+        fetch_overpass(ground_path, overpass_ground_query(overpass_bbox(frame, lo, hi)))
+        with open(ground_path) as f:
+            features = parse_overpass_ground(json.load(f), frame)
+        paint = paint_ground(features, lo, hi, cell)
+        counts = Counter(x.cls.name for x in features)
+        ground_meta = {"file": os.path.abspath(ground_path), "features": dict(sorted(counts.items())),
+                       "cells": {GroundClass(int(k)).name: int(v) for k, v in zip(*np.unique(paint, return_counts=True))}}
+    osm = ColouredBoxes.concat([ground_boxes(lo, hi, tile, gz, cell, apron, paint), blds])
+    bboxes = blds.boxes
     spawn = b.spawn if b else [*spawn_point(bboxes, centre, lo, hi), gz]
     sources = Counter(x.height_source for x in buildings)
     extra = {
@@ -492,7 +549,8 @@ def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: 
         "osm": {"file": os.path.abspath(osm_path), "buildings": len(buildings), "rejected": rejected,
                 "height_source": {k: sources.get(k, 0) for k in ("tag", "levels", "default")},
                 "default_height": default_height, "level_height": level_height, "cell": cell, "tile": tile,
-                "building_boxes": int(len(bboxes)), "attribution": "(c) OpenStreetMap contributors, ODbL"},
+                "building_boxes": int(len(bboxes)), "ground": ground_meta,
+                "attribution": "(c) OpenStreetMap contributors, ODbL"},
     }
     if b:
         extra["base"] = {"path": os.path.abspath(b.path), "boxes": int(len(b.boxes)), "margin": margin,
@@ -500,7 +558,7 @@ def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: 
         extra["overlay"] = overlay_fit(b, buildings, cell)
         if registration is not None:
             extra["registration"] = registration
-    return write_scene(out, osm_boxes, b, b.voxel if b else cell, spawn, extra)
+    return write_scene(out, osm, b, b.voxel if b else cell, spawn, extra)
 
 
 def main(argv=None):
@@ -511,6 +569,9 @@ def main(argv=None):
     ap.add_argument("--radius", type=float, default=1000.0, help="half side of the scene square (m)")
     ap.add_argument("--out", required=True, help="scene directory, e.g. scenes/osm_tucheng")
     ap.add_argument("--osm", default=None, help="Overpass cache (default Maps/<out name>/overpass.json)")
+    ap.add_argument("--osm-ground", default=None,
+                    help="Overpass ground cache: roads, parks, water (default Maps/<out name>/overpass_ground.json)")
+    ap.add_argument("--no-ground", action="store_true", help="bare ground: no ground query, no ground colours")
     ap.add_argument("--cell", type=float, default=0.5, help="footprint raster cell (m)")
     ap.add_argument("--tile", type=float, default=20.0, help="ground tile side (m)")
     ap.add_argument("--default-height", type=float, default=6.0, help="buildings with no height or levels (m)")
@@ -529,9 +590,10 @@ def main(argv=None):
     a = ap.parse_args(argv)
     lat, lon = parse_streets_gl_url(a.url) if a.url else a.center
     osm = a.osm or os.path.join("Maps", os.path.basename(os.path.normpath(a.out)), "overpass.json")
+    ground = None if a.no_ground else (a.osm_ground or os.path.join(os.path.dirname(osm), "overpass_ground.json"))
     fallback = (load_config(a.config, []).get("gnss") or {}).get("datum") if a.base else None
     meta = build(lat, lon, a.radius, a.out, osm, a.cell, a.tile, a.default_height, a.level_height, a.alt,
-                 a.ground_z, a.base, fallback, a.margin, a.blend, a.register)
+                 a.ground_z, a.base, fallback, a.margin, a.blend, a.register, ground)
     o = meta["osm"]
     print(f"wrote {a.out}: {o['buildings']} buildings ({o['height_source']}, {o['rejected']} refused) -> "
           f"{o['building_boxes']} boxes + ground, spawn {meta['spawn']}")
