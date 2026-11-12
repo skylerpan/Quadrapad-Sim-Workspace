@@ -57,24 +57,27 @@ def _key(p: dict) -> tuple[float, float]:
     return p["lat"], p["lon"]
 
 
+def _attach(ring: list[dict], open_: list[list[dict]]) -> bool:
+    """Append the first open segment that starts or ends where the ring ends (reversed if it ends there)."""
+    for i, seg in enumerate(open_):
+        if _key(seg[0]) == _key(ring[-1]):
+            ring += seg[1:]
+        elif _key(seg[-1]) == _key(ring[-1]):
+            ring += seg[::-1][1:]
+        else:
+            continue
+        open_.pop(i)
+        return True
+    return False
+
+
 def _join_rings(segments: list[list[dict]]) -> list[list[dict]]:
     """Outer member ways joined end to end into closed rings (OSM multipolygons split outlines into ways)."""
     rings, open_ = [], [s for s in segments if len(s) >= 2]
     while open_:
         ring = list(open_.pop())
-        grew = True
-        while _key(ring[0]) != _key(ring[-1]) and grew:
-            grew = False
-            for i, s in enumerate(open_):
-                if _key(s[0]) == _key(ring[-1]):
-                    ring += s[1:]
-                elif _key(s[-1]) == _key(ring[-1]):
-                    ring += s[::-1][1:]
-                else:
-                    continue
-                open_.pop(i)
-                grew = True
-                break
+        while _key(ring[0]) != _key(ring[-1]) and _attach(ring, open_):
+            pass
         if len(ring) >= 4 and _key(ring[0]) == _key(ring[-1]):
             rings.append(ring)
     return rings
@@ -90,21 +93,25 @@ def _rings(el: dict) -> list[list[dict]]:
     return []
 
 
+def _features(el: dict, cls: GroundClass, frame: Datum) -> list[Feature]:
+    """A road / path way -> one Line; an area way or multipolygon -> an Area per closed outer ring."""
+    tags = el.get("tags") or {}
+    osm_id = int(el.get("id", 0))
+    if "highway" not in tags or tags.get("area") == "yes":
+        return [Area(osm_id, cls, _xy(r[:-1], frame)) for r in _rings(el)]
+    g = el.get("geometry") or []
+    if el.get("type") != "way" or len(g) < 2:
+        return []
+    return [Line(osm_id, cls, _xy(g, frame), road_width(tags))]
+
+
 def parse_overpass_ground(data: dict, frame: Datum) -> list[Feature]:
     """The ground features of an Overpass answer, in the map frame."""
     out: list[Feature] = []
     for el in data.get("elements", []):
-        tags = el.get("tags") or {}
-        cls = ground_class(tags)
-        if cls is None or el.get("type") not in ("way", "relation"):
-            continue
-        osm_id = int(el.get("id", 0))
-        if "highway" in tags and tags.get("area") != "yes":
-            g = el.get("geometry") or []
-            if el.get("type") == "way" and len(g) >= 2:
-                out.append(Line(osm_id, cls, _xy(g, frame), road_width(tags)))
-            continue
-        out += [Area(osm_id, cls, _xy(r[:-1], frame)) for r in _rings(el)]
+        cls = ground_class(el.get("tags") or {})
+        if cls is not None and el.get("type") in ("way", "relation"):
+            out += _features(el, cls, frame)
     return out
 
 

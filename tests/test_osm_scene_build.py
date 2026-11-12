@@ -134,3 +134,17 @@ def test_without_a_ground_answer_the_ground_is_bare(tmp_path):
     out, meta = _build(tmp_path, _osm(tmp_path))
     rgba = np.load(os.path.join(out, "colors.npy"))
     assert {tuple(c) for c in rgba[:, :3]} == {GROUND_RGB[GroundClass.BARE]} and meta["osm"]["ground"] is None
+
+
+def test_the_command_line_finds_the_ground_cache_next_to_the_building_cache(tmp_path, capsys):
+    from pcd2sim.osm_scene import main
+    from tests.osm_fixture import geom
+    osm = _osm(tmp_path, square(10.0, 10.0, 6.0))
+    (tmp_path / "overpass_ground.json").write_text(json.dumps({"elements": [
+        {"type": "way", "id": 1, "tags": {"highway": "service"}, "geometry": geom([(-30, 0), (30, 0)], close=False)}]}))
+    out = str(tmp_path / "cli")
+    main(["--center", str(ENU0.lat), str(ENU0.lon), "--radius", "40", "--osm", osm, "--out", out])
+    meta = json.load(open(os.path.join(out, "meta.json")))
+    assert meta["osm"]["ground"]["features"] == {"ROAD": 1} and "1 buildings" in capsys.readouterr().out
+    main(["--center", str(ENU0.lat), str(ENU0.lon), "--radius", "40", "--osm", osm, "--out", out, "--no-ground"])
+    assert json.load(open(os.path.join(out, "meta.json")))["osm"]["ground"] is None

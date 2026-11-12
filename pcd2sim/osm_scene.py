@@ -496,6 +496,77 @@ def scene_square(centre: np.ndarray, radius: float, cell: float) -> Clip:
     return np.floor((centre - radius) / cell) * cell, np.ceil((centre + radius) / cell) * cell
 
 
+def _square(lat: float, lon: float, radius: float, cell: float, frame: Datum) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The scene centre in the map frame and its square [lo, hi] on the cell grid."""
+    centre = enu_to_map(lla_to_enu(lat, lon, frame.alt, frame), frame)[:2]
+    lo, hi = scene_square(centre, radius, cell)
+    return centre, lo, hi
+
+
+def _register(b: Base, buildings: list[Building], frame: Datum, cell: float) -> tuple[Datum, dict]:
+    """OSM is the reference: the frame with the scan's datum moved onto its OSM outline, and the registration."""
+    registration = register_base(b, buildings, cell)
+    if not registration["ok"]:
+        return frame, registration
+    registration["datum_before"] = {"lat": b.datum.lat, "lon": b.datum.lon}
+    return shifted_datum(frame, registration["shift_m"]), registration
+
+
+def _ground_paint(ground_path: str | None, frame: Datum, lo: np.ndarray, hi: np.ndarray,
+                  cell: float) -> tuple[np.ndarray | None, dict | None]:
+    """The ground class per cell from the OSM ground answer (downloaded once when missing) and its meta.json
+    record; (None, None) without one: bare ground."""
+    if not ground_path:
+        return None, None
+    fetch_overpass(ground_path, overpass_ground_query(overpass_bbox(frame, lo, hi)))
+    with open(ground_path) as f:
+        features = parse_overpass_ground(json.load(f), frame)
+    paint = paint_ground(features, lo, hi, cell)
+    counts = Counter(x.cls.name for x in features)
+    return paint, {"file": os.path.abspath(ground_path), "features": dict(sorted(counts.items())),
+                   "cells": {GroundClass(int(k)).name: int(v) for k, v in zip(*np.unique(paint, return_counts=True))}}
+
+
+def _osm_meta(osm_path: str, buildings: list[Building], rejected: int, n_building_boxes: int, ground_meta,
+              **params) -> dict:
+    sources = Counter(x.height_source for x in buildings)
+    return {"file": os.path.abspath(osm_path), "buildings": len(buildings), "rejected": rejected,
+            "height_source": {k: sources.get(k, 0) for k in ("tag", "levels", "default")}, **params,
+            "building_boxes": n_building_boxes, "ground": ground_meta,
+            "attribution": "(c) OpenStreetMap contributors, ODbL"}
+
+
+def _geo_meta(frame: Datum, b: Base | None, registration: dict | None, radius: float, lat: float, lon: float) -> dict:
+    source = "osm" if b is None else f"osm+{os.path.basename(os.path.normpath(b.path))}"
+    if registration and registration["ok"]:
+        source += " registered"
+    return {"lat": frame.lat, "lon": frame.lon, "alt": frame.alt, "yaw_deg": frame.yaw_deg, "source": source,
+            "radius_m": radius, "centre": [lat, lon]}
+
+
+def _ground_z(ground_z: float | None, b: Base | None) -> float:
+    """The ground top: as given, else the base's floor, else 0."""
+    if ground_z is not None:
+        return ground_z
+    return b.floor_z if b else 0.0
+
+
+def _apron(b: Base | None, cell: float, blend: float, gz: float) -> Apron | None:
+    return Apron(b.boxes, b.floor_z, cell, blend, gz) if b else None
+
+
+def _base_meta(b: Base | None, buildings: list[Building], cell: float, registration: dict | None,
+               margin: float, blend: float) -> dict:
+    """meta.json records of a base scene: where it came from, how well OSM fits it, its registration."""
+    if b is None:
+        return {}
+    meta = {"base": {"path": os.path.abspath(b.path), "boxes": int(len(b.boxes)), "margin": margin, "blend": blend},
+            "overlay": overlay_fit(b, buildings, cell)}
+    if registration is not None:
+        meta["registration"] = registration
+    return meta
+
+
 def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: float = 0.5, tile: float = 20.0,
           default_height: float = 6.0, level_height: float = 3.0, alt: float = 0.0, ground_z: float | None = None,
           base: str | None = None, fallback_datum: dict | None = None, margin: float = 2.0,
@@ -508,57 +579,29 @@ def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: 
     ground_path: an Overpass ground answer (osm_ground; downloaded once when missing) paints the ground in its OSM
     colours; None = bare ground."""
     b = load_base(base, fallback_datum) if base else None
-    frame = b.datum if b else Datum(lat, lon, alt, 0.0)
-    centre = enu_to_map(lla_to_enu(lat, lon, frame.alt, frame), frame)[:2]
-    lo, hi = scene_square(centre, radius, cell)
-    gz = ground_z if ground_z is not None else (b.floor_z if b else 0.0)
-    cut = Cut(b.boxes, cell, margin) if b else None
+    frame = b.datum if b else Datum(lat, lon, alt, 0.0)            # stand-alone: map = ENU at the centre
+    centre, lo, hi = _square(lat, lon, radius, cell, frame)
+    gz = _ground_z(ground_z, b)
     fetch_overpass(osm_path, overpass_query(overpass_bbox(frame, lo, hi)))
     with open(osm_path) as f:
         answer = json.load(f)
     buildings, rejected = parse_overpass(answer, frame, default_height, level_height)
     registration = None
-    if b and register:                           # OSM is the reference: move the scan's datum onto it
-        registration = register_base(b, buildings, cell)
+    if b and register:
+        frame, registration = _register(b, buildings, frame, cell)
         if registration["ok"]:
-            frame = shifted_datum(frame, registration["shift_m"])
-            registration["datum_before"] = {"lat": b.datum.lat, "lon": b.datum.lon}
-            centre = enu_to_map(lla_to_enu(lat, lon, frame.alt, frame), frame)[:2]
-            lo, hi = scene_square(centre, radius, cell)
+            centre, lo, hi = _square(lat, lon, radius, cell, frame)
             buildings, rejected = parse_overpass(answer, frame, default_height, level_height)
-    blds = buildings_to_boxes(buildings, cell, gz, clip=(lo, hi), cut=cut)
-    apron = Apron(b.boxes, b.floor_z, cell, blend, gz) if b else None
-    paint, ground_meta = None, None
-    if ground_path:
-        fetch_overpass(ground_path, overpass_ground_query(overpass_bbox(frame, lo, hi)))
-        with open(ground_path) as f:
-            features = parse_overpass_ground(json.load(f), frame)
-        paint = paint_ground(features, lo, hi, cell)
-        counts = Counter(x.cls.name for x in features)
-        ground_meta = {"file": os.path.abspath(ground_path), "features": dict(sorted(counts.items())),
-                       "cells": {GroundClass(int(k)).name: int(v) for k, v in zip(*np.unique(paint, return_counts=True))}}
-    osm = ColouredBoxes.concat([ground_boxes(lo, hi, tile, gz, cell, apron, paint), blds])
-    bboxes = blds.boxes
-    spawn = b.spawn if b else [*spawn_point(bboxes, centre, lo, hi), gz]
-    sources = Counter(x.height_source for x in buildings)
-    extra = {
-        "geo": {"lat": frame.lat, "lon": frame.lon, "alt": frame.alt, "yaw_deg": frame.yaw_deg,
-                "source": "osm" if b is None else f"osm+{os.path.basename(os.path.normpath(b.path))}"
-                                                     + (" registered" if registration and registration["ok"] else ""),
-                "radius_m": radius, "centre": [lat, lon]},
-        "osm": {"file": os.path.abspath(osm_path), "buildings": len(buildings), "rejected": rejected,
-                "height_source": {k: sources.get(k, 0) for k in ("tag", "levels", "default")},
-                "default_height": default_height, "level_height": level_height, "cell": cell, "tile": tile,
-                "building_boxes": int(len(bboxes)), "ground": ground_meta,
-                "attribution": "(c) OpenStreetMap contributors, ODbL"},
-    }
-    if b:
-        extra["base"] = {"path": os.path.abspath(b.path), "boxes": int(len(b.boxes)), "margin": margin,
-                         "blend": blend}
-        extra["overlay"] = overlay_fit(b, buildings, cell)
-        if registration is not None:
-            extra["registration"] = registration
-    return write_scene(out, osm, b, b.voxel if b else cell, spawn, extra)
+    blds = buildings_to_boxes(buildings, cell, gz, clip=(lo, hi), cut=Cut(b.boxes, cell, margin) if b else None)
+    paint, ground_meta = _ground_paint(ground_path, frame, lo, hi, cell)
+    osm = ColouredBoxes.concat([ground_boxes(lo, hi, tile, gz, cell, _apron(b, cell, blend, gz), paint), blds])
+    extra = {"geo": _geo_meta(frame, b, registration, radius, lat, lon),
+             "osm": _osm_meta(osm_path, buildings, rejected, len(blds.boxes), ground_meta,
+                              default_height=default_height, level_height=level_height, cell=cell, tile=tile),
+             **_base_meta(b, buildings, cell, registration, margin=margin, blend=blend)}
+    if b is None:
+        return write_scene(out, osm, None, cell, [*spawn_point(blds.boxes, centre, lo, hi), gz], extra)
+    return write_scene(out, osm, b, b.voxel, b.spawn, extra)
 
 
 def main(argv=None):

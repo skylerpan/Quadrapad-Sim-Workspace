@@ -287,59 +287,66 @@ class WebViewer:
 
     def _build_map(self, sim) -> None:
         """Background thread: read the scene and add it under /map. Reads only the scene files and the arrays the
-        Simulator loaded at start (sim.boxes / sim.slabs, never written afterwards)."""
-        w, sc = self.cfg, self.server.scene
-        t0 = time.perf_counter()
+        Simulator loaded at start (sim.boxes / sim.slabs / sim.colors, never written afterwards). The colours of every
+        mode are computed here, once; the handle is published last and the main thread owns it from then on."""
+        builders = {"points": self._points_map, "boxes": self._boxes_map}
         try:
-            mode = str(w["map"])
-            if mode == "points":
-                from pcd2sim.pcd_io import read_pcd
-                xyz, _ = read_pcd(os.path.join(self.scene_dir, "map_ds.pcd"))
-                n_all = len(xyz)
-                idx, cell = downsample_indices(xyz, int(w["max_map_points"]), self.voxel)
-                xyz32 = xyz[idx].astype(np.float32)
-                rgba_path = os.path.join(self.scene_dir, "map_ds_colors.npy")
-                rgba = np.load(rgba_path) if os.path.exists(rgba_path) else None
-                rgba = rgba[idx] if rgba is not None and len(rgba) == n_all else None
-                colors = {m: map_colors(xyz32[:, 2], rgba, m) for m in MAP_COLORS}
-                shown = self.map_mode
-                handle = sc.add_point_cloud("/map/points", xyz32, colors[shown], point_size=float(cell),
-                                            point_shape="square", point_shading="flat",
-                                            precision=str(w["map_precision"]))
-                info = f"{len(idx)} points" + (f" (of {n_all}, {cell:.2f} m cells)" if len(idx) < n_all else "")
-                self._map_shown, self.map_handle = shown, handle
-                self._map_mode_colors = colors                   # last: the main thread syncs the mode once this is set
-            elif mode == "boxes":
-                near = nearest_box_indices(sim.boxes, self._base[:2], int(w["max_map_boxes"]))
-                boxes = np.asarray(sim.boxes[near], dtype=np.float64)
-                rgba = None if sim.colors is None else sim.colors[near]
-                colors = {m: box_colors(boxes, self.voxel, rgba, m) for m in MAP_COLORS}
-                shown = self.map_mode
-                # one unit cube (same winding as the MuJoCo viewer mesh), instanced per box: position = centre,
-                # per-axis scale = full extents, its own colour so neighbouring boxes do not merge into one face
-                verts, faces = hexahedra_arrays(box_corners(np.array([[0.0, 0.0, 0.0, 0.5, 0.5, 0.5]])))
-                n = len(boxes)
-                handle = sc.add_batched_meshes_simple(
-                    "/map/boxes", verts.astype(np.float32), faces.astype(np.uint32),
-                    batched_wxyzs=np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (n, 1)),
-                    batched_positions=boxes[:, :3].astype(np.float32),
-                    batched_scales=(2.0 * boxes[:, 3:6]).astype(np.float32),
-                    batched_colors=colors[shown],
-                    lod="auto", flat_shading=True, cast_shadow=False, receive_shadow=False)
-                info = f"{n} boxes, per-box colour" + (f" ({n} of {len(sim.boxes)}, nearest the spawn)" if n < len(sim.boxes) else "")
-                self._map_shown, self.map_handle = shown, handle
-                self._map_mode_colors = colors                   # last: the main thread syncs the mode once this is set
-                if sim.slabs is not None and len(sim.slabs):
-                    verts, faces = hexahedra_arrays(sim.slabs)
-                    sc.add_mesh_simple("/map/ground", verts.astype(np.float32), faces.astype(np.uint32), color=(107, 120, 107),
-                                       flat_shading=True, cast_shadow=False, receive_shadow=False)
-                    info += f", {len(sim.slabs)} floor slabs"
-            else:
+            build = builders.get(str(self.cfg["map"]))
+            if build is None:
                 info = "off"
+            else:
+                shown = self.map_mode
+                handle, colors, info = build(sim, shown)
+                self._map_shown, self.map_handle = shown, handle
+                self._map_mode_colors = colors               # last: the main thread syncs the mode once this is set
         except Exception as e:  # noqa: BLE001  (a viewer problem must not take the sim down)
             info = f"failed: {e!r}"
         self.map_info = info
         self.g_map.value = info
+
+    def _points_map(self, sim, shown):
+        """map_ds.pcd as a cloud, voxel-downsampled to web.max_map_points, its colours from map_ds_colors.npy."""
+        from pcd2sim.pcd_io import read_pcd
+        w = self.cfg
+        xyz, _ = read_pcd(os.path.join(self.scene_dir, "map_ds.pcd"))
+        n_all = len(xyz)
+        idx, cell = downsample_indices(xyz, int(w["max_map_points"]), self.voxel)
+        xyz32 = xyz[idx].astype(np.float32)
+        rgba_path = os.path.join(self.scene_dir, "map_ds_colors.npy")
+        rgba = np.load(rgba_path) if os.path.exists(rgba_path) else None
+        rgba = rgba[idx] if rgba is not None and len(rgba) == n_all else None
+        colors = {m: map_colors(xyz32[:, 2], rgba, m) for m in MAP_COLORS}
+        handle = self.server.scene.add_point_cloud("/map/points", xyz32, colors[shown], point_size=float(cell),
+                                                   point_shape="square", point_shading="flat",
+                                                   precision=str(w["map_precision"]))
+        info = f"{len(idx)} points" + (f" (of {n_all}, {cell:.2f} m cells)" if len(idx) < n_all else "")
+        return handle, colors, info
+
+    def _boxes_map(self, sim, shown):
+        """The scene boxes nearest the spawn (web.max_map_boxes), one instance each, coloured from colors.npy."""
+        sc = self.server.scene
+        near = nearest_box_indices(sim.boxes, self._base[:2], int(self.cfg["max_map_boxes"]))
+        boxes = np.asarray(sim.boxes[near], dtype=np.float64)
+        rgba = None if sim.colors is None else sim.colors[near]
+        colors = {m: box_colors(boxes, self.voxel, rgba, m) for m in MAP_COLORS}
+        # one unit cube (same winding as the MuJoCo viewer mesh), instanced per box: position = centre,
+        # per-axis scale = full extents, its own colour so neighbouring boxes do not merge into one face
+        verts, faces = hexahedra_arrays(box_corners(np.array([[0.0, 0.0, 0.0, 0.5, 0.5, 0.5]])))
+        n = len(boxes)
+        handle = sc.add_batched_meshes_simple(
+            "/map/boxes", verts.astype(np.float32), faces.astype(np.uint32),
+            batched_wxyzs=np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (n, 1)),
+            batched_positions=boxes[:, :3].astype(np.float32),
+            batched_scales=(2.0 * boxes[:, 3:6]).astype(np.float32),
+            batched_colors=colors[shown],
+            lod="auto", flat_shading=True, cast_shadow=False, receive_shadow=False)
+        info = f"{n} boxes, per-box colour" + (f" ({n} of {len(sim.boxes)}, nearest the spawn)" if n < len(sim.boxes) else "")
+        if sim.slabs is not None and len(sim.slabs):
+            verts, faces = hexahedra_arrays(sim.slabs)
+            sc.add_mesh_simple("/map/ground", verts.astype(np.float32), faces.astype(np.uint32), color=(107, 120, 107),
+                               flat_shading=True, cast_shadow=False, receive_shadow=False)
+            info += f", {len(sim.slabs)} floor slabs"
+        return handle, colors, info
         self.log(f"web viewer: map {info} in {time.perf_counter() - t0:.1f} s")
 
     # -- controls (main thread polls, viser thread sets) -------------------------

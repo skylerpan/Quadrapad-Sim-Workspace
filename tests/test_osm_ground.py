@@ -57,7 +57,7 @@ def test_the_query_asks_for_roads_and_areas_with_their_geometry():
 
 def test_a_multipolygon_split_over_member_ways_is_joined_into_one_area():
     north = geom([(-20, 0), (-20, 10), (20, 10), (20, 0)], close=False)
-    south = geom([(-20, 0), (20, 0)], close=False)[::-1]          # runs the other way: joined reversed
+    south = geom([(-20, 0), (20, 0)], close=False)                # ends where north ends: joined reversed
     rel = {"type": "relation", "id": 9, "tags": {"type": "multipolygon", "natural": "water"},
            "members": [{"type": "way", "role": "outer", "geometry": north},
                        {"type": "way", "role": "outer", "geometry": south},
