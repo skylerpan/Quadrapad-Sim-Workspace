@@ -6,21 +6,10 @@ import numpy as np
 import pytest
 
 from pcd2sim.osm_buildings import parse_overpass, parse_streets_gl_url
-from quadsim.gnss import Datum, enu_to_lla
-
-ENU0 = Datum(lat=24.95919, lon=121.41896, alt=0.0, yaw_deg=0.0)
-
-
-def _geom(enu_xy, close=True):
-    pts = [enu_to_lla(np.array([e, n, 0.0]), ENU0) for e, n in enu_xy]
-    if close:
-        pts.append(pts[0])
-    return [{"lat": la, "lon": lo} for la, lo, _ in pts]
-
-
-def _square(cx, cy, half, **tags):
-    ring = [(cx - half, cy - half), (cx + half, cy - half), (cx + half, cy + half), (cx - half, cy + half)]
-    return {"type": "way", "id": 1, "tags": {"building": "yes", **tags}, "geometry": _geom(ring)}
+from quadsim.gnss import Datum
+from tests.osm_fixture import ENU0
+from tests.osm_fixture import geom as _geom
+from tests.osm_fixture import square as _square
 
 
 def _area(xy):
