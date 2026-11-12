@@ -485,7 +485,7 @@ scripts/run_sim.sh web.port=9000 web.map=boxes web.max_map_points=500000   # 設
 
 畫面內容：
 
-- **地圖**：`map_ds.pcd` 當點雲畫，顏色照 `Map colour`（Layers 資料夾的下拉選單：**OSM** = 場景顏色、沒有的照高度 / **Height** = 全部照高度 / **Plain** = 灰；初始值 `viewer.map_color`，預設 osm）。切換時 MuJoCo viewer 視窗的地圖也一起換（sim_node 主迴圈在 viewer lock 內改 `geom_rgba`，不用重編模型）；MuJoCo 的地圖是每個（場景顏色, 高度帶 16 段）一個 mesh geom，材質無高光。超過 `web.max_map_points`（預設 150 萬）就體素降採樣（dp_1008 的 170 萬點 → 128 萬點、0.11 m；0.03 m 場景 1,700 萬點也能開）。整張地圖在連線時送一次（約 20 MB），在背景執行緒建好，sim 不等它。`web.map=boxes` 改畫場景的 box（離出生點最近的 `web.max_map_boxes` 個）：每個 box 一個 instance（GPU instancing，比整塊 mesh 便宜），顏色和點雲一樣照 `Map colour`，再加棋盤式明暗，相鄰同高的 box 也分得開，所以 box 的邊、階梯的踏面都看得到；`none` 不畫。
+- **地圖**：`map_ds.pcd` 的掃描點（沒有場景顏色的點）當點雲畫；有場景顏色的 box（OSM 建物和地面）直接畫成 box（`/map/osm`，離出生點最近的 `web.max_map_boxes` 個）——`map_ds.pcd` 裡每個 OSM box 只有頂面中心一點（20 m 地磚也是一點），當點畫幾乎看不到。`osm_tucheng_dp`：58.7 萬掃描點 + 19.5 萬 OSM box，0.2 s。顏色照 `Map colour`（Layers 資料夾的下拉選單：**OSM** = 場景顏色、沒有的照高度 / **Height** = 全部照高度 / **Plain** = 灰；初始值 `viewer.map_color`，預設 osm）。切換時 MuJoCo viewer 視窗的地圖也一起換（sim_node 主迴圈在 viewer lock 內改 `geom_rgba`，不用重編模型）；MuJoCo 的地圖是每個（場景顏色, 高度帶 16 段）一個 mesh geom，材質無高光。超過 `web.max_map_points`（預設 150 萬）就體素降採樣（dp_1008 的 170 萬點 → 128 萬點、0.11 m；0.03 m 場景 1,700 萬點也能開）。整張地圖在連線時送一次（約 20 MB），在背景執行緒建好，sim 不等它。`web.map=boxes` 改畫場景的 box（離出生點最近的 `web.max_map_boxes` 個）：每個 box 一個 instance（GPU instancing，比整塊 mesh 便宜），顏色和點雲一樣照 `Map colour`，再加棋盤式明暗，相鄰同高的 box 也分得開，所以 box 的邊、階梯的踏面都看得到；`none` 不畫。
 - **機器人**：MuJoCo 模型的 visual geom（G23 的 STL、理想底盤的 box），每個 body 一個 frame，姿態最多 `web.hz`（30）Hz 更新，沒變就不送。碰撞 geom 和代理 box 不畫。
 - **LiDAR**：最新一幀轉到 map 座標，均勻抽到 `web.lidar_points`（8000）點，最多 `web.lidar_hz`（10）Hz。
 - **規劃路徑**：訂閱 `web.path_topic`（預設 `/robot01/planned_path`，nav_msgs/Path），畫成綠線；設成空字串關掉。
