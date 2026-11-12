@@ -69,12 +69,14 @@ def test_the_scan_is_kept_and_osm_is_cut_out_around_it(tmp_path):
     assert np.array_equal(boxes[:n], base_boxes)                                     # the scan, untouched, first
     assert np.array_equal(contact[:n], [True, True, True, False, False, False, True]) and contact[n:].all()
     osm_part = boxes[n:]
-    assert not _overlap(osm_part, -7.9, 17.9, -7.9, 7.9).any()                       # scan + 2 m margin left alone
     tall = osm_part[:, 2] + osm_part[:, 5] > FLOOR + 1.0
+    assert not _overlap(osm_part[tall], -7.9, 17.9, -7.9, 7.9).any()                 # buildings: scan + 2 m margin
     assert _overlap(osm_part[tall], 25, 35, -5, 5).any()                             # the neighbour stands
     ground = osm_part[~tall]
+    assert not _overlap(ground, -5.99, 15.99, -5.99, 5.99).any()                     # no ground under the scan
     assert np.allclose(ground[:, 2] + ground[:, 5], FLOOR)                           # at the scan's floor height
-    assert _overlap(ground, 18.5, 19.5, -0.5, 0.5).any() and _overlap(ground, -9.5, -8.5, -0.5, 0.5).any()
+    for x0, x1, y0, y1 in ((16.0, 16.5, -0.5, 0.5), (-6.5, -6.0, -0.5, 0.5), (0.0, 0.5, 6.0, 6.5)):
+        assert _overlap(ground, x0, x1, y0, y1).any()                                # ground meets the scan's edge
     g = meta["geo"]
     assert (g["lat"], g["lon"], g["yaw_deg"]) == (BASE_DATUM.lat, BASE_DATUM.lon, 31.0)
     assert meta["spawn"] == [0.0, 0.0, FLOOR] and meta["voxel"] == 0.2
@@ -104,3 +106,61 @@ def test_the_streets_gl_centre_sets_the_square_in_the_base_frame(tmp_path):
     assert meta["bbox_min"][0] == pytest.approx(-6.0, abs=0.01)                     # the scan is still there
     assert meta["bbox_max"][0] == pytest.approx(130.0, abs=0.01)                    # square edge: 100 + 30
     assert meta["spawn"] == [0.0, 0.0, FLOOR]                                       # the scan's, not the centre
+
+
+def test_osm_ground_ramps_from_a_raised_scanned_yard_down_to_the_floor_height(tmp_path):
+    """The scanned yard east of the building sits 0.3 m above the floor: the OSM ground starts at its edge at its
+    height and eases down to the flat ground over `blend`, with no step a foot would refuse."""
+    base, boxes = _base(tmp_path)
+    boxes[-1] = _box(6, 16, -6, 6, FLOOR + 0.1, FLOOR + 0.3)
+    np.save(os.path.join(base, "boxes.npy"), boxes)
+    out = str(tmp_path / "scene")
+    build(BASE_DATUM.lat, BASE_DATUM.lon, radius=50.0, out=out, osm_path=_osm_at_base_xy(tmp_path), base=base,
+          blend=10.0)
+    ground = np.load(os.path.join(out, "boxes.npy"))[len(boxes):]
+    top = ground[:, 2] + ground[:, 5]
+
+    def z_at(x, y):
+        hit = (np.abs(ground[:, 0] - x) <= ground[:, 3]) & (np.abs(ground[:, 1] - y) <= ground[:, 4])
+        assert hit.any(), (x, y)
+        return float(top[hit].max())
+
+    profile = [z_at(x, 0.0) for x in np.arange(16.25, 30.0, 0.5)]                    # east from the yard's edge
+    assert profile[0] == pytest.approx(FLOOR + 0.3, abs=0.03)
+    assert profile[-1] == pytest.approx(FLOOR, abs=1e-6)                             # flat past the blend
+    assert np.all(np.diff(profile) <= 1e-6) and np.abs(np.diff(profile)).max() < 0.05
+    assert z_at(-6.25, 0.0) == pytest.approx(FLOOR, abs=0.03)                        # west: the floor-high floor
+
+
+def test_register_moves_the_datum_so_the_scan_lands_on_its_osm_outline(tmp_path):
+    """OSM is the reference: the scanned building's OSM outline is 3 m east and 5 m south of it (in the base
+    map frame). --register keeps the scan's map coordinates and moves the datum by that much, so the OSM outline
+    is rebuilt on top of the scan and a map point now reads the latitude / longitude OSM gives it."""
+    from pcd2sim.osm_scene import shifted_datum
+    from quadsim.gnss import lla_to_enu, enu_to_map
+    base, base_boxes = _base(tmp_path)
+    osm = _osm_at_base_xy(tmp_path, (3.0, -5.0, 6.0, 1), (40.0, 30.0, 5.0, 2))
+    meta = build(BASE_DATUM.lat, BASE_DATUM.lon, radius=60.0, out=str(tmp_path / "scene"), osm_path=osm, base=base,
+                 register=True)
+    reg = meta["registration"]
+    assert reg["ok"] and reg["shift_m"] == pytest.approx([3.0, -5.0], abs=0.3)
+    assert reg["outline_median_m"] < 0.5 < reg["outline_median_before_m"]
+    assert meta["overlay"]["iou"] > 0.9 and meta["overlay"]["offset_m"] < 0.5   # OSM now on top of the scan
+    g = meta["geo"]
+    assert g["yaw_deg"] == 31.0 and g["source"].endswith("registered")
+    moved = Datum(g["lat"], g["lon"], g["alt"], g["yaw_deg"])
+    assert moved == shifted_datum(BASE_DATUM, reg["shift_m"])
+    # the scan's (0, 0) reads where OSM put the outline's centre: the old datum's (3, -5)
+    e, n, _ = lla_to_enu(moved.lat, moved.lon, moved.alt, BASE_DATUM)
+    assert enu_to_map(np.array([e, n, 0.0]), BASE_DATUM)[:2] == pytest.approx(reg["shift_m"], abs=0.01)
+    boxes = np.load(os.path.join(str(tmp_path / "scene"), "boxes.npy"))
+    assert np.array_equal(boxes[:len(base_boxes)], base_boxes)                       # the scan is not moved
+
+
+def test_without_osm_near_the_scan_register_keeps_the_datum(tmp_path):
+    base, _ = _base(tmp_path)
+    osm = _osm_at_base_xy(tmp_path, (200.0, 0.0, 5.0, 1))
+    meta = build(BASE_DATUM.lat, BASE_DATUM.lon, radius=250.0, out=str(tmp_path / "scene"), osm_path=osm, base=base,
+                 register=True)
+    assert not meta["registration"]["ok"]
+    assert (meta["geo"]["lat"], meta["geo"]["lon"]) == (BASE_DATUM.lat, BASE_DATUM.lon)

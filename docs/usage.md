@@ -287,9 +287,9 @@ GNSS 的天空比例是從天線往場景射 9 條射線算的（`gnss.sky`）�
 docker/run.sh "python3 -m pcd2sim.osm_scene --url 'https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00' --radius 1000 --out scenes/osm_tucheng"
 scripts/run_sim.sh --scene scenes/osm_tucheng spawn=null gnss.sky.mode=map gnss.rtk=true
 
-# 疊在 dp 上：dp 的 map 座標（datum + yaw 31°）、dp 的地板高 / spawn，dp 掃到的範圍外擴 2 m 讓給 dp
+# 疊在 dp 上：dp 的 map 座標（yaw 31°）、dp 的地板高 / spawn，dp 掃到的範圍外擴 2 m 讓給 dp；--register 以 OSM 為準修正 datum
 docker/run.sh "python3 -m pcd2sim.osm_scene --url 'https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00' --radius 1000 \
-    --base scenes/dp --osm Maps/osm_tucheng/overpass.json --out scenes/osm_tucheng_dp"
+    --base scenes/dp --osm Maps/osm_tucheng/overpass.json --out scenes/osm_tucheng_dp --register"
 scripts/run_sim.sh --scene scenes/osm_tucheng_dp gnss.sky.mode=map
 ```
 
@@ -298,11 +298,13 @@ scripts/run_sim.sh --scene scenes/osm_tucheng_dp gnss.sky.mode=map
 - **高度**：`height` tag → `building:levels` × 3 m（`--level-height`）→ `--default-height`（6 m）。`meta.json` 的 `osm.height_source` 記各用了幾棟。
 - **datum 跟著場景**：`meta.json` 的 `geo` 就是這個場景的 datum，`quadsim.gnss.resolve_datum` 優先用它，沒有 `geo` 的舊場景（dp）才用 `config/sim.yaml` 的 `gnss.datum`。`scripts/gnss_map_odom.py` / `gnss_ekf_check.py` 用 `--scene`、`launch/gnss_ekf.launch.py` 用 `scene:=` 讀同一個場景。
 - **spawn**：獨立場景寫的是離中心最近、離建物 1 m 以上的格點；`config/sim.yaml` 的 `spawn` 是 dp 的，跑獨立場景要加 `spawn=null`。疊合場景沿用 base 的 spawn。
-- **疊合（`--base`）**：base 的 box、contact、`voxels.npz` 原封不動排在最前面，OSM 的建物和地面在 base 每個 box 的 xy 範圍外擴 `--margin`（2 m）內全部挖掉；地面高 = base spawn 的地板高（dp −0.4，`--ground-z` 覆寫）。base 沒有 `geo` 時用 config 的 `gnss.datum`。
+- **疊合（`--base`）**：base 的 box、contact、`voxels.npz` 原封不動排在最前面，OSM 的建物在 base 每個 box 的 xy 範圍外擴 `--margin`（2 m）內全部挖掉；地面高 = base spawn 的地板高（dp −0.4，`--ground-z` 覆寫）。base 沒有 `geo` 時用 config 的 `gnss.datum`。
+- **接上掃描（`Apron`，`--blend` 10 m）**：OSM 地面不留 margin，一路鋪到掃描邊緣（只有 base 的低處 box——底面在地板 +1.5 m 以下——蓋住的格子不鋪），高度從掃描邊緣的地面（每格在地板 −1.5 / +0.8 m 內最高的 box 頂）以 Laplace 內插平滑地降回 `ground_z`，`--blend` 公尺外完全是平的。以前地面在掃描外留 2 m 的溝、又固定在 −0.4，而 dp 邊緣的地面在 −1.1 到 0 之間，機器人走不出去。
+- **以 OSM 為準（`--register`）**：OSM 是參考，錯的是 base 的 datum。把 base 頂面高於地板 2 m 的格子閉合 / 開運算、取最大一塊、填洞（建物本體，不含樹和雜點），先和 80 m 內的 OSM 輪廓做面積互相關找起點，再對輪廓做去除離群的 ICP（只平移，航向不動）。base 的 map 座標、box、spawn、導航點、樓梯 spec 全部不變，只有這個場景 `meta.json` 的 `geo`（datum 原點）移動，OSM 依修正後的 datum 重新投影；sim 跑這個場景時 GNSS 經緯度就和 OSM 一致。結果記在 `meta.json` 的 `registration`（`shift_m`、輪廓距離中位數前後、2 m 內比例、原 datum）。找不到 80 m 內的 OSM 建物時 `ok: false`、datum 不動。`config/sim.yaml` 的 `gnss.datum`（其他 dp 場景用的）不會被改。
 - **疊合品質（`meta.json` 的 `overlay`）**：base 裡頂面高於地板 2 m 的格子（牆、屋頂）和重疊最多的那棟 OSM 輪廓的 IoU、重心距離。量的是 datum 和 OSM 輪廓合起來的誤差。
 - **LiDAR**：OSM 沒有反射率，獨立場景的 `voxels.npz` 是空的（強度 0）；`map_ds.pcd` 是每個 box 的頂面中心。viewer 只畫離 spawn 最近的 `max_map_boxes` 個 box。
 
-2026-11-12 的結果（streets.gl 中心 24.95919 / 121.41896，±1 km）：Overpass 回 225 棟、0 棟被拒，**70 棟有樓層數、155 棟（69 %）沒有高度用 6 m**、沒有一棟有 `height`——這一帶 OSM 建物很稀疏（實際遠多於 225 棟），streets.gl 看到的也是這些。`scenes/osm_tucheng`：11 883 個建物 box + 10 000 片地面，1.2 s。`scenes/osm_tucheng_dp`：dp 126 621 box + OSM 4 852 建物 box + 地面，0.9 s；**overlay IoU 0.31、重心差 26 m**（OSM 536506348，dp 那棟沒有高度）：dp 掃描的西牆和 OSM 西邊對得上，但掃描往 map +y 多出約 20 m、OSM 往 −y 多出約 18 m——dp 的 datum（兩個參考點推出，sim.yaml 註記 ~1.5 m）或 OSM 輪廓有約 20 m 的偏差，疊合場景裡 dp 和 OSM 的相對位置不能當真，要先用現場量測重定 datum。`tests/test_osm_scene_build.py` 用兩棟 20 m 高的方塊驗天空：空地 rtk_fixed（sky 1.0）、離牆 1.5 m rtk_float（0.67）、3 m 寬的街谷 single（0.33）。
+2026-11-12 的結果（streets.gl 中心 24.95919 / 121.41896，±1 km）：Overpass 回 225 棟、0 棟被拒，**70 棟有樓層數、155 棟（69 %）沒有高度用 6 m**、沒有一棟有 `height`——這一帶 OSM 建物很稀疏（實際遠多於 225 棟），streets.gl 看到的也是這些。`scenes/osm_tucheng`：11 883 個建物 box + 10 000 片地面，1.2 s。`scenes/osm_tucheng_dp`：dp 126 621 box + OSM 4 852 建物 box + 地面，0.9 s；**overlay IoU 0.31、重心差 26 m**（OSM 536506348，dp 那棟沒有高度）：dp 掃描的西牆和 OSM 西邊對得上，但掃描往 map +y 多出約 20 m、OSM 往 −y 多出約 18 m——dp 的 datum（兩個參考點推出，sim.yaml 註記 ~1.5 m）或 OSM 輪廓有約 20 m 的偏差，疊合場景裡 dp 和 OSM 的相對位置不能當真，要先用現場量測重定 datum。**`--register` 之後**：dp 要在 map 座標移 (−0.51, −16.93) m（面積互相關起點 (−2, −19)，ICP 從 (0, 0) 起跑也收斂到同一點），datum 從 24.960860 / 121.421968 變成 **24.9607266 / 121.4220500**（yaw 31° 不變；轉角掃 −12°～+12° 時 −1°～+3° 分數幾乎相同，所以不改）。輪廓距離中位數 11.9 → 4.0 m、IoU 0.31 → 0.50；剩下的是形狀本身不同——OSM 那棟往南比掃描長約 20 m（重心差仍有 10.6 m，就是這段），掃描的西側也有 OSM 沒畫的部分。精度大約就是 OSM 輪廓本身的幾公尺。**接縫**（2026-11-12，`--blend 10`）：掃描邊緣的地面格和相鄰 OSM 地面高差 ≤ 0.22 m（`max_step_up`）的比例 81.7 %，和 dp 自己邊緣相鄰格之間的 82.8 % 相當（剩下的是掃描邊緣本身的雜訊）；舊的平地面是 52.6 %。ramp 內部相鄰格 > 0.22 m 的只有 165 / 89 495。理想底盤以 60 km/h 走 20 條在 box 資料上沒有障礙的出口車道：5 條開上 OSM 地面超過 5 m（舊場景 0 條，16 條卡在 2 m 的溝），其餘幾乎都在接縫前就被 dp 邊緣的坑 / 凸塊擋下。`tests/test_osm_scene_build.py` 用兩棟 20 m 高的方塊驗天空：空地 rtk_fixed（sky 1.0）、離牆 1.5 m rtk_float（0.67）、3 m 寬的街谷 single（0.33）。
 
 ## 3. 跑模擬
 
@@ -486,7 +488,7 @@ scripts/run_sim.sh web.port=9000 web.map=boxes web.max_map_points=500000   # 設
 - **LiDAR**：最新一幀轉到 map 座標，均勻抽到 `web.lidar_points`（8000）點，最多 `web.lidar_hz`（10）Hz。
 - **規劃路徑**：訂閱 `web.path_topic`（預設 `/robot01/planned_path`，nav_msgs/Path），畫成綠線；設成空字串關掉。
 - 右上面板：sim 時間、即時倍率、機身位置、LiDAR 點數，圖層開關（地圖 / LiDAR / 路徑 / 相機跟隨機身）。
-- **Teleop（搖桿）**：機器人身上有一個可以拖的把手（transform gizmo）。把它拖到想去的地方，機器人就朝把手走（把手在機身座標的方向決定轉速、距離決定速度，到了就自動減到 0；把手在後方會先原地轉）；放開就歸零、把手跳回機身。拖著的時候 sim 每 tick 重送命令（不會碰到 `robot.cmd_timeout`）並蓋過 `/cmd_vel`，放開後交還給 ROS；瀏覽器中途斷線也視同放開。`Max speed` / `Max turn` 滑桿是上限，Stop 按鈕立刻歸零。走的是和 `/cmd_vel` 同一條路（g23 模式轉成 AXES 給控制器）。
+- **Teleop（搖桿）**：機器人身上有一個可以拖的把手（transform gizmo）。把它拖到想去的地方，機器人就朝把手走（把手在機身座標的方向決定轉速、距離決定速度，到了就自動減到 0；把手在後方會先原地轉）；放開就歸零、把手跳回機身。拖著的時候 sim 每 tick 重送命令（不會碰到 `robot.cmd_timeout`）並蓋過 `/cmd_vel`，放開後交還給 ROS；瀏覽器中途斷線也視同放開。`Max speed` / `Max turn` 滑桿是上限（speed 到 16.7 m/s = 60 km/h，開 OSM 場景用；理想底盤再被 `robot.vel_limits` 的 vx 16.7 限住，G23 走不到那麼快，看 policy），Stop 按鈕立刻歸零。理想底盤每 tick 的移動以 0.1 m 為一段逐段檢查（`base.MAX_SUBSTEP`），60 km/h 一 tick 0.33 m 也不會穿過 0.2 m 的牆。走的是和 `/cmd_vel` 同一條路（g23 模式轉成 AXES 給控制器）。
 - **Motion**（只有 g23）：Stand / Walk / Lie down / Damping 四個鈕，各送 `RESET_SAFETY`+`MODE STAND`、`MODE <policy>`+`MODE RL`、`MODE LIE`、`MODE R` 給控制器（和他們的 ROS bridge 同一組字串）；Stand 之後不會自動進步態，要按 Walk。`RL policy` 下拉選單換 PPO / HIMLoco / IsaacSim（走路中即時切換，等同 `/robot01/policy_mode`）。
 - **Reset**：「Reset to spawn」把機器人瞬移回設定檔的出生點，「Re-stand here」在原地 set_pose（倒了可以重新站起來；3 秒防連點）。兩者等同發 `/robot01/set_pose`，會有 `set_pose` 事件；跑著定位 stack 時瞬移會讓 Point-LIO 失準，要重新 seed。
 
