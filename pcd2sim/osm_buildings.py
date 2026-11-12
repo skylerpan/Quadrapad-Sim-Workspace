@@ -5,6 +5,7 @@ Glossary
                east). A stand-alone OSM scene uses its centre with heading 0 (map = ENU); a scene laid over dp
                uses dp's datum, so the buildings come out in dp's own axes.
   footprint    the outer ring of a building in map metres, counter-clockwise, without the closing vertex.
+  colour       pcd2sim.osm_colors.building_colour: building:colour, roof:colour, the type palette, the default.
   height       metres above the ground, from the first that parses: `height` tag, `building:levels` x
                level_height, default_height. `height_source` says which one, so a scene can report how much
                of it is guessed.
@@ -23,6 +24,8 @@ import numpy as np
 
 from quadsim.gnss import Datum, enu_to_map, lla_to_enu
 
+from .osm_colors import BUILDING_PALETTE, Colour, building_colour
+
 HeightSource = Literal["tag", "levels", "default"]
 MIN_AREA = 1.0                                   # m2
 _NUMBER = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)")
@@ -34,6 +37,7 @@ class Building:
     footprint: np.ndarray                        # [N,2] map metres, CCW, N >= 3
     height_m: float
     height_source: HeightSource
+    colour: Colour = BUILDING_PALETTE["default"]  # pcd2sim.osm_colors.building_colour of its tags
 
 
 def parse_streets_gl_url(url: str) -> tuple[float, float]:
@@ -122,5 +126,5 @@ def parse_overpass(data: dict, frame: Datum, default_height: float = 6.0,
             if fp is None:
                 rejected += 1
             else:
-                out.append(Building(int(el.get("id", 0)), fp, h, src))
+                out.append(Building(int(el.get("id", 0)), fp, h, src, building_colour(tags)))
     return out, rejected

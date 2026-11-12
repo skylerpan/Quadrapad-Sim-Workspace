@@ -62,3 +62,10 @@ def test_streets_gl_url_gives_the_centre():
     assert parse_streets_gl_url("https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00") == (24.95919, 121.41896)
     with pytest.raises(ValueError):
         parse_streets_gl_url("https://streets.gl/")
+
+
+def test_a_building_gets_its_colour_from_its_tags():
+    from pcd2sim.osm_colors import BUILDING_PALETTE
+    els = [_square(0, 0, 10, osm_id=1, **{"building:colour": "#996B1F"}), _square(40, 0, 10, osm_id=2, building="school")]
+    bs, _ = parse_overpass({"elements": els}, ENU0)
+    assert {b.osm_id: b.colour for b in bs} == {1: (0x99, 0x6B, 0x1F), 2: BUILDING_PALETTE["school"]}
