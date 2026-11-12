@@ -70,6 +70,22 @@ class TickOutput:
     clock: list[float] = field(default_factory=list)
 
 
+def spawn_pose(spawn, spawns: dict, meta_spawn) -> tuple[float, float, float, float]:
+    """(x, y, yaw, z_floor) from config `spawn`: a [x, y, yaw, z_floor] list (yaw / z_floor optional), a name in
+    config `spawns`, or None for the scene's meta.json spawn (yaw 0)."""
+    if isinstance(spawn, str):
+        if spawn not in spawns:
+            raise ValueError(f"spawn {spawn!r} is not in config spawns: {sorted(spawns)}")
+        spawn = spawns[spawn]
+    if spawn is not None:
+        z = meta_spawn[2] if meta_spawn else 0.0
+        s = spawn
+        return float(s[0]), float(s[1]), float(s[2] if len(s) > 2 else 0.0), float(s[3] if len(s) > 3 else z)
+    if meta_spawn is None:
+        raise RuntimeError("scene has no spawn point; set `spawn: [x, y, yaw, z_floor]` in the config")
+    return float(meta_spawn[0]), float(meta_spawn[1]), 0.0, float(meta_spawn[2])
+
+
 class Simulator:
     def __init__(self, cfg: dict, visual_map: bool = False):
         self.cfg = cfg
@@ -192,14 +208,7 @@ class Simulator:
         return int(round(steps))
 
     def _spawn_pose(self):
-        s = self.cfg.get("spawn")
-        meta_spawn = self.meta.get("spawn")
-        if s is not None:
-            z = meta_spawn[2] if meta_spawn else 0.0
-            return float(s[0]), float(s[1]), float(s[2] if len(s) > 2 else 0.0), float(s[3] if len(s) > 3 else z)
-        if meta_spawn is None:
-            raise RuntimeError("scene has no spawn point; set `spawn: [x, y, yaw, z_floor]` in the config")
-        return float(meta_spawn[0]), float(meta_spawn[1]), 0.0, float(meta_spawn[2])
+        return spawn_pose(self.cfg.get("spawn"), self.cfg.get("spawns") or {}, self.meta.get("spawn"))
 
     def _place(self, pos, quat):
         if self.legged:

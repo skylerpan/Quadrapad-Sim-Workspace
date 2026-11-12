@@ -292,12 +292,14 @@ scripts/run_sim.sh --scene scenes/osm_tucheng spawn=null gnss.sky.mode=map gnss.
 docker/run.sh "python3 -m pcd2sim.osm_scene --url 'https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00' --radius 1000 \
     --base scenes/dp --osm Maps/osm_tucheng/overpass.json --out scenes/osm_tucheng_dp --register --clear 26 38 43 50"
 scripts/run_sim.sh --scene scenes/osm_tucheng_dp gnss.sky.mode=map
+scripts/run_sim.sh --scene scenes/osm_tucheng_dp gnss.sky.mode=map spawn=gate    # 從大門口出生，面朝外（+y）
 ```
 
 - **下載一次**：Overpass 的回應存在 `Maps/<out 名>/overpass.json`（`--osm` 可指定），檔案在就不再下載；要更新就刪掉。建置是純本機運算，重跑結果逐位元組相同。
 - **建物 → box**：輪廓投影到目標 map 座標（WGS84 → ENU → map，`quadsim.gnss`），在對齊 map 軸的 0.5 m 格網（`--cell`）上取格心在輪廓內的格子，每格是地面到屋頂的柱子，`pcd2sim.voxel.merge_boxes` 合併。不經點雲 / 體素化：2 × 2 km 用 0.1 m 體素放不進記憶體。地面是 20 m 平板（`--tile`），全部進 contact set；中庭（multipolygon 的 inner）不挖。
 - **高度**：`height` tag → `building:levels` × 3 m（`--level-height`）→ `--default-height`（6 m）。`meta.json` 的 `osm.height_source` 記各用了幾棟。
 - **datum 跟著場景**：`meta.json` 的 `geo` 就是這個場景的 datum，`quadsim.gnss.resolve_datum` 優先用它，沒有 `geo` 的舊場景（dp）才用 `config/sim.yaml` 的 `gnss.datum`。`scripts/gnss_map_odom.py` / `gnss_ekf_check.py` 用 `--scene`、`launch/gnss_ekf.launch.py` 用 `scene:=` 讀同一個場景。
+- **具名 spawn**：`config/sim.yaml` 的 `spawns` 存 `[x, y, yaw, z_floor]`，`spawn=<名字>` 選用；`gate` = dp 大門口 (34.5, 41.0)，在參考點 A / B 之間、`--clear` 清過的範圍裡，面朝外（yaw π/2），地面 −0.76 m。預設的 `spawn`（dp 1F (0, 0)）不變。名字打錯會列出有哪些。
 - **spawn**：獨立場景寫的是離中心最近、離建物 1 m 以上的格點；`config/sim.yaml` 的 `spawn` 是 dp 的，跑獨立場景要加 `spawn=null`。疊合場景沿用 base 的 spawn。
 - **疊合（`--base`）**：base 的 box、contact、`voxels.npz` 原封不動排在最前面，OSM 的建物在 base 每個 box 的 xy 範圍外擴 `--margin`（2 m）內全部挖掉；地面高 = base spawn 的地板高（dp −0.4，`--ground-z` 覆寫）。base 沒有 `geo` 時用 config 的 `gnss.datum`。
 - **接上掃描（`Apron`，`--blend` 10 m）**：OSM 地面不留 margin，一路鋪到掃描邊緣（只有 base 的低處 box——底面在地板 +1.5 m 以下——蓋住的格子不鋪），高度從掃描邊緣的地面（每格在地板 −1.5 / +0.8 m 內最高的 box 頂）以 Laplace 內插平滑地降回 `ground_z`，`--blend` 公尺外完全是平的。以前地面在掃描外留 2 m 的溝、又固定在 −0.4，而 dp 邊緣的地面在 −1.1 到 0 之間，機器人走不出去。
