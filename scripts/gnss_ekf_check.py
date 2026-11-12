@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Drive the robot and compare three map-frame positions against the sim's ground truth: robot_localization's
-/odometry/filtered (launch/gnss_ekf.launch.py), the nav stack's /robot01/tracked_pose, and the raw GNSS fix
-turned into map coordinates through config/sim.yaml's datum. Runs in the container (ROS 2), with the sim, the
-nav stack and the EKF up.
+"""Drive the robot and score the nav stack's GNSS fusion (syncai_gnss_localization: navsat_transform_node + a
+map-frame EKF, started by location_3d_gnss.launch.py) against the sim's ground truth. Runs in the
+container (ROS 2), with the sim and the nav stack up.
 
   docker/run.sh "python3 scripts/gnss_ekf_check.py"             # forward 10 s, turn 4 s, forward 10 s, stop 3 s
   docker/run.sh "python3 scripts/gnss_ekf_check.py --no-drive --seconds 30"   # observe only
+  ... --expect ekf_nav_dxy=0.05 --expect datum_err=0.05         # fail (exit 1) when an RMS is above its limit
 
-Prints a line per second, then RMS / max of each error over the run, and writes results/gnss_ekf/<stamp>.json.
+Errors against ground truth: ekf_* = /robot01/odometry/filtered (the EKF), nav_* = /robot01/tracked_pose (what
+the stack navigates on: the LiDAR pose, or the EKF's with drive_tf:=true), fix_dxy = the raw fix through
+the scene's datum. Two more that need no ground truth: ekf_nav_dxy = EKF vs tracked_pose, and datum_err =
+navsat_transform_node's /robot01/odometry/gps vs this repo's exact WGS84 conversion of the very same fix, which
+isolates a datum or projection mismatch from receiver noise.
+
+Prints a line per second, then RMS / max of each over the run, and writes results/gnss_ekf/<stamp>.json.
 """
 from __future__ import annotations
 
@@ -52,8 +58,11 @@ class Check(Node):
         self.mount = np.asarray(cfg["gnss"]["mount_xyz"], float)
         q = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self.gt = self.ekf = self.nav = self.fix = None
+        self.fixes: dict[tuple[int, int], NavSatFix] = {}       # by stamp, to pair with odometry/gps
+        self.datum_errs: list[float] = []
         self.create_subscription(Odometry, tp["gt_odom"], self._gt, 10)
-        self.create_subscription(Odometry, "/odometry/filtered", self._ekf, q)
+        self.create_subscription(Odometry, "/robot01/odometry/filtered", self._ekf, q)
+        self.create_subscription(Odometry, "/robot01/odometry/gps", self._gps, q)
         self.create_subscription(PoseStamped, "/robot01/tracked_pose", self._nav, 10)
         self.create_subscription(NavSatFix, tp["gnss_fix"], self._fix, q)
         self.pub_cmd = self.create_publisher(Twist, tp["cmd_vel"], 10)
@@ -76,12 +85,26 @@ class Check(Node):
 
     def _fix(self, m):
         self.fix = m
+        if not math.isnan(m.latitude):
+            self.fixes[(m.header.stamp.sec, m.header.stamp.nanosec)] = m
+            while len(self.fixes) > 50:
+                self.fixes.pop(next(iter(self.fixes)))
 
-    def fix_in_map(self, gt_yaw: float) -> np.ndarray | None:
-        """The raw fix as a base position in the map frame: lat/lon -> ENU -> map, minus the antenna offset."""
-        if self.fix is None or math.isnan(self.fix.latitude):
+    def _gps(self, m):
+        """navsat_transform_node's output carries its fix's stamp: compare it with our conversion of that fix."""
+        fix = self.fixes.get((m.header.stamp.sec, m.header.stamp.nanosec))
+        if fix is None or self.gt is None:
+            return
+        want = self.fix_in_map(yaw_of(self.gt.pose.pose.orientation), fix)
+        self.datum_errs.append(float(np.hypot(m.pose.pose.position.x - want[0], m.pose.pose.position.y - want[1])))
+
+    def fix_in_map(self, gt_yaw: float, fix: NavSatFix | None = None) -> np.ndarray | None:
+        """A fix (default: the latest) as a base position in the map frame: lat/lon -> ENU -> map, minus the
+        antenna offset."""
+        fix = fix or self.fix
+        if fix is None or math.isnan(fix.latitude):
             return None
-        ant = enu_to_map(lla_to_enu(self.fix.latitude, self.fix.longitude, self.datum.alt, self.datum), self.datum)[:2]
+        ant = enu_to_map(lla_to_enu(fix.latitude, fix.longitude, self.datum.alt, self.datum), self.datum)[:2]
         cy, sy = math.cos(gt_yaw), math.sin(gt_yaw)
         return ant - np.array([cy * self.mount[0] - sy * self.mount[1], sy * self.mount[0] + cy * self.mount[1]])
 
@@ -93,7 +116,7 @@ class Check(Node):
             return
         if self.t0 is None:
             self.t0 = now
-            self.get_logger().info("ground truth and /odometry/filtered both seen: starting")
+            self.get_logger().info("ground truth and /robot01/odometry/filtered both seen: starting")
         t = now - self.t0
         # the command for this moment of the pattern
         elapsed, cmd = 0.0, None
@@ -120,6 +143,7 @@ class Check(Node):
             n = self.nav.pose
             row["nav_dxy"] = float(np.hypot(n.position.x - p.x, n.position.y - p.y))
             row["nav_dyaw"] = wrap(yaw_of(n.orientation) - gt_yaw)
+            row["ekf_nav_dxy"] = float(np.hypot(e.position.x - n.position.x, e.position.y - n.position.y))
         raw = self.fix_in_map(gt_yaw)
         if raw is not None:
             row["fix_dxy"] = float(np.linalg.norm(raw - gt_xy))
@@ -133,15 +157,40 @@ class Check(Node):
                                    f"{math.degrees(row['ekf_dyaw']):5.1f}deg | {nav} | {raw_s}")
 
 
-def summarize(rows: list[dict]) -> dict:
+def stats(values, scale: float = 1.0) -> dict:
+    v = np.asarray(values, float)
+    return {"rms": round(float(np.sqrt(np.mean(v ** 2)) * scale), 3),
+            "max": round(float(np.abs(v).max() * scale), 3), "n": int(len(v))}
+
+
+def summarize(rows: list[dict], datum_errs: list[float] | None = None) -> dict:
+    """RMS / max / count per quantity: metres, or degrees for the *_dyaw ones."""
     out = {}
-    for key in ("ekf_dxy", "ekf_dyaw", "nav_dxy", "nav_dyaw", "fix_dxy"):
-        v = np.array([r[key] for r in rows if key in r])
-        if len(v):
-            scale = 180 / math.pi if key.endswith("dyaw") else 1.0
-            out[key] = {"rms": round(float(np.sqrt(np.mean(v ** 2)) * scale), 3),
-                        "max": round(float(np.abs(v).max() * scale), 3), "n": int(len(v))}
+    for key in ("ekf_dxy", "ekf_dyaw", "nav_dxy", "nav_dyaw", "ekf_nav_dxy", "fix_dxy"):
+        v = [r[key] for r in rows if key in r]
+        if v:
+            out[key] = stats(v, 180 / math.pi if key.endswith("dyaw") else 1.0)
+    if datum_errs:
+        out["datum_err"] = stats(datum_errs)
     return out
+
+
+def check_expectations(summary: dict, expect: list[str]) -> list[str]:
+    """--expect key=limit: the failures, as text. A quantity that was never measured is a failure too."""
+    failures = []
+    for item in expect:
+        key, sep, raw = item.partition("=")
+        try:
+            limit = float(raw)
+        except ValueError:
+            limit = None
+        if not sep or limit is None:
+            failures.append(f"--expect {item!r}: want key=number")
+        elif key not in summary:
+            failures.append(f"{key}: not measured (expected RMS <= {limit})")
+        elif summary[key]["rms"] > limit:
+            failures.append(f"{key}: RMS {summary[key]['rms']} > {limit}")
+    return failures
 
 
 def main() -> int:
@@ -151,6 +200,8 @@ def main() -> int:
     ap.add_argument("--no-drive", action="store_true", help="observe only, send no cmd_vel")
     ap.add_argument("--seconds", type=float, default=30.0, help="--no-drive: how long to observe")
     ap.add_argument("--wait", type=float, default=60.0, help="give up after this many wall seconds without data")
+    ap.add_argument("--expect", action="append", default=[], metavar="KEY=LIMIT",
+                    help="fail when a summary RMS is above the limit (m, or deg for *_dyaw), e.g. ekf_nav_dxy=0.05; repeatable")
     a = ap.parse_args()
     cfg = load_config(a.config, [])
     if a.scene:
@@ -169,15 +220,18 @@ def main() -> int:
     finally:
         node.pub_cmd.publish(Twist())
         rclpy.shutdown()
-    summary = summarize(node.rows)
+    summary = summarize(node.rows, node.datum_errs)
+    failures = check_expectations(summary, a.expect)
     print(json.dumps(summary, indent=1))
     out = os.path.join("results", "gnss_ekf", time.strftime("%Y%m%d-%H%M%S") + ".json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w") as f:
         json.dump({"drive": not a.no_drive, "pattern": PATTERN if not a.no_drive else None, "summary": summary,
-                   "rows": node.rows}, f, indent=1)
+                   "expect": a.expect, "failures": failures, "rows": node.rows}, f, indent=1)
     print(f"result: {out}")
-    return 0
+    for line in failures:
+        print(f"FAIL {line}", file=sys.stderr)
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
