@@ -113,6 +113,7 @@ gnss:                         # u-blox ZED-F9P / F9R on the base (quadsim/gnss.p
 viewer:                       # MuJoCo viewer (--viewer) only; the map mesh has millions of triangles
   shadows: false              # the map casting shadows on itself doubles the render cost for little gain
   sync_hz: 30                 # max rate (wall clock) at which the sim pushes its state to the viewer window
+  map_color: osm              # osm: scene colours (OSM tags / ground), height where none | height: turbo by height | plain: grey; switchable in the browser
   max_map_boxes: 400000       # boxes drawn in the viewer mesh, nearest to the spawn first (0.1-0.2 m scenes have fewer; a 0.03 m scene has ~3.4 M, 12 triangles each: 1500000 shows ~the whole storey)
 
 web:                          # browser viewer (viser), on by default: http://<host>:8755 (quadsim/web_viewer.py)
