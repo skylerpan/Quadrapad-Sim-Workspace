@@ -8,6 +8,7 @@ No LiDAR, no ROS, no controller: this is the physics cost alone.
 
   docker/run.sh "python3 scripts/bench_g23.py --pool 128 256 512 --seconds 5"
   docker/run.sh "python3 scripts/bench_g23.py --scene scenes/dp_1008 --spawn 0,0,-0.43 --margin 0.6"
+  docker/run.sh "python3 scripts/bench_g23.py --scene scenes/osm_tucheng_dp --spawn gate"   # a config spawns name
 
 Prints, per pool size: wall time per simulated second (RTF), physics vs proxy-update split, mean / max
 contacts, how often the window overflowed the pool, and whether the robot was still standing at the end.
@@ -24,6 +25,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from quadsim.config import load_config  # noqa: E402
+from quadsim.sim import spawn_pose  # noqa: E402
 from quadsim.proxies import BoxIndex, ProxyPool  # noqa: E402
 
 G23_XML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "robot", "g23", "mjcf", "g23_mjcf.xml")
@@ -92,10 +94,20 @@ def run(scene: str, spawn, pool: int, seconds: float, margin: float, timestep: f
             "torso_z": round(z, 3), "torso_up": round(up, 3), "standing": bool(up > 0.9 and z > spawn[2] + 0.2)}
 
 
+def bench_spawn(arg: str | None, cfg: dict) -> list[float]:
+    """--spawn -> [x, y, z]: "x,y,z_floor" as given; a name in config spawns or None (config spawn) -> its x, y and
+    5 cm above its floor."""
+    if arg and "," in arg:
+        return [float(t) for t in arg.split(",")]
+    x, y, _, z = spawn_pose(arg or cfg.get("spawn"), cfg.get("spawns") or {}, None)
+    return [x, y, z + 0.05]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scene", default=None, help="scene directory (default: config/sim.yaml scene)")
-    ap.add_argument("--spawn", default=None, help="x,y,z_floor (default: config spawn x,y and its z_floor)")
+    ap.add_argument("--spawn", default=None,
+                    help="x,y,z_floor or a name in config spawns, e.g. gate (default: config spawn x,y and its z_floor)")
     ap.add_argument("--pool", type=int, nargs="+", default=[128, 256, 512])
     ap.add_argument("--seconds", type=float, default=5.0)
     ap.add_argument("--margin", type=float, default=0.6, help="proxy window beyond the body footprint (m)")
@@ -106,11 +118,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     cfg = load_config(None, [])
     scene = a.scene or cfg["scene"]
-    if a.spawn:
-        spawn = [float(t) for t in a.spawn.split(",")]
-    else:
-        s = cfg["spawn"]
-        spawn = [s[0], s[1], s[3] + 0.05]
+    spawn = bench_spawn(a.spawn, cfg)
     print(f"scene {scene}, spawn {spawn}, timestep {a.timestep}, margin {a.margin}, {a.seconds} s each")
     if a.flat:
         r = run(scene, [0, 0, 0], 0, a.seconds, a.margin, a.timestep, a.kp, a.kd, flat=True)
