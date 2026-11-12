@@ -73,6 +73,7 @@ class TickOutput:
 class Simulator:
     def __init__(self, cfg: dict, visual_map: bool = False):
         self.cfg = cfg
+        self.map_color = parse_map_color(cfg.get("viewer", {}).get("map_color", "osm"))   # refused before any work
         scene_dir = cfg["scene"]
         self.meta = load_scene_meta(scene_dir)
         _check_scene_format(scene_dir, self.meta)
@@ -87,7 +88,6 @@ class Simulator:
         self.colors = np.load(colors_path) if os.path.exists(colors_path) else None
         if self.colors is not None and len(self.colors) != len(boxes):
             raise ValueError(f"{colors_path} has {len(self.colors)} rows for {len(boxes)} boxes: rebuild the scene")
-        self.map_color = parse_map_color(cfg.get("viewer", {}).get("map_color", "osm"))
         self.map_paint = None                            # the MuJoCo viewer's map geoms (visual_map only)
         self.rays = RayScene(boxes, slabs)
         self.voxels = VoxelLookup(os.path.join(scene_dir, "voxels.npz"))
@@ -254,6 +254,12 @@ class Simulator:
         self.base.reset(x, y, yaw, z_floor_hint)
         warnings.warn(f"pose ({x:.2f}, {y:.2f}) overlaps the map and no free pose within 1 m", stacklevel=3)
         return ok, False
+
+    def set_map_color(self, mode) -> None:
+        """Switch the MuJoCo viewer's map colouring (quadsim.map_colors); the passive viewer redraws from the model."""
+        self.map_color = parse_map_color(mode)
+        if self.map_paint is not None:
+            self.map_paint.apply(self.m, self.map_color)
 
     def set_policy_mode(self, mode: int) -> dict | None:
         """g23 RL policy switch (0 PPO, 1 HIMLoco ...); None in ideal mode."""
