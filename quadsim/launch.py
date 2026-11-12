@@ -42,14 +42,15 @@ def main(argv: list[str] | None = None) -> None:
     except DdsConfigError as e:
         sys.exit(f"[quadsim] {e}")
     print(f"[quadsim] DDS: {choice.source} -> {choice.uri or 'Cyclone defaults'} (ROS_DOMAIN_ID={choice.domain_id})",
-          file=sys.stderr, flush=True)
+          file=sys.stderr)
     for w in choice.warnings:
-        print(f"[quadsim] WARNING: {w}", file=sys.stderr, flush=True)
+        print(f"[quadsim] WARNING: {w}", file=sys.stderr)
     env = launch_env(choice, dict(os.environ), controller_repo(app))
     if rest[:1] == ["shell"]:
         cmd = rest[1:] or [env.get("SHELL", "bash")]
-        os.execvpe(cmd[0], cmd, env)
-    os.execve(sys.executable, [sys.executable, "-m", "quadsim.sim_node", *rest], env)
+    else:
+        cmd = [sys.executable, "-m", "quadsim.sim_node", *rest]
+    os.execvpe(cmd[0], cmd, env)
 
 
 if __name__ == "__main__":

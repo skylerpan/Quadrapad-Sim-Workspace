@@ -28,7 +28,7 @@ def test_cyclonedds_config_picks_a_bundled_file_by_name(conf):
 
 
 def test_unknown_cyclonedds_config_is_an_error(conf):
-    with pytest.raises(DdsConfigError, match="nope.xml"):
+    with pytest.raises(DdsConfigError, match="^CYCLONEDDS_CONFIG: no such file .*nope.xml"):
         resolve([], {"CYCLONEDDS_CONFIG": "nope.xml"}, conf)
 
 
@@ -105,3 +105,25 @@ def test_the_repo_config_is_domain_1():
     repo_conf = os.path.join(os.path.dirname(__file__), "..", "conf")
     choice, _ = resolve([], {}, repo_conf)
     assert (choice.source, choice.warnings) == ("default", ())
+
+
+def test_a_uri_list_is_passed_through_unchecked(conf):
+    uri = f"file://{conf}/cyclonedds.xml,file://{conf}/wifi.xml"
+    choice, _ = resolve([], {"CYCLONEDDS_URI": uri, "ROS_DOMAIN_ID": "9"}, conf)
+    assert (choice.uri, choice.warnings) == (uri, ())
+
+
+def test_a_missing_bundled_default_names_itself(tmp_path):
+    with pytest.raises(DdsConfigError, match="^the bundled default: no such file"):
+        resolve([], {}, tmp_path)
+
+
+def test_inline_xml_may_start_with_whitespace(conf):
+    choice, _ = resolve([], {"CYCLONEDDS_URI": "\n  " + XML.format(3)}, conf)
+    assert len(choice.warnings) == 1
+
+
+def test_every_mismatching_domain_id_is_listed(conf):
+    two = '<CycloneDDS><Domain Id="2"/><Domain Id="3"/></CycloneDDS>'
+    choice, _ = resolve([], {"CYCLONEDDS_URI": two}, conf)
+    assert "Domain Id=2,3 but ROS_DOMAIN_ID=1" in choice.warnings[0]
