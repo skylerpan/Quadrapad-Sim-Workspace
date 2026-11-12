@@ -27,8 +27,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from quadsim.config import load_config  # noqa: E402
-from quadsim.gnss import Datum, enu_to_map, lla_to_enu  # noqa: E402
+from quadsim.config import load_config, load_scene_meta  # noqa: E402
+from quadsim.gnss import Datum, enu_to_map, lla_to_enu, resolve_datum  # noqa: E402
 
 BIG = 1e6
 
@@ -45,7 +45,9 @@ class GnssMapOdom(Node):
     def __init__(self, cfg: dict, odom_topic: str, out_topic: str):
         super().__init__("gnss_map_odom")
         self.set_parameters([rclpy.parameter.Parameter("use_sim_time", value=True)])
-        self.datum = Datum.from_cfg(cfg["gnss"]["datum"])
+        self.datum = resolve_datum(load_scene_meta(cfg["scene"]), cfg["gnss"].get("datum"))
+        if self.datum is None:
+            raise SystemExit(f"no datum: scene {cfg['scene']} has no geo and config gnss.datum is null")
         self.mount = [float(v) for v in cfg["gnss"]["mount_xyz"][:2]]
         self.frames = cfg["ros"]["frames"]
         self.yaw = 0.0
@@ -84,11 +86,15 @@ class GnssMapOdom(Node):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=None)
+    ap.add_argument("--scene", default=None, help="the sim's scene (its meta.json geo is the datum); default config scene")
     ap.add_argument("--odom", default="/robot01/odom", help="odometry whose yaw turns the antenna offset")
     ap.add_argument("--out", default="/odometry/gps")
     a = ap.parse_args()
     rclpy.init()
-    node = GnssMapOdom(load_config(a.config, []), a.odom, a.out)
+    cfg = load_config(a.config, [])
+    if a.scene:
+        cfg["scene"] = a.scene
+    node = GnssMapOdom(cfg, a.odom, a.out)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
