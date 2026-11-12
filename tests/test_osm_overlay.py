@@ -81,6 +81,9 @@ def test_the_scan_is_kept_and_osm_is_cut_out_around_it(tmp_path):
     assert (g["lat"], g["lon"], g["yaw_deg"]) == (BASE_DATUM.lat, BASE_DATUM.lon, 31.0)
     assert meta["spawn"] == [0.0, 0.0, FLOOR] and meta["voxel"] == 0.2
     assert np.load(os.path.join(out, "voxels.npz"))["intensity"][0] == 7.0           # the scan's voxels
+    rgba = np.load(os.path.join(out, "colors.npy"))
+    assert rgba.shape == (len(boxes), 4)
+    assert (rgba[:n, 3] == 0).all() and (rgba[n:, 3] == 255).all()                 # the scan has no OSM colour
     fit = meta["overlay"]
     assert fit["osm_id"] == 1 and fit["iou"] > 0.9 and fit["offset_m"] < 0.5
 

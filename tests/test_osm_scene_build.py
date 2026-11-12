@@ -41,9 +41,10 @@ def test_the_scene_is_georeferenced_and_spawns_outside_the_buildings(tmp_path):
 def test_a_rebuild_writes_the_same_scene(tmp_path):
     osm = _osm(tmp_path, square(10.0, 10.0, 6.0))
     out, _ = _build(tmp_path, osm)
-    first = {f: open(os.path.join(out, f), "rb").read() for f in ("boxes.npy", "contact.npy")}
+    files = ("boxes.npy", "contact.npy", "colors.npy", "map_ds_colors.npy")
+    first = {f: open(os.path.join(out, f), "rb").read() for f in files}
     _build(tmp_path, osm)
-    assert first == {f: open(os.path.join(out, f), "rb").read() for f in ("boxes.npy", "contact.npy")}
+    assert first == {f: open(os.path.join(out, f), "rb").read() for f in files}
 
 
 def test_the_simulator_loads_it_and_reports_fixes_at_the_scene_datum(tmp_path):
@@ -95,3 +96,41 @@ def test_buildings_take_the_sky_away_open_ground_then_a_wall_then_a_street_canyo
     assert fix_at(-40.0, 40.0) == ("rtk_fixed", 1.0)          # open ground
     assert fix_at(0.0, 9.5) == ("rtk_float", 0.67)            # 1.5 m from a wall: 3 of 9 rays blocked
     assert fix_at(9.5, 0.0) == ("single", 0.33)               # the canyon: only zenith and along the street
+
+
+def test_the_ground_is_painted_from_the_osm_ground_answer_and_buildings_by_their_tags(tmp_path):
+    from pcd2sim.osm_colors import BUILDING_PALETTE, GROUND_RGB, GroundClass
+    from pcd2sim.pcd_io import read_pcd
+    from tests.osm_fixture import geom
+    osm = _osm(tmp_path, square(30.0, 30.0, 6.0, building="school"))
+    ground = tmp_path / "ground.json"
+    ground.write_text(json.dumps({"elements": [
+        {"type": "way", "id": 7, "tags": {"highway": "primary"}, "geometry": geom([(-60, -20), (60, -20)], close=False)},
+        {"type": "way", "id": 8, "tags": {"leisure": "park"},
+         "geometry": geom([(-50, 10), (-10, 10), (-10, 50), (-50, 50)])}]}))
+    out, meta = _build(tmp_path, osm, ground_path=str(ground))
+    boxes, rgba = np.load(os.path.join(out, "boxes.npy")), np.load(os.path.join(out, "colors.npy"))
+    assert rgba.dtype == np.uint8 and rgba.shape == (len(boxes), 4) and (rgba[:, 3] == 255).all()
+
+    def colour_at(x, y, z):
+        hit = np.all(np.abs(boxes[:, :3] - [x, y, z]) <= boxes[:, 3:] + 1e-4, axis=1)
+        assert hit.sum() == 1, (x, y, z)
+        return tuple(rgba[hit][0, :3])
+
+    assert colour_at(5.1, -20.1, -0.1) == GROUND_RGB[GroundClass.ROAD]               # 10 m wide primary
+    assert colour_at(5.1, -24.1, -0.1) == GROUND_RGB[GroundClass.ROAD]
+    assert colour_at(5.1, -26.1, -0.1) == GROUND_RGB[GroundClass.BARE]
+    assert colour_at(-30.1, 30.1, -0.1) == GROUND_RGB[GroundClass.GRASS]
+    assert colour_at(31.1, 31.1, 3.0) == BUILDING_PALETTE["school"]
+    assert meta["osm"]["ground"]["features"] == {"ROAD": 1, "GRASS": 1}
+    xyz, _ = read_pcd(os.path.join(out, "map_ds.pcd"))
+    pts = np.load(os.path.join(out, "map_ds_colors.npy"))
+    assert pts.shape == (len(xyz), 4) and set(map(tuple, pts[:, :3])) <= set(map(tuple, rgba[:, :3]))
+    assert len(boxes) < 3000                                         # uniform tiles stay whole
+
+
+def test_without_a_ground_answer_the_ground_is_bare(tmp_path):
+    from pcd2sim.osm_colors import GROUND_RGB, GroundClass
+    out, meta = _build(tmp_path, _osm(tmp_path))
+    rgba = np.load(os.path.join(out, "colors.npy"))
+    assert {tuple(c) for c in rgba[:, :3]} == {GROUND_RGB[GroundClass.BARE]} and meta["osm"]["ground"] is None
