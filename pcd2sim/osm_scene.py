@@ -4,7 +4,8 @@ A 2 x 2 km area at the 0.1-0.2 m voxels of pcd2sim.build_scene would not fit in 
 already what a box scene wants: an outline extruded to a height. So each footprint is rasterised on a grid aligned
 with the map axes (cell centres inside the outline), every cell is a column from the ground to the roof, and the
 columns are merged into boxes with pcd2sim.voxel.merge_boxes (runs along x, then equal runs along y).
-The ground is flat: square tiles whose tops sit at ground_z, all in the contact set.
+The ground is flat: square tiles whose tops sit at ground_z, all in the contact set. Around a base scan (--base) it
+starts at the scan's edge and eases from the edge's height to ground_z over --blend metres (Apron).
 
   python3 -m pcd2sim.osm_scene --url "https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00" --radius 1000 \
       --out scenes/osm_tucheng                       # Overpass answer cached in Maps/osm_tucheng/overpass.json
@@ -213,21 +214,148 @@ def overlay_fit(base: Base, buildings: list[Building], cell: float, min_height: 
             "offset_m": round(float(np.hypot(*offset)), 2), "offset_xy": [round(float(v), 2) for v in offset]}
 
 
+def register_base(base: Base, buildings: list[Building], cell: float, window: float = 80.0, min_height: float = 2.0,
+                  trim: float = 0.6, iters: int = 200) -> dict:
+    """The shift (map metres, heading kept) that puts the scan's building onto its OSM outlines: OSM is the
+    reference, the scan's datum is what is off. The scan's tall cells (tops > min_height above the floor) are closed,
+    opened, cut to their largest blob and hole-filled (the building, not trees or speckle); a cross-correlation
+    of that area with the OSM footprints within `window` gives the start, a trimmed ICP of its outline against
+    the OSM outlines (translation only, the `trim` nearest fraction each round) refines it."""
+    from scipy.ndimage import binary_closing, binary_erosion, binary_fill_holes, binary_opening, label
+    from scipy.signal import fftconvolve
+    from scipy.spatial import cKDTree
+    tall = base.boxes[base.boxes[:, 2] + base.boxes[:, 5] > base.floor_z + min_height]
+    if not len(tall):
+        return {"shift_m": [0.0, 0.0], "ok": False, "why": "no tall cells in the scan"}
+    pad = int(np.ceil(window / cell))
+    scan = Cut(tall, cell, 0.0)
+    i0 = scan.i0 - pad
+    S = np.zeros(np.array(scan.mask.shape) + 2 * pad, bool)
+    S[pad:pad + scan.mask.shape[0], pad:pad + scan.mask.shape[1]] = scan.mask
+    O = np.zeros_like(S)
+    for b in buildings:
+        k = footprint_cells(b.footprint, cell) - i0
+        k = k[np.all((k >= 0) & (k < O.shape), axis=1)]
+        O[k[:, 0], k[:, 1]] = True
+    if not O.any():
+        return {"shift_m": [0.0, 0.0], "ok": False, "why": f"no OSM building within {window} m of the scan"}
+    S = binary_opening(binary_closing(S, np.ones((7, 7))), np.ones((3, 3)))
+    lab, n = label(S)
+    if n == 0:
+        return {"shift_m": [0.0, 0.0], "ok": False, "why": "the scan's tall cells are all speckle"}
+    S = binary_fill_holes(lab == np.bincount(lab.ravel())[1:].argmax() + 1)
+    O = binary_fill_holes(O)
+    corr = fftconvolve(O.astype(np.float32), S[::-1, ::-1].astype(np.float32), mode="same")
+    k = np.array(np.unravel_index(np.argmax(corr), corr.shape))
+    t = (k - np.array(S.shape) // 2) * cell                     # start: the best area overlap
+    start = t.copy()
+    edge = lambda m: m & ~binary_erosion(m, np.ones((3, 3)))
+    P = (np.argwhere(edge(S)) + i0 + 0.5) * cell
+    Q = (np.argwhere(edge(O)) + i0 + 0.5) * cell
+    tree = cKDTree(Q)
+    for _ in range(iters):
+        d, j = tree.query(P + t)
+        keep = d <= np.quantile(d, trim)
+        step = np.mean(Q[j[keep]] - (P[keep] + t), axis=0)
+        t = t + step
+        if np.linalg.norm(step) < 1e-4:
+            break
+    d0, _ = tree.query(P)
+    d, _ = tree.query(P + t)
+    return {"shift_m": [round(float(v), 2) for v in t], "ok": True, "start_m": [round(float(v), 2) for v in start],
+            "outline_median_m": round(float(np.median(d)), 2), "outline_within_2m": round(float(np.mean(d < 2.0)), 3),
+            "outline_median_before_m": round(float(np.median(d0)), 2)}
+
+
+def shifted_datum(datum: Datum, shift_xy) -> Datum:
+    """The datum under which map point p lands where map point p + shift_xy did: the origin moved by the shift."""
+    lat, lon, _ = enu_to_lla(map_to_enu(np.array([shift_xy[0], shift_xy[1], 0.0]), datum), datum)
+    return Datum(float(lat), float(lon), datum.alt, datum.yaw_deg)
+
+
 # -- scene ------------------------------------------------------------------------------------------------------
-def ground_boxes(lo: np.ndarray, hi: np.ndarray, tile: float, z: float, cell: float, cut: Cut | None,
-                 thickness: float = 0.2) -> np.ndarray:
-    """Ground tiles over the square; the tiles that reach into the cut are rebuilt from cells around it."""
+class Apron:
+    """Where OSM ground meets a base scan, on a cell grid around the scan padded by the blend distance: the cells
+    the scan covers near the ground (boxes starting below floor_z + LOW_BAND; OSM lays no ground there) and the
+    scan's ground height by cell (the highest box top within FLOOR_BAND of the floor). The OSM ground between is
+    the harmonic (Laplace) fill from the scan's ground heights to ground_z at `blend` metres out: it starts at the
+    scan's edge at the edge's height and eases to the flat ground as smoothly as the edge allows, so the robot
+    walks out of the scan onto the streets."""
+    LOW_BAND = 1.5                               # m above the floor: boxes starting lower stand on the ground
+    FLOOR_BAND = (-1.5, 0.8)                     # m around the floor: box tops in it are ground
+    TOL, MAX_ITER = 1e-4, 20000                  # Laplace fill: stop when no cell moves more than TOL (m)
+
+    def __init__(self, base_boxes: np.ndarray, floor_z: float, cell: float, blend: float, ground_z: float):
+        from scipy.ndimage import distance_transform_edt
+        self.cell, self.blend, self.ground_z = cell, blend, ground_z
+        low = base_boxes[base_boxes[:, 2] - base_boxes[:, 5] < floor_z + self.LOW_BAND]
+        if not len(low):
+            self.i0 = np.zeros(2, np.int64)
+            self.covered, self.has, self.z = np.zeros((0, 0), bool), np.zeros((0, 0), bool), np.zeros((0, 0))
+            return
+        pad = int(np.ceil(blend / cell)) + 2
+        ltop = low[:, 2] + low[:, 5]
+        c0 = np.ceil((low[:, :2] - low[:, 3:5]) / cell - 0.5).astype(np.int64)
+        c1 = np.floor((low[:, :2] + low[:, 3:5]) / cell - 0.5).astype(np.int64) + 1
+        self.i0 = c0.min(axis=0) - pad
+        shape = c1.max(axis=0) + pad - self.i0
+        self.covered = np.zeros(shape, bool)
+        surf = np.full(shape, -np.inf)
+        ground = (ltop >= floor_z + self.FLOOR_BAND[0]) & (ltop <= floor_z + self.FLOOR_BAND[1])
+        for (a0, b0), (a1, b1), t, g in zip(c0 - self.i0, c1 - self.i0, ltop, ground):
+            self.covered[a0:a1, b0:b1] = True
+            if g:
+                np.maximum(surf[a0:a1, b0:b1], t, out=surf[a0:a1, b0:b1])
+        self.has = has = np.isfinite(surf)                 # cells where the scan has ground
+        far = distance_transform_edt(~has) * cell >= blend if has.any() else np.ones(shape, bool)
+        far[[0, -1], :] = far[:, [0, -1]] = True             # the padded border is always past the blend
+        fixed = has | far
+        z = np.where(has, surf, ground_z)
+        for _ in range(self.MAX_ITER):                       # Jacobi on the free cells
+            avg = 0.25 * (z[:-2, 1:-1] + z[2:, 1:-1] + z[1:-1, :-2] + z[1:-1, 2:])
+            free = ~fixed[1:-1, 1:-1]
+            step = float(np.abs(avg - z[1:-1, 1:-1])[free].max()) if free.any() else 0.0
+            z[1:-1, 1:-1] = np.where(free, avg, z[1:-1, 1:-1])
+            if step < self.TOL:
+                break
+        self.z = z
+
+    @property
+    def lo_m(self) -> np.ndarray:
+        return self.i0 * self.cell
+
+    @property
+    def hi_m(self) -> np.ndarray:
+        return (self.i0 + np.array(self.covered.shape)) * self.cell
+
+    def ground(self, keys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(keep, z) for cells: no OSM ground under the scan, the eased height near it, ground_z elsewhere."""
+        k = keys - self.i0
+        inside = np.all((k >= 0) & (k < self.covered.shape), axis=1)
+        keep = np.ones(len(keys), bool)
+        z = np.full(len(keys), self.ground_z)
+        keep[inside] = ~self.covered[k[inside, 0], k[inside, 1]]
+        z[inside] = self.z[k[inside, 0], k[inside, 1]]
+        return keep, z
+
+
+def ground_boxes(lo: np.ndarray, hi: np.ndarray, tile: float, z: float, cell: float, apron: Apron | None,
+                 thickness: float = 0.2, z_step: float = 0.01) -> np.ndarray:
+    """Ground tiles over the square; the tiles that reach the apron are rebuilt from cells: none under the scan,
+    heights easing to the scan's edge (rounded to z_step so equal heights merge)."""
     tiles = ground_tiles(lo, hi, tile, z, thickness)
-    if cut is None:
+    if apron is None or apron.covered.size == 0:
         return tiles
     tlo, thi = tiles[:, :2] - tiles[:, 3:5], tiles[:, :2] + tiles[:, 3:5]
-    near = np.all((tlo < cut.hi_m) & (thi > cut.lo_m), axis=1)
+    near = np.all((tlo < apron.hi_m) & (thi > apron.lo_m), axis=1)
     parts = [tiles[~near]]
     for t0, t1 in zip(tlo[near], thi[near]):
         keys = footprint_cells(np.array([[t0[0], t0[1]], [t1[0], t0[1]], [t1[0], t1[1]], [t0[0], t1[1]]]), cell)
-        keys = keys[cut.keep(keys)]
-        if len(keys):
-            parts.append(_columns_to_boxes(keys, cell, z - thickness, z).astype(np.float32))
+        keep, zc = apron.ground(keys)
+        keys, zc = keys[keep], np.round(zc[keep] / z_step) * z_step
+        for h in np.unique(zc):
+            sel = zc == h
+            parts.append(_columns_to_boxes(keys[sel], cell, h - thickness, h).astype(np.float32))
     return np.vstack(parts)
 
 
@@ -302,9 +430,13 @@ def scene_square(centre: np.ndarray, radius: float, cell: float) -> Clip:
 
 def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: float = 0.5, tile: float = 20.0,
           default_height: float = 6.0, level_height: float = 3.0, alt: float = 0.0, ground_z: float | None = None,
-          base: str | None = None, fallback_datum: dict | None = None, margin: float = 2.0) -> dict:
+          base: str | None = None, fallback_datum: dict | None = None, margin: float = 2.0,
+          blend: float = 10.0, register: bool = False) -> dict:
     """An OSM scene around (lat, lon). Stand-alone: map = ENU there, ground at ground_z (default 0). With a base
-    scene: its map frame (datum + heading), its floor height and spawn, OSM cut out `margin` around its boxes."""
+    scene: its map frame (datum + heading), its floor height and spawn, OSM buildings cut out `margin` around its
+    boxes, OSM ground up to the scan's edge and easing from the edge's height to ground_z over `blend` metres.
+    register: OSM is the reference, the base's datum is moved so its building lands on its OSM outline (the map
+    coordinates of the scan stay as they are; meta.json geo is the corrected datum)."""
     b = load_base(base, fallback_datum) if base else None
     frame = b.datum if b else Datum(lat, lon, alt, 0.0)
     centre = enu_to_map(lla_to_enu(lat, lon, frame.alt, frame), frame)[:2]
@@ -313,14 +445,26 @@ def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: 
     cut = Cut(b.boxes, cell, margin) if b else None
     fetch_overpass(osm_path, overpass_bbox(frame, lo, hi))
     with open(osm_path) as f:
-        buildings, rejected = parse_overpass(json.load(f), frame, default_height, level_height)
+        answer = json.load(f)
+    buildings, rejected = parse_overpass(answer, frame, default_height, level_height)
+    registration = None
+    if b and register:                           # OSM is the reference: move the scan's datum onto it
+        registration = register_base(b, buildings, cell)
+        if registration["ok"]:
+            frame = shifted_datum(frame, registration["shift_m"])
+            registration["datum_before"] = {"lat": b.datum.lat, "lon": b.datum.lon}
+            centre = enu_to_map(lla_to_enu(lat, lon, frame.alt, frame), frame)[:2]
+            lo, hi = scene_square(centre, radius, cell)
+            buildings, rejected = parse_overpass(answer, frame, default_height, level_height)
     bboxes = buildings_to_boxes(buildings, cell, gz, clip=(lo, hi), cut=cut)
-    osm_boxes = np.vstack([ground_boxes(lo, hi, tile, gz, cell, cut), bboxes])
+    apron = Apron(b.boxes, b.floor_z, cell, blend, gz) if b else None
+    osm_boxes = np.vstack([ground_boxes(lo, hi, tile, gz, cell, apron), bboxes])
     spawn = b.spawn if b else [*spawn_point(bboxes, centre, lo, hi), gz]
     sources = Counter(x.height_source for x in buildings)
     extra = {
         "geo": {"lat": frame.lat, "lon": frame.lon, "alt": frame.alt, "yaw_deg": frame.yaw_deg,
-                "source": "osm" if b is None else f"osm+{os.path.basename(os.path.normpath(b.path))}",
+                "source": "osm" if b is None else f"osm+{os.path.basename(os.path.normpath(b.path))}"
+                                                     + (" registered" if registration and registration["ok"] else ""),
                 "radius_m": radius, "centre": [lat, lon]},
         "osm": {"file": os.path.abspath(osm_path), "buildings": len(buildings), "rejected": rejected,
                 "height_source": {k: sources.get(k, 0) for k in ("tag", "levels", "default")},
@@ -328,8 +472,11 @@ def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: 
                 "building_boxes": int(len(bboxes)), "attribution": "(c) OpenStreetMap contributors, ODbL"},
     }
     if b:
-        extra["base"] = {"path": os.path.abspath(b.path), "boxes": int(len(b.boxes)), "margin": margin}
+        extra["base"] = {"path": os.path.abspath(b.path), "boxes": int(len(b.boxes)), "margin": margin,
+                         "blend": blend}
         extra["overlay"] = overlay_fit(b, buildings, cell)
+        if registration is not None:
+            extra["registration"] = registration
     return write_scene(out, osm_boxes, b, b.voxel if b else cell, spawn, extra)
 
 
@@ -350,17 +497,24 @@ def main(argv=None):
     ap.add_argument("--base", default=None,
                     help="a scanned scene (e.g. scenes/dp) to lay the OSM area around, in its map frame; its datum "
                          "is its meta.json geo, else config gnss.datum")
-    ap.add_argument("--margin", type=float, default=2.0, help="OSM keeps this far from any base box (m)")
+    ap.add_argument("--margin", type=float, default=2.0, help="OSM buildings keep this far from any base box (m)")
+    ap.add_argument("--blend", type=float, default=10.0,
+                    help="OSM ground eases from the scan edge's height to the flat ground over this distance (m)")
+    ap.add_argument("--register", action="store_true",
+                    help="OSM is the reference: move the base's datum so its building lands on its OSM outline")
     ap.add_argument("--config", default=None, help="config with the fallback gnss.datum (default config/sim.yaml)")
     a = ap.parse_args(argv)
     lat, lon = parse_streets_gl_url(a.url) if a.url else a.center
     osm = a.osm or os.path.join("Maps", os.path.basename(os.path.normpath(a.out)), "overpass.json")
     fallback = (load_config(a.config, []).get("gnss") or {}).get("datum") if a.base else None
     meta = build(lat, lon, a.radius, a.out, osm, a.cell, a.tile, a.default_height, a.level_height, a.alt,
-                 a.ground_z, a.base, fallback, a.margin)
+                 a.ground_z, a.base, fallback, a.margin, a.blend, a.register)
     o = meta["osm"]
     print(f"wrote {a.out}: {o['buildings']} buildings ({o['height_source']}, {o['rejected']} refused) -> "
           f"{o['building_boxes']} boxes + ground, spawn {meta['spawn']}")
+    if "registration" in meta:
+        print(f"registered the base onto OSM: {meta['registration']}")
+        print(f"corrected datum: lat {meta['geo']['lat']:.7f} lon {meta['geo']['lon']:.7f} yaw {meta['geo']['yaw_deg']}")
     if "overlay" in meta:
         print(f"overlay fit against the base scan: {meta['overlay']}")
 
