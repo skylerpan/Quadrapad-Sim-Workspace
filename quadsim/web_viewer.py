@@ -29,6 +29,7 @@ from .model import box_corners, hexahedra_arrays, nearest_boxes
 
 JOY_LIFT = np.array([0.0, 0.0, 0.35])          # the joystick handle floats this much above the base
 JOY_RANGE = 1.0                                  # m of handle offset for full speed
+MAX_SPEED = 60.0 / 3.6                           # top of the speed slider: 60 km/h, for crossing an OSM area
 
 DEFAULTS = {
     "enabled": True,
@@ -154,7 +155,9 @@ class WebViewer:
         with gui.add_folder("Teleop"):
             gui.add_markdown("Drag the handle on the robot: it walks toward the handle and stops when it gets there; "
                              "release = zero.")
-            self.s_speed = gui.add_slider("Max speed m/s", min=0.1, max=1.0, step=0.05, initial_value=0.4)
+            self.s_speed = gui.add_slider("Max speed m/s", min=0.1, max=round(MAX_SPEED, 1), step=0.1,
+                                          initial_value=0.4, hint="16.7 m/s = 60 km/h; the ideal base clips "
+                                                                  "at robot.vel_limits, a legged gait at its policy")
             self.s_turn = gui.add_slider("Max turn rad/s", min=0.2, max=1.5, step=0.05, initial_value=0.8)
             self.g_cmd = gui.add_text("Command", "ROS /cmd_vel", disabled=True)
             b_stop = gui.add_button("Stop", icon=viser.Icon.PLAYER_STOP, color="red",

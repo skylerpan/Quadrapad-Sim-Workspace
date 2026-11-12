@@ -55,7 +55,7 @@ robot:
   max_step_down: 0.25
   max_feet_over_gap: 1        # feet allowed over a gap in the floor (height taken from the other feet's plane)
   max_slope_deg: 50.0         # plane through the 4 feet: 31-42 deg on real flights, 46 deg on hand-drawn 0.2 m deep treads (0.2 m octree); 30 refused every staircase
-  vel_limits: [1.5, 0.8, 2.0]     # |vx|, |vy|, |wz|
+  vel_limits: [16.7, 0.8, 2.0]    # |vx|, |vy|, |wz|; vx up to 60 km/h for the web teleop slider over OSM scenes
   acc_limits: [2.0, 2.0, 4.0]
   cmd_tau: 0.15               # first-order lag of the gait controller (s)
   cmd_timeout: 0.5            # zero the command if no /cmd_vel for this long (s)

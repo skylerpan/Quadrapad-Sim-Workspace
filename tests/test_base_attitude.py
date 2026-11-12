@@ -33,3 +33,17 @@ def test_front_feet_one_tread_up_pitch_the_body_through_the_feet():
     assert abs(math.degrees(-g.pitch) - expected) < 1.0          # nose up = negative pitch
     assert abs(g.roll) < 1e-6
     assert abs(g.z0 - 0.1) < 1e-6                                 # plane through the feet at the centre
+
+
+def test_a_fast_tick_stops_at_a_thin_wall_instead_of_jumping_it():
+    # 60 km/h at 50 Hz is 0.33 m a tick: from x = 0.9 one check at 1.23 would land past a wall at x 1.0-1.2
+    from quadsim.base import IdealBase
+    from quadsim.config import load_config
+    from quadsim.raycast import RayScene
+    cfg = load_config(None, [])["robot"]
+    wall = lambda x, *_: 1.0 <= x <= 1.2
+    base = IdealBase(cfg, RayScene(np.array([[0.0, 0.0, -0.1, 5.0, 5.0, 0.1]], np.float32)), None, blocked=wall)
+    assert base.reset(0.9, 0.0, 0.0, 0.0)
+    base.v[:] = [60 / 3.6, 0.0, 0.0]
+    assert base.update(0.02, np.array([60 / 3.6, 0.0, 0.0]), 0.0) == "collision"
+    assert 0.9 < base.x < 1.0 and base.v[0] == 0.0
