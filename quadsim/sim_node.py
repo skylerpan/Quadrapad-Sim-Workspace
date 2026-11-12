@@ -10,6 +10,7 @@ A browser viewer (viser) is served on http://<host>:8755 by default (config web:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import signal
@@ -387,6 +388,12 @@ def main(argv=None):
                             node.pending_motion = motion
                         if policy is not None:
                             node.pending_policy = policy
+                map_color = web.take_map_color()     # browser dropdown: both viewers' map colouring
+                if map_color is not None:
+                    with viewer.lock() if viewer is not None else contextlib.nullcontext():
+                        sim.set_map_color(map_color)
+                    web.show_map_color(map_color)
+                    node.get_logger().info(f"map colour: {map_color}")
             out = node.step()
             now = time.perf_counter()
             if ctl is not None and ctl.poll() is not None:
