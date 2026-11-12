@@ -74,20 +74,42 @@ def _columns_to_boxes(keys: np.ndarray, cell: float, z0: float, z1: float) -> np
                             (x1 - x0) / 2, (y1 - y0) / 2, np.full(n, (z1 - z0) / 2)])
 
 
+@dataclass(frozen=True)
+class ColouredBoxes:
+    """Scene boxes and their scene colours, row for row: float32 [M,6] (cx, cy, cz, hx, hy, hz) and uint8 [M,4]
+    RGBA (A = 255: a colour from OSM, A = 0: none). Built only together, so the two can never fall out of step."""
+    boxes: np.ndarray
+    rgba: np.ndarray
+
+    def __post_init__(self):
+        if self.boxes.shape != (len(self.boxes), 6) or self.rgba.shape != (len(self.boxes), 4):
+            raise ValueError(f"boxes {self.boxes.shape} and rgba {self.rgba.shape} do not pair up")
+
+    @classmethod
+    def of(cls, boxes: np.ndarray, colour, alpha: int = 255) -> "ColouredBoxes":
+        """Boxes that all take one colour."""
+        boxes = np.asarray(boxes, np.float32).reshape(-1, 6)
+        return cls(boxes, np.tile(np.array([*colour, alpha], np.uint8), (len(boxes), 1)))
+
+    @classmethod
+    def concat(cls, parts: list["ColouredBoxes"]) -> "ColouredBoxes":
+        if not parts:
+            return cls(np.zeros((0, 6), np.float32), np.zeros((0, 4), np.uint8))
+        return cls(np.vstack([p.boxes for p in parts]), np.vstack([p.rgba for p in parts]))
+
+
 def buildings_to_boxes(buildings: list[Building], cell: float, ground_z: float,
-                       clip: Clip | None = None, cut: "Cut | None" = None) -> np.ndarray:
-    """float32 [M,6] (cx, cy, cz, hx, hy, hz): every building as merged full-height columns on a cell grid,
-    without the cells a base scene keeps (cut)."""
+                       clip: Clip | None = None, cut: "Cut | None" = None) -> ColouredBoxes:
+    """Every building as merged full-height columns on a cell grid, in its colour, without the cells a base scene
+    keeps (cut)."""
     parts = []
     for b in buildings:
         keys = footprint_cells(b.footprint, cell, clip)
         if cut is not None:
             keys = keys[cut.keep(keys)]
         if len(keys):
-            parts.append(_columns_to_boxes(keys, cell, ground_z, ground_z + b.height_m))
-    if not parts:
-        return np.zeros((0, 6), dtype=np.float32)
-    return np.vstack(parts).astype(np.float32)
+            parts.append(ColouredBoxes.of(_columns_to_boxes(keys, cell, ground_z, ground_z + b.height_m), b.colour))
+    return ColouredBoxes.concat(parts)
 
 
 def ground_tiles(lo: np.ndarray, hi: np.ndarray, tile: float, z: float, thickness: float = 0.2) -> np.ndarray:
@@ -456,7 +478,7 @@ def build(lat: float, lon: float, radius: float, out: str, osm_path: str, cell: 
             centre = enu_to_map(lla_to_enu(lat, lon, frame.alt, frame), frame)[:2]
             lo, hi = scene_square(centre, radius, cell)
             buildings, rejected = parse_overpass(answer, frame, default_height, level_height)
-    bboxes = buildings_to_boxes(buildings, cell, gz, clip=(lo, hi), cut=cut)
+    bboxes = buildings_to_boxes(buildings, cell, gz, clip=(lo, hi), cut=cut).boxes
     apron = Apron(b.boxes, b.floor_z, cell, blend, gz) if b else None
     osm_boxes = np.vstack([ground_boxes(lo, hi, tile, gz, cell, apron), bboxes])
     spawn = b.spawn if b else [*spawn_point(bboxes, centre, lo, hi), gz]
