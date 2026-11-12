@@ -5,8 +5,8 @@ import math
 import numpy as np
 import pytest
 
-from quadsim.gnss import (Datum, GnssModel, enu_to_lla, fix_for, lla_to_enu, map_to_enu, sky_directions,
-                          sky_fraction)
+from quadsim.gnss import (Datum, GnssModel, enu_to_lla, enu_to_map, fix_for, lla_to_enu, map_to_enu,
+                          sky_directions, sky_fraction)
 
 DATUM = Datum(lat=24.960860, lon=121.421968, alt=130.0, yaw_deg=31.0)
 M_PER_DEG_LON = 100981.7                     # at lat 24.96 on the WGS84 ellipsoid
@@ -51,6 +51,13 @@ def test_map_x_axis_points_along_the_datum_heading():
 
 
 # -- sky ---------------------------------------------------------------------------------------------------
+def test_enu_to_map_undoes_map_to_enu():
+    for xyz in ([10.0, 0.0, 1.0], [-3.0, 7.5, 0.0]):
+        assert np.allclose(enu_to_map(map_to_enu(np.array(xyz), DATUM), DATUM), xyz, atol=1e-12)
+    east = enu_to_map(np.array([1.0, 0.0, 0.0]), DATUM)       # east is 31 deg clockwise of map x
+    assert np.allclose(east, [math.cos(math.radians(31.0)), -math.sin(math.radians(31.0)), 0.0])
+
+
 def test_sky_rays_are_a_cone_around_zenith_and_the_fraction_counts_misses():
     d = sky_directions(9, 60.0)
     assert d.shape == (9, 3) and np.allclose(np.linalg.norm(d, axis=1), 1.0)

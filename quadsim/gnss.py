@@ -107,6 +107,13 @@ def map_to_enu(xyz: np.ndarray, datum: Datum) -> np.ndarray:
     return np.array([c * x - s * y, s * x + c * y, z])
 
 
+def enu_to_map(enu: np.ndarray, datum: Datum) -> np.ndarray:
+    """ENU -> map frame: the inverse of map_to_enu."""
+    c, s = math.cos(math.radians(datum.yaw_deg)), math.sin(math.radians(datum.yaw_deg))
+    e, n, u = (float(v) for v in enu)
+    return np.array([c * e + s * n, -s * e + c * n, u])
+
+
 enu_velocity = map_to_enu                         # a velocity rotates the same way
 
 
