@@ -71,3 +71,27 @@ def test_a_scene_without_voxels_answers_every_lookup_with_the_fallback(tmp_path)
     pts = np.array([[0.0, 0.0, -0.1], [5.0, 5.0, 3.0]])
     assert np.array_equal(v.surface_z(pts, np.array([1.0, 2.0])), [1.0, 2.0])
     assert np.array_equal(v.reflectivity(pts), [0, 0])
+
+
+def test_buildings_take_the_sky_away_open_ground_then_a_wall_then_a_street_canyon(tmp_path):
+    pytest.importorskip("mujoco")
+    from quadsim.config import load_config
+    from quadsim.sim import Simulator
+    # two 16 m wide, 20 m tall blocks with a 3 m street between them (x 8..11)
+    osm = _osm(tmp_path, square(0.0, 0.0, 8.0, height="20"), square(19.0, 0.0, 8.0, osm_id=2, height="20"))
+    out, _ = _build(tmp_path, osm)
+    cfg = load_config(None, ["robot.type=ideal", "lidar.points_per_sec=2000", "spawn=null", "gnss.sky.mode=map",
+                             "gnss.rtk=true", "gnss.model=f9p"])
+    cfg["scene"] = out
+    s = Simulator(cfg)
+
+    def fix_at(x, y):
+        s.set_pose(x, y, 0.0, 0.0)
+        fixes = []
+        for _ in range(15):
+            fixes += s.control_tick().gnss
+        return fixes[-1].fix, round(fixes[-1].sky, 2)
+
+    assert fix_at(-40.0, 40.0) == ("rtk_fixed", 1.0)          # open ground
+    assert fix_at(0.0, 9.5) == ("rtk_float", 0.67)            # 1.5 m from a wall: 3 of 9 rays blocked
+    assert fix_at(9.5, 0.0) == ("single", 0.33)               # the canyon: only zenith and along the street
