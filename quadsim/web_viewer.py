@@ -25,6 +25,7 @@ import time
 
 import numpy as np
 
+from .map_colors import height_colors
 from .model import box_corners, hexahedra_arrays, nearest_boxes
 
 JOY_LIFT = np.array([0.0, 0.0, 0.35])          # the joystick handle floats this much above the base
@@ -44,29 +45,6 @@ DEFAULTS = {
     "map_precision": "float32",    # float16 halves the map download but quantises to ~3 cm at 50 m
     "path_topic": "/robot01/planned_path",   # nav_msgs/Path drawn as a line (empty = off)
 }
-
-# turbo colormap, 9 stops
-_TURBO = np.array([[48, 18, 59], [68, 90, 204], [37, 160, 253], [31, 221, 198], [103, 253, 115],
-                   [194, 241, 60], [247, 183, 39], [235, 93, 11], [122, 4, 3]], dtype=np.float64) / 255.0
-
-
-def height_colors(z: np.ndarray, lo: float | None = None, hi: float | None = None) -> np.ndarray:
-    """uint8 [N,3] colours from height, turbo-like, clipped to [lo, hi] (default: 1st-99th percentile)."""
-    z = np.asarray(z, dtype=np.float64)
-    if len(z) == 0:
-        return np.zeros((0, 3), dtype=np.uint8)
-    if lo is None or hi is None:
-        p_lo, p_hi = np.percentile(z, [1.0, 99.0])
-        lo = p_lo if lo is None else lo
-        hi = p_hi if hi is None else hi
-    if hi - lo < 1e-6:
-        hi = lo + 1e-6
-    u = np.clip((z - lo) / (hi - lo), 0.0, 1.0) * (len(_TURBO) - 1)
-    i = np.minimum(u.astype(np.int64), len(_TURBO) - 2)
-    f = (u - i)[:, None]
-    rgb = _TURBO[i] * (1.0 - f) + _TURBO[i + 1] * f
-    return (rgb * 255.0 + 0.5).astype(np.uint8)
-
 
 def box_colors(boxes: np.ndarray, voxel: float) -> np.ndarray:
     """uint8 [N,3] colour per scene box (cx, cy, cz, hx, hy, hz): the height palette of the point-cloud map,
