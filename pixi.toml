@@ -18,11 +18,11 @@ ros-humble-nav-msgs = "*"
 numpy = "<2"
 scipy = "*"
 pyyaml = "*"
+open3d = "*"                        # conda-forge, not PyPI: the wheel needs the system libgomp/libGL/libX11 (RUNPATH /usr/lib/llvm-7)
 
 [pypi-dependencies]
 mujoco = "==3.15.0"
 viser = "==1.1.1"
-open3d = "*"
 
 [activation.env]
 RMW_IMPLEMENTATION = "rmw_cyclonedds_cpp"
