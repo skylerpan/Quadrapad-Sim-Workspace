@@ -18,6 +18,7 @@ def test_anything_else_is_no_colour(raw):
 
 def test_a_building_takes_its_tag_then_its_roof_then_its_type_then_the_default():
     assert building_colour({"building": "school", "building:colour": "#000000"}) == (0, 0, 0)
+    assert building_colour({"building:colour": "#000000", "roof:colour": "white"}) == (0, 0, 0)    # walls first
     assert building_colour({"building": "school", "roof:colour": "white"}) == (255, 255, 255)
     assert building_colour({"building": "school", "building:colour": "nonsense"}) == BUILDING_PALETTE["school"]
     assert building_colour({"building": "school"}) == BUILDING_PALETTE["school"]
