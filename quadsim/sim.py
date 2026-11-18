@@ -69,6 +69,21 @@ class TickOutput:
     clock: list[float] = field(default_factory=list)
 
 
+def _apply_mj_opt(m, overrides: dict | None):
+    """robot.mj_opt: MuJoCo solver options set after compiling, for experiments on the contact model
+    (noslip_iterations, impratio, cone: pyramidal | elliptic). Nothing is changed without it."""
+    for key, value in (overrides or {}).items():
+        if key == "cone":
+            cones = {"pyramidal": mujoco.mjtCone.mjCONE_PYRAMIDAL, "elliptic": mujoco.mjtCone.mjCONE_ELLIPTIC}
+            if value not in cones:
+                raise ValueError(f"robot.mj_opt.cone: expected pyramidal or elliptic, got {value!r}")
+            m.opt.cone = cones[value]
+        elif key in ("noslip_iterations", "impratio"):
+            setattr(m.opt, key, type(getattr(m.opt, key))(value))
+        else:
+            raise ValueError(f"robot.mj_opt: unknown option {key!r} (known: cone, impratio, noslip_iterations)")
+
+
 class Simulator:
     def __init__(self, cfg: dict, visual_map: bool = False):
         self.cfg = cfg
@@ -119,6 +134,7 @@ class Simulator:
             # draw the boxes nearest the spawn (a 0.03 m map has millions)
             add_map_mesh(spec, nearest_boxes(boxes, pos, max_vis), slabs, max_boxes=max_vis)
         self.m = spec.compile()
+        _apply_mj_opt(self.m, (cfg.get("robot", {}) or {}).get("mj_opt"))
         self.d = mujoco.MjData(self.m)
         self.proxies = ProxyPool(self.m, self.d, self.contact_index, r["collision_pool"])
         self.lidar_site = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "lidar")

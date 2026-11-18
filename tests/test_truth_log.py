@@ -50,3 +50,25 @@ def test_truth_log_is_off_by_default():
     from quadsim.g23 import RefSimOptions
     assert RefSimOptions.from_env({}).truth_log is None
     assert RefSimOptions.from_env({"controller": {"truth_log": "x.npz"}}).truth_log == "x.npz"
+
+
+@needs_scene
+def test_contact_solver_options_can_be_overridden():
+    """robot.mj_opt: MuJoCo solver options for experiments on the contact model; untouched by default."""
+    import mujoco
+    from quadsim.sim import Simulator
+    sim = Simulator(_cfg(**{"robot.controller.gt_addr": '""'}))
+    try:
+        assert sim.m.opt.noslip_iterations == 0 and sim.m.opt.impratio == 1.0
+        assert sim.m.opt.cone == mujoco.mjtCone.mjCONE_PYRAMIDAL
+    finally:
+        sim.close()
+    sim = Simulator(_cfg(**{"robot.controller.gt_addr": '""',
+                            "robot.mj_opt": "{noslip_iterations: 8, impratio: 10, cone: elliptic}"}))
+    try:
+        assert sim.m.opt.noslip_iterations == 8 and sim.m.opt.impratio == 10.0
+        assert sim.m.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC
+    finally:
+        sim.close()
+    with pytest.raises(ValueError, match="mj_opt"):
+        Simulator(_cfg(**{"robot.mj_opt": "{no_such_option: 1}"}))

@@ -20,6 +20,8 @@ robot:
                               # terrain, 4 = IsaacSim; ros.topics.policy_mode switches live as MODE <n>. PPO trips its posture
                               # guard on 0.1 m bumps the floor fixes remove
   fall_height: 0.18           # g23: torso lower than this over the floor for 1 s while walking = `fall` (collapsed)
+  # mj_opt: {noslip_iterations: 8, impratio: 10, cone: elliptic}   # experiments on the contact model; the default
+                              # (pyramidal cone, impratio 1, no noslip pass) lets a loaded foot creep a few cm/s
   motor_model: null           # g23: null = follow G2_SIM_MOTOR_MODEL like the controller's own sim (j60 default: armature /
                               # dry friction / damping on the 12 joints + torque envelope); j60 | ideal here overrides it
   level_gravity: true         # g23: gravity straight down (the controller's sim); false = along the scene's fitted floor normal
