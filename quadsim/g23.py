@@ -40,6 +40,7 @@ import numpy as np
 
 from quadsim.base import mount_pose
 from quadsim.imu_noise import ImuNoise, ImuNoiseParams
+from quadsim.truth_log import TruthLog
 from quadsim.sequence import Damp, Gait, Intent, Lie, ResetSafety, Stand, StandSequence, Vel, VelStop
 
 G23_XML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "robot", "g23", "mjcf", "g23_mjcf.xml")
@@ -135,6 +136,7 @@ class RefSimOptions:
     ros_ascii: bool = True                      # G2_SIM_ROS_ASCII_TELEMETRY != 0: ASCII state line to the ROS bridge
     ros_bridge: tuple[str, int] | None = ("127.0.0.1", 50010)   # G2_SIM_ROS_BRIDGE_IP / _PORT
     gt: tuple[str, int] | None = ("127.0.0.1", 30012)           # G2_SIM_GT_IP / _PORT: SIM_POSE lines
+    truth_log: str | None = None                # robot.controller.truth_log: .npz of per-step foot / contact truth (quadsim/truth_log.py)
     imu_noise: ImuNoiseParams = field(default_factory=ImuNoiseParams)   # robot.controller.imu_noise (quadsim only: off by default)
     notes: list[str] = field(default_factory=list)
 
@@ -166,6 +168,7 @@ class RefSimOptions:
         if ctl.get("gt_addr") is not None:
             o.gt = _addr(ctl["gt_addr"]) if ctl["gt_addr"] else None
         o.imu_noise = ImuNoiseParams.from_cfg(ctl.get("imu_noise"))
+        o.truth_log = str(ctl["truth_log"]) if ctl.get("truth_log") else None
         if o.motor_model not in ("j60", "ideal"):
             raise ValueError(f"G2_SIM_MOTOR_MODEL / robot.motor_model must be j60 or ideal, got {o.motor_model!r}")
         return o
@@ -451,6 +454,7 @@ class G2DeployBackend(G23Physics):
         self.sock.bind(("0.0.0.0", self.cmd_port))
         self.out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._stop = threading.Event()
+        self.truth = TruthLog(m, d, list(self.feet), self.root, self.opts.truth_log) if self.opts.truth_log else None
         self.rx = threading.Thread(target=self._receiver, daemon=True)
         self.rx.start()
         # stand / gait sequence (sim time)
@@ -514,6 +518,8 @@ class G2DeployBackend(G23Physics):
                 f"{v[0]:.6f} {v[1]:.6f} {v[2]:.6f} {w[0]:.6f} {w[1]:.6f} {w[2]:.6f}\n")
 
     def send_telemetry(self, t: float):
+        if self.truth is not None:
+            self.truth.record(t)
         pkt = self.telemetry(t)
         for a in self.telemetry_to:
             try:
@@ -567,6 +573,8 @@ class G2DeployBackend(G23Physics):
         return {"type": "controller", "state": "policy", "policy_mode": self.policy_mode, "t": t, "live": live}
 
     def close(self):
+        if self.truth is not None:
+            self.truth.close()
         self._stop.set()
         try:
             self.sock.close()

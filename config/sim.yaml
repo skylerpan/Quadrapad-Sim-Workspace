@@ -44,6 +44,8 @@ robot:
     gt_addr: null             # SIM_POSE ground-truth lines: null = G2_SIM_GT_IP/PORT (127.0.0.1:30012, as their sim), "" = off
     ros_bridge_addr: null     # their ASCII state line for udp_ros_bridge: null = G2_SIM_ROS_BRIDGE_IP/PORT (127.0.0.1:50010)
     ros_ascii_telemetry: null # null = G2_SIM_ROS_ASCII_TELEMETRY (on, as their sim); true / false overrides
+    truth_log: null           # a .npz path: per physics step, each foot's true velocity / load / contact normal and the load on
+                              # shanks and the rest of the robot (quadsim/truth_log.py), time-aligned with the telemetry
     imu_noise:                # noise on the IMU the controller reads (quadsim/imu_noise.py); all 0 = exact, as their sim
       acc: 0.0                # m/s^2 white noise sigma          (the LiDAR IMU below uses 0.02)
       gyro: 0.0               # rad/s white noise sigma          (0.002)
