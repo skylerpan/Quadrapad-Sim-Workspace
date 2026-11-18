@@ -44,6 +44,14 @@ robot:
     gt_addr: null             # SIM_POSE ground-truth lines: null = G2_SIM_GT_IP/PORT (127.0.0.1:30012, as their sim), "" = off
     ros_bridge_addr: null     # their ASCII state line for udp_ros_bridge: null = G2_SIM_ROS_BRIDGE_IP/PORT (127.0.0.1:50010)
     ros_ascii_telemetry: null # null = G2_SIM_ROS_ASCII_TELEMETRY (on, as their sim); true / false overrides
+    imu_noise:                # noise on the IMU the controller reads (quadsim/imu_noise.py); all 0 = exact, as their sim
+      acc: 0.0                # m/s^2 white noise sigma          (the LiDAR IMU below uses 0.02)
+      gyro: 0.0               # rad/s white noise sigma          (0.002)
+      acc_bias_rw: 0.0        # m/s^2/sqrt(s) bias random walk   (0.0005)
+      gyro_bias_rw: 0.0       # rad/s/sqrt(s) bias random walk   (0.00005)
+      gyro_bias: 0.0          # rad/s sigma of a constant per-axis bias; its z integrates into the reported yaw (0.002 ~ 7 deg/min)
+      rp: 0.0                 # rad white noise sigma on roll / pitch (0.002)
+      seed: 0
   # ideal base (and the terrain probe / free-pose search used by both types)
   body_size: [0.70, 0.31, 0.16]   # collision box full extents (x, y, z)
   mass: 15.0

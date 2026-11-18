@@ -39,6 +39,7 @@ import mujoco
 import numpy as np
 
 from quadsim.base import mount_pose
+from quadsim.imu_noise import ImuNoise, ImuNoiseParams
 from quadsim.sequence import Damp, Gait, Intent, Lie, ResetSafety, Stand, StandSequence, Vel, VelStop
 
 G23_XML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "robot", "g23", "mjcf", "g23_mjcf.xml")
@@ -134,6 +135,7 @@ class RefSimOptions:
     ros_ascii: bool = True                      # G2_SIM_ROS_ASCII_TELEMETRY != 0: ASCII state line to the ROS bridge
     ros_bridge: tuple[str, int] | None = ("127.0.0.1", 50010)   # G2_SIM_ROS_BRIDGE_IP / _PORT
     gt: tuple[str, int] | None = ("127.0.0.1", 30012)           # G2_SIM_GT_IP / _PORT: SIM_POSE lines
+    imu_noise: ImuNoiseParams = field(default_factory=ImuNoiseParams)   # robot.controller.imu_noise (quadsim only: off by default)
     notes: list[str] = field(default_factory=list)
 
     @classmethod
@@ -163,6 +165,7 @@ class RefSimOptions:
             o.ros_bridge = _addr(ctl["ros_bridge_addr"]) if ctl["ros_bridge_addr"] else None
         if ctl.get("gt_addr") is not None:
             o.gt = _addr(ctl["gt_addr"]) if ctl["gt_addr"] else None
+        o.imu_noise = ImuNoiseParams.from_cfg(ctl.get("imu_noise"))
         if o.motor_model not in ("j60", "ideal"):
             raise ValueError(f"G2_SIM_MOTOR_MODEL / robot.motor_model must be j60 or ideal, got {o.motor_model!r}")
         return o
@@ -177,6 +180,8 @@ class RefSimOptions:
             parts.append(f"sensor/actuator model: AHRS tau {self.ahrs_tau} s, IMU {self.imu_rate_hz or 1000:.0f} Hz "
                          f"delay {self.imu_delay_ms} ms, torque bandwidth {self.torque_bw_hz or 'inf'} Hz, "
                          f"cmd delay {self.cmd_delay_ms} ms")
+        if self.imu_noise.enabled:
+            parts.append(self.imu_noise.describe())
         parts.append("ROS ASCII telemetry " + ("-> %s:%d" % self.ros_bridge if self.ros_ascii and self.ros_bridge else "off"))
         parts.append("SIM_POSE " + ("-> %s:%d" % self.gt if self.gt else "off"))
         if self.motor_temp:
@@ -262,6 +267,8 @@ class G23Physics:
         self._imu_held = None
         self._ahrs_q = None
         self._sensor_model = any(v > 0 for v in (o.ahrs_tau, o.imu_rate_hz, o.imu_delay_ms))
+        self._imu_noise = ImuNoise(o.imu_noise, self.dt)
+        self._imu_sample = None                     # this step's noisy (rpy, gyro, acc); None while the noise is off
         self.step = 0
         self.input_tq = np.zeros(12)
 
@@ -299,13 +306,20 @@ class G23Physics:
         return (quat_to_rpy(d.qpos[3:7]), d.sensordata[self.gyro_adr:self.gyro_adr + 3].copy(),
                 d.sensordata[self.acc_adr:self.acc_adr + 3].copy())
 
+    def _sampled_imu(self):
+        """This physics step's IMU reading: the exact one, or the noisy one drawn in update_imu."""
+        return self._imu_sample if self._imu_sample is not None else self._raw_imu()
+
     def update_imu(self):
         """Their _update_imu, once per physics step after mj_step: AHRS roll / pitch estimate, sample-and-hold
-        at the IMU rate, delay line. No-op unless one of those is configured."""
+        at the IMU rate, delay line. No-op unless one of those is configured. With robot.controller.imu_noise
+        the step's reading gets its noise here first, once, so every reader of the step sees the same sample."""
         self.step += 1
+        if self._imu_noise.enabled:
+            self._imu_sample = self._imu_noise.apply(*self._raw_imu())
         if not self._sensor_model:
             return
-        rpy, gyro, acc = self._raw_imu()
+        rpy, gyro, acc = self._sampled_imu()
         o = self.opts
         if o.ahrs_tau > 0:
             qt = self.d.qpos[3:7].copy()
@@ -329,7 +343,7 @@ class G23Physics:
 
     def imu_output(self):
         if not self._sensor_model or not self._imu_history:
-            return self._raw_imu()
+            return self._sampled_imu()
         return self._imu_history[0]
 
     def foot_contacts(self) -> np.ndarray:
