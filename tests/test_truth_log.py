@@ -18,6 +18,8 @@ def test_truth_log_records_every_physics_step(tmp_path):
     path = tmp_path / "truth.npz"
     sim = Simulator(_cfg(**{"robot.controller.gt_addr": '""', "robot.controller.ros_ascii_telemetry": "false",
                             "robot.controller.truth_log": str(path)}))
+    import time
+    wall0 = time.time()
     try:
         steps0 = sim.step_count
         for _ in range(25):                      # 0.5 s: the limp robot settles on the floor
@@ -35,6 +37,9 @@ def test_truth_log_records_every_physics_step(tmp_path):
     assert log["foot_force"].shape == (n, 4) and log["foot_normal"].shape == (n, 4, 3)
     assert log["shank_force"].shape == (n, 4) and log["other_force"].shape == (n,)
     assert list(log["feet"]) == ["FL", "FR", "HL", "HR"]
+    # each step also carries the Unix time it was computed at (to measure how late downstream data arrives)
+    assert log["wall"].shape == (n,) and np.all(np.diff(log["wall"]) >= 0)
+    assert wall0 <= log["wall"][0] and log["wall"][-1] <= time.time()
     # at rest everything the robot weighs goes through the logged contacts, and nothing moves
     total = log["foot_force"][-50:].sum(1) + log["shank_force"][-50:].sum(1) + log["other_force"][-50:]
     assert abs(total.mean() - mass * gravity) < 0.1 * mass * gravity

@@ -5,13 +5,16 @@ the world puts on it and the direction of that force. For everything else on the
 world: the normal force per shank, and the rest lumped together (thighs, hips, torso).
 
 The time stamp is the one of the telemetry packet sent in the same step, so the log lines up sample for
-sample with what the controller received (its G2_KF_INPUT_LOG recording).
+sample with what the controller received (its G2_KF_INPUT_LOG recording). `wall` is the Unix time the step
+was computed at: with the controller's and a subscriber's own Unix times it tells how old a state is when
+it arrives downstream.
 
 Off unless robot.controller.truth_log names a file; written as one .npz when the simulator closes.
 """
 from __future__ import annotations
 
 import os
+import time
 
 import mujoco
 import numpy as np
@@ -29,7 +32,7 @@ class TruthLog:
             body = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, f"{leg}_SHANK")
             if body >= 0:
                 self.shank_of[body] = i
-        self.rows: dict[str, list] = {k: [] for k in ("t", "base_p", "base_v", "foot_v", "foot_w", "foot_force",
+        self.rows: dict[str, list] = {k: [] for k in ("t", "wall", "base_p", "base_v", "foot_v", "foot_w", "foot_force",
                                                       "foot_normal", "shank_force", "other_force")}
         self._vel = np.zeros(6)
         self._force = np.zeros(6)
@@ -66,6 +69,7 @@ class TruthLog:
             foot_w[i], foot_v[i] = self._vel[:3], self._vel[3:]
         r = self.rows
         r["t"].append(t)
+        r["wall"].append(time.time())
         r["base_p"].append(d.qpos[0:3].copy())
         r["base_v"].append(d.qvel[0:3].copy())
         r["foot_v"].append(foot_v)
