@@ -69,6 +69,19 @@ class TickOutput:
     clock: list[float] = field(default_factory=list)
 
 
+def add_solids(spec, solids) -> None:
+    """Scene file solids.npy: oriented static boxes [cx, cy, cz, hx, hy, hz, qw, qx, qy, qz] (a smooth incline,
+    scripts/make_slope.py) added to the model as world geoms that collide like the proxy boxes. The map boxes stay
+    axis-aligned and go through the proxy pool; a solid's ray/visual stand-in is a ground.npz slab."""
+    if solids is None or not len(solids):
+        return
+    proxy = spec.geom("proxy_0")
+    for i, s in enumerate(np.asarray(solids, dtype=np.float64)):
+        spec.worldbody.add_geom(name=f"solid_{i}", type=mujoco.mjtGeom.mjGEOM_BOX, pos=s[:3].tolist(),
+                                size=s[3:6].tolist(), quat=s[6:10].tolist(), contype=proxy.contype,
+                                conaffinity=proxy.conaffinity, group=3, rgba=[0.5, 0.55, 0.5, 1.0])
+
+
 def _apply_mj_opt(m, overrides: dict | None):
     """robot.mj_opt: MuJoCo solver options set after compiling, for experiments on the contact model
     (noslip_iterations, impratio, cone: pyramidal | elliptic). Nothing is changed without it."""
@@ -97,6 +110,8 @@ class Simulator:
         ground = os.path.join(scene_dir, "ground.npz")      # flattened floor slabs (absent in --no-flatten scenes)
         slabs = np.load(ground)["slabs"] if os.path.exists(ground) else None
         self.boxes, self.slabs = boxes, slabs            # kept for the viewers (visual map)
+        solids_path = os.path.join(scene_dir, "solids.npy")   # oriented static boxes (e.g. an incline)
+        self.solids = np.load(solids_path) if os.path.exists(solids_path) else None
         self.rays = RayScene(boxes, slabs)
         self.voxels = VoxelLookup(os.path.join(scene_dir, "voxels.npz"))
         self.index = BoxIndex(boxes)
@@ -129,6 +144,7 @@ class Simulator:
         else:
             self.contact_index = self.index
             spec = mujoco.MjSpec.from_string(build_mjcf(cfg, self.meta["gravity"], pos, r["collision_pool"]))
+        add_solids(spec, self.solids)
         if visual_map:                      # only for the viewer: headless runs keep the small model
             max_vis = int(cfg.get("viewer", {}).get("max_map_boxes", 400_000))
             # draw the boxes nearest the spawn (a 0.03 m map has millions)
