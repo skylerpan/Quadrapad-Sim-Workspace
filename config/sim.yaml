@@ -22,6 +22,9 @@ robot:
   fall_height: 0.18           # g23: torso lower than this over the floor for 1 s while walking = `fall` (collapsed)
   # mj_opt: {noslip_iterations: 8, impratio: 10, cone: elliptic}   # experiments on the contact model; the default
                               # (pyramidal cone, impratio 1, no noslip pass) lets a loaded foot creep a few cm/s
+  # contact_timeconst: 0.0025      # g23: solref time constant (s) of the robot's collision geoms (MJCF 0.005); null = unchanged
+  # world_contact_timeconst: 0.01   # ... of the map proxies / scene solids (MuJoCo default 0.02). MuJoCo averages the two
+                              # geoms' solref, so a foot contact's time constant is their mean (0.0125 by default)
   motor_model: null           # g23: null = follow G2_SIM_MOTOR_MODEL like the controller's own sim (j60 default: armature /
                               # dry friction / damping on the 12 joints + torque envelope); j60 | ideal here overrides it
   level_gravity: true         # g23: gravity straight down (the controller's sim); false = along the scene's fitted floor normal

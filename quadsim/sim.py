@@ -97,6 +97,25 @@ def _apply_mj_opt(m, overrides: dict | None):
             raise ValueError(f"robot.mj_opt: unknown option {key!r} (known: cone, impratio, noslip_iterations)")
 
 
+def _apply_contact_timeconst(m, robot_root: int | None, world_geoms, robot_cfg: dict):
+    """robot.contact_timeconst / robot.world_contact_timeconst: the solref time constant (s) of the robot's
+    collision geoms (MJCF 0.005) / of the map proxies and scene solids (MuJoCo default 0.02), damping ratio kept.
+    MuJoCo averages the two geoms' solref, so a contact's time constant is the mean of both. Null = unchanged."""
+    for key, geoms in (("contact_timeconst", None), ("world_contact_timeconst", world_geoms)):
+        value = robot_cfg.get(key)
+        if value is None:
+            continue
+        value = float(value)
+        if not value > 0.0:
+            raise ValueError(f"robot.{key}: expected a time constant > 0 s, got {value!r}")
+        if geoms is None:
+            if robot_root is None:
+                raise ValueError(f"robot.{key}: only for the legged robot (robot.type=g23)")
+            geoms = [g for g in range(m.ngeom) if m.body_rootid[m.geom_bodyid[g]] == robot_root
+                     and (m.geom_contype[g] or m.geom_conaffinity[g])]
+        m.geom_solref[np.asarray(geoms, dtype=np.int64), 0] = value
+
+
 class Simulator:
     def __init__(self, cfg: dict, visual_map: bool = False):
         self.cfg = cfg
@@ -153,6 +172,11 @@ class Simulator:
         _apply_mj_opt(self.m, (cfg.get("robot", {}) or {}).get("mj_opt"))
         self.d = mujoco.MjData(self.m)
         self.proxies = ProxyPool(self.m, self.d, self.contact_index, r["collision_pool"])
+        solid_geoms = [mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_GEOM, f"solid_{i}")
+                       for i in range(0 if self.solids is None else len(self.solids))]
+        torso = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, "TORSO") if self.legged else -1
+        _apply_contact_timeconst(self.m, int(self.m.body_rootid[torso]) if self.legged else None,
+                                 list(self.proxies.geom) + solid_geoms, r)
         self.lidar_site = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "lidar")
         self.gnss_site = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "gnss")       # -1 without a gnss section
         if self.legged:

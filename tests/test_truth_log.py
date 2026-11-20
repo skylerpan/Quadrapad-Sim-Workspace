@@ -77,3 +77,36 @@ def test_contact_solver_options_can_be_overridden():
         sim.close()
     with pytest.raises(ValueError, match="mj_opt"):
         Simulator(_cfg(**{"robot.mj_opt": "{no_such_option: 1}"}))
+
+
+@needs_scene
+def test_contact_time_constant_can_be_overridden():
+    """robot.contact_timeconst: solref time constant of the robot's collision geoms (MJCF: 0.005);
+    robot.world_contact_timeconst: of the map proxies and scene solids (MuJoCo default 0.02). MuJoCo averages the
+    two geoms' solref (solmix 1 each), so a foot contact's time constant is their mean. Untouched by default."""
+    import mujoco
+    from quadsim.sim import Simulator
+
+    def contact_tc(**over):
+        sim = Simulator(_cfg(**{"robot.controller.gt_addr": '""', "robot.controller.ros_ascii_telemetry": "false",
+                                **over}))
+        try:
+            robot = [g for g in range(sim.m.ngeom) if sim.m.body_rootid[sim.m.geom_bodyid[g]] == sim.g23.root
+                     and sim.m.geom_conaffinity[g]]
+            world = sim.proxies.geom
+            rt = {round(float(v), 6) for v in sim.m.geom_solref[robot, 0]}
+            wt = {round(float(v), 6) for v in sim.m.geom_solref[world, 0]}
+            for _ in range(25):
+                sim.control_tick()
+            tc = {round(float(sim.d.contact[i].solref[0]), 6) for i in range(sim.d.ncon)}
+            assert all(sim.m.geom_solref[g, 1] == 1.0 for g in robot)          # damping ratio kept
+        finally:
+            sim.close()
+        return rt, wt, tc
+
+    assert contact_tc() == ({0.005}, {0.02}, {0.0125})
+    assert contact_tc(**{"robot.contact_timeconst": 0.0025}) == ({0.0025}, {0.02}, {0.01125})
+    assert contact_tc(**{"robot.contact_timeconst": 0.01, "robot.world_contact_timeconst": 0.01}) == \
+        ({0.01}, {0.01}, {0.01})
+    with pytest.raises(ValueError, match="contact_timeconst"):
+        Simulator(_cfg(**{"robot.contact_timeconst": 0.0}))
