@@ -53,7 +53,7 @@ DDS 條件：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、domain 1�
 |---|---|
 | `pixi run test` | 單元測試，結果跟容器內相同（會先 build livox CustomMsg 到 `build/livox/`） |
 | `pixi run sim [參數]` | 從 checkout 直接跑 sim，參數和 `scripts/run_sim.sh` 一樣；控制器預設用 `../SyncAI-Device-MotorControl` |
-| `pixi run bundle` | 產出 `dist/quadsim-<版本>-linux-<arch>.run`，加上給 Mac 用的 `dist/compose/` |
+| `pixi run bundle` | 產出 `dist/quadsim-<版本>-linux-<arch>.run`，加上給 Mac 用的 `dist/compose/`；場景預設帶 `scenes/dp` 和 `scenes/dp_bt_s16`，`BUNDLE_SCENES="scenes/a scenes/b"` 可改 |
 
 `.run` 第一次執行會在 `${QUADSIM_HOME:-~/.local/share/quadsim}/<版本>` 解壓。安裝程序用 flock 鎖住，`.complete` 最後才寫，所以裝到一半中斷的話，下次會整個重做；`--reinstall` 可強制重裝。
 

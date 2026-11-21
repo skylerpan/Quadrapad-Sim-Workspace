@@ -47,7 +47,7 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 容器使用 `--net=host`，DDS 設定與 WebRvizLite 相同：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、`ROS_DOMAIN_ID=1`、`conf/cyclonedds.xml`（loopback 單播、關閉 multicast），所以 WebRvizLite 檢視器不需額外設定即可連上。主機或其他容器裡的導航堆疊，只要使用相同的 RMW 與 domain 就能直接連上（執行 `docker/run.sh` 時可用 `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<conf/ 下的檔名>` 覆寫）。**其他所有節點都要設 `use_sim_time:=true`**。
 
 ## 免 Docker 單檔執行（PoC）
-`pixi run bundle` 會把執行需要的東西全部打包成一個自解壓檔 `dist/quadsim-<yyyymmdd>-<sha>-linux-<arch>.run`，內容包括：[RoboStack](https://robostack.github.io/) 的 ROS 2 Humble（用 pixi-pack 打包 `pixi.toml` 的 default 環境）、MuJoCo、open3d、livox CustomMsg、程式本體加上 `scenes/dp`，以及 G23 控制器（SyncAI-Device-MotorControl 的 `robotdog_control` 和它的模型、ONNX Runtime）。目標機器只要是同架構、glibc 2.35 以上的 Linux（Ubuntu 22.04 以上），不用另外安裝任何東西。
+`pixi run bundle` 會把執行需要的東西全部打包成一個自解壓檔 `dist/quadsim-<yyyymmdd>-<sha>-linux-<arch>.run`，內容包括：[RoboStack](https://robostack.github.io/) 的 ROS 2 Humble（用 pixi-pack 打包 `pixi.toml` 的 default 環境）、MuJoCo、open3d、livox CustomMsg、程式本體加上 `scenes/dp` 和 `scenes/dp_bt_s16`（`BUNDLE_SCENES` 可改清單），以及 G23 控制器（SyncAI-Device-MotorControl 的 `robotdog_control` 和它的模型、ONNX Runtime）。目標機器只要是同架構、glibc 2.35 以上的 Linux（Ubuntu 22.04 以上），不用另外安裝任何東西。
 ```bash
 # 打包（打的是本機的架構；docker 只用在 docker/build_g23.sh 編控制器）
 pixi run bundle                                     # 另有 pixi run test、pixi run sim [參數]（直接從 checkout 跑）

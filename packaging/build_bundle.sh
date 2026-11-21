@@ -3,15 +3,15 @@
 # for running the same .run on a Mac (packaging/compose). Needs Docker here only to build the G23 controller
 # (docker/build_g23.sh, SyncAI-Device-MotorControl at $MOTORCONTROL_REPO, default ../SyncAI-Device-MotorControl).
 #   <ver> = <yyyymmdd>-<git short sha>[-dirty]
-# Payload: bin/quadsim, app/ (tracked quadsim, pcd2sim, config, conf, robot, scripts + scenes/dp + the livox
-# CustomMsg build), controller/mc (robotdog_control, models/, onnxruntime: what it opens at run time),
+# Payload: bin/quadsim, app/ (tracked quadsim, pcd2sim, config, conf, robot, scripts + the scenes in $BUNDLE_SCENES,
+# default scenes/dp and scenes/dp_bt_s16, + the livox CustomMsg build), controller/mc (robotdog_control, models/, onnxruntime: what it opens at run time),
 # environment.tar (pixi-pack of the default env) and a static pixi-unpack. Staging in dist/.tmp, removed on success.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 MC="$(cd "${MOTORCONTROL_REPO:-$REPO/../SyncAI-Device-MotorControl}" && pwd)"
 PIXI_HOME="${PIXI_HOME:-$HOME/.pixi}"
 PIXI_PACK="${PIXI_PACK:-$PIXI_HOME/bin/pixi-pack}"
-SCENE="scenes/dp"
+read -r -a SCENES <<< "${BUNDLE_SCENES:-scenes/dp scenes/dp_bt_s16}"
 ARCH="$(uname -m)"
 case "$ARCH" in
   aarch64) PLATFORM=linux-aarch64 ;;
@@ -19,7 +19,9 @@ case "$ARCH" in
   *) echo "build_bundle: unsupported arch $ARCH" >&2; exit 2 ;;
 esac
 [[ -x "$PIXI_PACK" ]] || { echo "build_bundle: $PIXI_PACK missing (pixi global install -c https://prefix.dev/conda-forge pixi-pack)" >&2; exit 1; }
-[[ -f "$REPO/$SCENE/contact.npy" ]] || { echo "build_bundle: $SCENE is not built (pcd2sim.build_scene)" >&2; exit 1; }
+for s in "${SCENES[@]}"; do
+  [[ -f "$REPO/$s/contact.npy" ]] || { echo "build_bundle: $s is not built (pcd2sim.build_scene)" >&2; exit 1; }
+done
 
 dirty() { git -C "$1" diff --quiet HEAD -- || echo "-dirty"; }
 VER="$(date +%Y%m%d)-$(git -C "$REPO" rev-parse --short HEAD)$(dirty "$REPO")"
@@ -40,7 +42,7 @@ mv "$TMP/controller/mc/robotdog_control" "$TMP/controller/mc/target/release/"
 
 echo "[bundle] app"
 (cd "$REPO" && git ls-files -z quadsim pcd2sim config conf robot scripts | xargs -0 cp --parents -t "$TMP/app")
-(cd "$REPO" && cp -r --parents "$SCENE" "$TMP/app")
+(cd "$REPO" && cp -r --parents "${SCENES[@]}" "$TMP/app")
 "$PIXI_HOME/bin/pixi" run --manifest-path "$REPO/pixi.toml" livox >/dev/null
 (cd "$REPO" && cp -r --parents build/livox/install "$TMP/app")
 cp "$REPO/packaging/quadsim" "$TMP/bin/quadsim"
@@ -58,6 +60,7 @@ cp /etc/ssl/certs/ca-certificates.crt "$TMP/cacert.pem"   # pixi-unpack builds a
 cat > "$TMP/VERSION" <<EOF
 quadsim $VER ($PLATFORM)
 SyncAI-Device-MotorControl $(git -C "$MC" rev-parse --short HEAD)$(dirty "$MC")
+scenes ${SCENES[*]}
 built $(date -Iseconds)
 EOF
 
