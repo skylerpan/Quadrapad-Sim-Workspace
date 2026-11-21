@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import time
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import mujoco
 import numpy as np
@@ -14,10 +14,11 @@ from pcd2sim import SCENE_FORMAT
 from .base import IdealBase, body_lift, rot_zyx
 from .config import load_scene_meta
 from .g23 import JOINTS, RefSimOptions, build_g23_spec
-from .gnss import GnssFix, GnssModel, sky_directions, sky_fraction
+from .gnss import GnssFix, GnssModel, resolve_datum, sky_directions, sky_fraction
 from .backends import make_backend
 from .lidar import LidarFrame, RollingLidar
-from .model import add_map_mesh, build_mjcf, nearest_boxes
+from .map_colors import parse_map_color
+from .model import add_map_mesh, build_mjcf, nearest_box_indices
 from .proxies import BoxIndex, ProxyPool
 from .raycast import RayScene, VoxelLookup
 
@@ -116,9 +117,26 @@ def _apply_contact_timeconst(m, robot_root: int | None, world_geoms, robot_cfg: 
         m.geom_solref[np.asarray(geoms, dtype=np.int64), 0] = value
 
 
+def spawn_pose(spawn, spawns: dict, meta_spawn) -> tuple[float, float, float, float]:
+    """(x, y, yaw, z_floor) from config `spawn`: a [x, y, yaw, z_floor] list (yaw / z_floor optional), a name in
+    config `spawns`, or None for the scene's meta.json spawn (yaw 0)."""
+    if isinstance(spawn, str):
+        if spawn not in spawns:
+            raise ValueError(f"spawn {spawn!r} is not in config spawns: {sorted(spawns)}")
+        spawn = spawns[spawn]
+    if spawn is not None:
+        z = meta_spawn[2] if meta_spawn else 0.0
+        s = spawn
+        return float(s[0]), float(s[1]), float(s[2] if len(s) > 2 else 0.0), float(s[3] if len(s) > 3 else z)
+    if meta_spawn is None:
+        raise RuntimeError("scene has no spawn point; set `spawn: [x, y, yaw, z_floor]` in the config")
+    return float(meta_spawn[0]), float(meta_spawn[1]), 0.0, float(meta_spawn[2])
+
+
 class Simulator:
     def __init__(self, cfg: dict, visual_map: bool = False):
         self.cfg = cfg
+        self.map_color = parse_map_color(cfg.get("viewer", {}).get("map_color", "osm"))   # refused before any work
         scene_dir = cfg["scene"]
         self.meta = load_scene_meta(scene_dir)
         _check_scene_format(scene_dir, self.meta)
@@ -131,6 +149,11 @@ class Simulator:
         self.boxes, self.slabs = boxes, slabs            # kept for the viewers (visual map)
         solids_path = os.path.join(scene_dir, "solids.npy")   # oriented static boxes (e.g. an incline)
         self.solids = np.load(solids_path) if os.path.exists(solids_path) else None
+        colors_path = os.path.join(scene_dir, "colors.npy")   # scene colour per box (A = 0: none), OSM scenes
+        self.colors = np.load(colors_path) if os.path.exists(colors_path) else None
+        if self.colors is not None and len(self.colors) != len(boxes):
+            raise ValueError(f"{colors_path} has {len(self.colors)} rows for {len(boxes)} boxes: rebuild the scene")
+        self.map_paint = None                            # the MuJoCo viewer's map geoms (visual_map only)
         self.rays = RayScene(boxes, slabs)
         self.voxels = VoxelLookup(os.path.join(scene_dir, "voxels.npz"))
         self.index = BoxIndex(boxes)
@@ -167,9 +190,13 @@ class Simulator:
         if visual_map:                      # only for the viewer: headless runs keep the small model
             max_vis = int(cfg.get("viewer", {}).get("max_map_boxes", 400_000))
             # draw the boxes nearest the spawn (a 0.03 m map has millions)
-            add_map_mesh(spec, nearest_boxes(boxes, pos, max_vis), slabs, max_boxes=max_vis)
+            near = nearest_box_indices(boxes, pos, max_vis)
+            self.map_paint = add_map_mesh(spec, boxes[near], slabs,
+                                          None if self.colors is None else self.colors[near], max_boxes=max_vis)
         self.m = spec.compile()
         _apply_mj_opt(self.m, (cfg.get("robot", {}) or {}).get("mj_opt"))
+        if self.map_paint is not None:
+            self.map_paint.apply(self.m, self.map_color)
         self.d = mujoco.MjData(self.m)
         self.proxies = ProxyPool(self.m, self.d, self.contact_index, r["collision_pool"])
         solid_geoms = [mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_GEOM, f"solid_{i}")
@@ -208,7 +235,9 @@ class Simulator:
         self.gyro_bias = np.zeros(3)
         # the GNSS receiver (quadsim/gnss.py): only with a datum; the antenna is the `gnss` site
         gn = cfg.get("gnss") or {}
-        self.gnss = GnssModel(gn, np.random.default_rng(cfg["lidar"].get("seed", 0) + 2)) if gn.get("datum") else None
+        self.datum = resolve_datum(self.meta, gn.get("datum"))       # the scene's geo, else gnss.datum
+        self.gnss = (GnssModel({**gn, "datum": asdict(self.datum)}, np.random.default_rng(cfg["lidar"].get("seed", 0) + 2))
+                     if self.datum is not None else None)
         if self.gnss is not None:
             if self.gnss_site < 0:
                 raise ValueError("gnss.datum is set but gnss.mount_xyz is not: the antenna has no place on the base")
@@ -235,14 +264,7 @@ class Simulator:
         return int(round(steps))
 
     def _spawn_pose(self):
-        s = self.cfg.get("spawn")
-        meta_spawn = self.meta.get("spawn")
-        if s is not None:
-            z = meta_spawn[2] if meta_spawn else 0.0
-            return float(s[0]), float(s[1]), float(s[2] if len(s) > 2 else 0.0), float(s[3] if len(s) > 3 else z)
-        if meta_spawn is None:
-            raise RuntimeError("scene has no spawn point; set `spawn: [x, y, yaw, z_floor]` in the config")
-        return float(meta_spawn[0]), float(meta_spawn[1]), 0.0, float(meta_spawn[2])
+        return spawn_pose(self.cfg.get("spawn"), self.cfg.get("spawns") or {}, self.meta.get("spawn"))
 
     def _place(self, pos, quat):
         if self.legged:
@@ -297,6 +319,12 @@ class Simulator:
         self.base.reset(x, y, yaw, z_floor_hint)
         warnings.warn(f"pose ({x:.2f}, {y:.2f}) overlaps the map and no free pose within 1 m", stacklevel=3)
         return ok, False
+
+    def set_map_color(self, mode) -> None:
+        """Switch the MuJoCo viewer's map colouring (quadsim.map_colors); the passive viewer redraws from the model."""
+        self.map_color = parse_map_color(mode)
+        if self.map_paint is not None:
+            self.map_paint.apply(self.m, self.map_color)
 
     def set_policy_mode(self, mode: int) -> dict | None:
         """g23 RL policy switch (0 PPO, 1 HIMLoco ...); None in ideal mode."""

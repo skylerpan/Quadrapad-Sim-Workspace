@@ -1,6 +1,8 @@
 """MJCF for the ideal-base quadruped: free body welded to a mocap target + proxy pool."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from quadsim.base import mount_pose
 
 
@@ -27,11 +29,11 @@ def build_mjcf(cfg: dict, gravity, spawn_pos, n_proxies: int) -> str:
   <option timestep="{ph['timestep']}" gravity="{_f(gravity)}" integrator="implicitfast"/>
   <visual>
     <global offwidth="1280" offheight="720"/>
-    <headlight ambient="0.3 0.3 0.3" diffuse="0.45 0.45 0.45"/>
+    <headlight ambient="0.25 0.25 0.25" diffuse="0.35 0.35 0.35"/>
   </visual>
   <statistic center="{_f(spawn_pos)}" extent="10"/>
   <worldbody>
-    <light pos="0 0 50" dir="0 0 -1" directional="true" castshadow="{shadows}"/>
+    <light pos="0 0 50" dir="0 0 -1" directional="true" diffuse="0.4 0.4 0.4" castshadow="{shadows}"/>
     <body name="target" mocap="true" pos="{_f(spawn_pos)}">
       <geom type="box" size="{_f(half)}" contype="0" conaffinity="0" group="2" rgba="0.2 0.9 0.2 0.15"/>
     </body>
@@ -75,19 +77,32 @@ def hexahedra_arrays(corners):
     return corners.reshape(-1, 3), faces
 
 
-def nearest_boxes(boxes, xy, n: int):
-    """The n boxes whose centres are nearest (in xy) to a point; all of them when there are no more than n."""
+def nearest_box_indices(boxes, xy, n: int):
+    """Indices of the n boxes whose centres are nearest (in xy) to a point; all of them when there are no more."""
     import numpy as np
 
     if len(boxes) <= n:
-        return boxes
+        return np.arange(len(boxes))
     d2 = ((boxes[:, :2] - np.asarray(xy)[:2]) ** 2).sum(axis=1)
-    return boxes[np.argpartition(d2, n)[:n]]
+    return np.argpartition(d2, n)[:n]
+
+
+def nearest_boxes(boxes, xy, n: int):
+    """The n boxes whose centres are nearest (in xy) to a point; all of them when there are no more than n."""
+    if len(boxes) <= n:
+        return boxes
+    return boxes[nearest_box_indices(boxes, xy, n)]
+
+
+MAP_MATERIAL = "map_matte"         # no specular: a map seen from above keeps its colours instead of glaring white
 
 
 def _add_hexahedra(spec, name: str, corners, rgba):
-    """One visual-only mesh geom from [K,8,3] corners (corner index = 4*ix + 2*iy + iz)."""
+    """One visual-only mesh geom from [K,8,3] corners (corner index = 4*ix + 2*iy + iz), matte."""
     import mujoco
+
+    if spec.material(MAP_MATERIAL) is None:
+        spec.add_material(name=MAP_MATERIAL, specular=0.0, shininess=0.0, reflectance=0.0)
 
     verts, faces = hexahedra_arrays(corners)
     mesh = spec.add_mesh(name=name)
@@ -95,11 +110,47 @@ def _add_hexahedra(spec, name: str, corners, rgba):
     mesh.userface = faces.ravel().tolist()
     mesh.inertia = mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL
     spec.worldbody.add_geom(name=name, type=mujoco.mjtGeom.mjGEOM_MESH, meshname=name,
-                            contype=0, conaffinity=0, group=0, rgba=rgba)
+                            contype=0, conaffinity=0, group=0, rgba=rgba, material=MAP_MATERIAL)
 
 
-def add_map_mesh(spec, boxes, slabs=None, max_boxes: int = 400_000):
-    """Visual-only map for the MuJoCo viewer: scene boxes and floor slabs as meshes (no collision)."""
-    _add_hexahedra(spec, "map_vis", box_corners(boxes[:max_boxes]), [0.55, 0.58, 0.62, 1.0])
+HEIGHT_BANDS = 16                 # the MuJoCo map is split into this many height bands per colour
+
+
+@dataclass(frozen=True)
+class MapPaint:
+    """The map geoms of a MuJoCo model and their colour in each mode (quadsim.map_colors). apply() writes
+    geom_rgba on the compiled model: the colour mode switches without a recompile."""
+    geoms: tuple[str, ...]
+    rgba: dict                    # mode -> float [G,4] in 0..1
+
+    def apply(self, m, mode: str) -> None:
+        import mujoco
+
+        for name, c in zip(self.geoms, self.rgba[mode]):
+            m.geom_rgba[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, name)] = c
+
+
+def add_map_mesh(spec, boxes, slabs=None, rgba=None, max_boxes: int = 400_000) -> MapPaint:
+    """Visual-only map for the MuJoCo viewer: the scene boxes as meshes (no collision), one geom per scene colour
+    (rgba uint8 [N,4], A = 0 or None: none) and height band, so every colour mode is a geom_rgba write; floor slabs
+    as one more mesh in a fixed colour."""
+    import numpy as np
+
+    from .map_colors import MAP_COLORS, PLAIN_RGB, height_range, map_colors
+
+    boxes = np.asarray(boxes, dtype=np.float64)[:max_boxes]
+    own = np.zeros((len(boxes), 4), np.uint8) if rgba is None else np.asarray(rgba, np.uint8)[:max_boxes]
+    lo, hi = height_range(boxes[:, 2]) if len(boxes) else (0.0, 1.0)
+    width = max(hi - lo, 1e-6) / HEIGHT_BANDS
+    band = np.clip(np.floor((boxes[:, 2] - lo) / width), 0, HEIGHT_BANDS - 1).astype(np.int64)
+    keys, group = np.unique(np.column_stack([own.astype(np.int64), band]), axis=0, return_inverse=True)
+    group = group.ravel()
+    centre_z = lo + (keys[:, 4] + 0.5) * width
+    names = tuple(f"map_vis_{k}" for k in range(len(keys)))
+    paint = {mode: np.column_stack([map_colors(centre_z, keys[:, :4].astype(np.uint8), mode, lo, hi) / 255.0,
+                                    np.ones(len(keys))]) for mode in MAP_COLORS}
+    for k, name in enumerate(names):
+        _add_hexahedra(spec, name, box_corners(boxes[group == k]), paint["osm"][k].tolist())
     if slabs is not None and len(slabs):
         _add_hexahedra(spec, "ground_vis", slabs, [0.42, 0.47, 0.42, 1.0])
+    return MapPaint(names, paint)

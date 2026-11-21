@@ -22,13 +22,16 @@ import os
 import socket
 import threading
 import time
+from dataclasses import dataclass
 
 import numpy as np
 
-from .model import box_corners, hexahedra_arrays, nearest_boxes
+from .map_colors import MAP_COLORS, height_colors, map_colors, parse_map_color
+from .model import box_corners, hexahedra_arrays, nearest_box_indices
 
 JOY_LIFT = np.array([0.0, 0.0, 0.35])          # the joystick handle floats this much above the base
 JOY_RANGE = 1.0                                  # m of handle offset for full speed
+MAX_SPEED = 60.0 / 3.6                           # top of the speed slider: 60 km/h, for crossing an OSM area
 
 DEFAULTS = {
     "enabled": True,
@@ -44,62 +47,48 @@ DEFAULTS = {
     "path_topic": "/robot01/planned_path",   # nav_msgs/Path drawn as a line (empty = off)
 }
 
-# turbo colormap, 9 stops
-_TURBO = np.array([[48, 18, 59], [68, 90, 204], [37, 160, 253], [31, 221, 198], [103, 253, 115],
-                   [194, 241, 60], [247, 183, 39], [235, 93, 11], [122, 4, 3]], dtype=np.float64) / 255.0
-
-
-def height_colors(z: np.ndarray, lo: float | None = None, hi: float | None = None) -> np.ndarray:
-    """uint8 [N,3] colours from height, turbo-like, clipped to [lo, hi] (default: 1st-99th percentile)."""
-    z = np.asarray(z, dtype=np.float64)
-    if len(z) == 0:
-        return np.zeros((0, 3), dtype=np.uint8)
-    if lo is None or hi is None:
-        p_lo, p_hi = np.percentile(z, [1.0, 99.0])
-        lo = p_lo if lo is None else lo
-        hi = p_hi if hi is None else hi
-    if hi - lo < 1e-6:
-        hi = lo + 1e-6
-    u = np.clip((z - lo) / (hi - lo), 0.0, 1.0) * (len(_TURBO) - 1)
-    i = np.minimum(u.astype(np.int64), len(_TURBO) - 2)
-    f = (u - i)[:, None]
-    rgb = _TURBO[i] * (1.0 - f) + _TURBO[i + 1] * f
-    return (rgb * 255.0 + 0.5).astype(np.uint8)
-
-
-def box_colors(boxes: np.ndarray, voxel: float) -> np.ndarray:
-    """uint8 [N,3] colour per scene box (cx, cy, cz, hx, hy, hz): the height palette of the point-cloud map,
-    darkened by 15 % on every other cell of a 3-D checkerboard (min-corner grid index), so two boxes that touch at
-    the same height still differ and the edge between them is visible from any direction."""
+def box_colors(boxes: np.ndarray, voxel: float, rgba: np.ndarray | None = None, mode: str = "height") -> np.ndarray:
+    """uint8 [N,3] colour per scene box (cx, cy, cz, hx, hy, hz): its map colour (quadsim.map_colors: mode, the
+    scene colours rgba), darkened by 15 % on every other cell of a 3-D checkerboard (min-corner grid index), so two
+    boxes that touch in the same colour still differ and the edge between them is visible from any direction."""
     b = np.asarray(boxes, dtype=np.float64).reshape(-1, 6)
     if len(b) == 0:
         return np.zeros((0, 3), dtype=np.uint8)
-    rgb = height_colors(b[:, 2]).astype(np.float64)
+    rgb = map_colors(b[:, 2], rgba, mode).astype(np.float64)
     cell = np.floor((b[:, :3] - b[:, 3:6]) / max(float(voxel), 1e-6) + 1e-6).astype(np.int64)
     odd = (cell.sum(axis=1) % 2).astype(bool)
     rgb[odd] *= 0.85
     return (rgb + 0.5).astype(np.uint8)
 
 
-def downsample_points(xyz: np.ndarray, max_points: int, voxel: float) -> tuple[np.ndarray, float]:
-    """Keep one point per cell of a voxel grid coarse enough that at most max_points remain.
-    Returns (points, cell size used); the input comes back untouched when it already fits."""
+def downsample_indices(xyz: np.ndarray, max_points: int, voxel: float) -> tuple[np.ndarray, float]:
+    """Indices of one point per cell of a voxel grid coarse enough that at most max_points remain, and the cell
+    size used; all of them when the points already fit."""
     xyz = np.asarray(xyz)
+    idx = np.arange(len(xyz))
     if len(xyz) <= max_points or max_points <= 0:
-        return xyz, voxel
+        return idx, voxel
     v = voxel
     for _ in range(12):
         # a scanned map is surface-like: the count falls ~1/v^2
-        v *= max(1.15, math.sqrt(len(xyz) / max_points) * 1.05)
-        q = np.floor(xyz / v).astype(np.int64)
+        v *= max(1.15, math.sqrt(len(idx) / max_points) * 1.05)
+        q = np.floor(xyz[idx] / v).astype(np.int64)
         q -= q.min(axis=0)
         dims = q.max(axis=0) + 1
         key = (q[:, 0] * dims[1] + q[:, 1]) * dims[2] + q[:, 2]
         _, first = np.unique(key, return_index=True)
-        xyz = xyz[np.sort(first)]
-        if len(xyz) <= max_points:
+        idx = idx[np.sort(first)]
+        if len(idx) <= max_points:
             break
-    return xyz, v
+    return idx, v
+
+
+def downsample_points(xyz: np.ndarray, max_points: int, voxel: float) -> tuple[np.ndarray, float]:
+    """Keep one point per cell of a voxel grid coarse enough that at most max_points remain.
+    Returns (points, cell size used); the input comes back untouched when it already fits."""
+    xyz = np.asarray(xyz)
+    idx, v = downsample_indices(xyz, max_points, voxel)
+    return (xyz if len(idx) == len(xyz) else xyz[idx]), v
 
 
 def decimate(xyz: np.ndarray, max_points: int) -> np.ndarray:
@@ -107,6 +96,14 @@ def decimate(xyz: np.ndarray, max_points: int) -> np.ndarray:
     if max_points <= 0 or len(xyz) <= max_points:
         return xyz
     return xyz[::int(math.ceil(len(xyz) / max_points))]
+
+
+@dataclass(frozen=True)
+class MapLayer:
+    """One map handle in the browser and its colours in every map colour mode; attr is the handle's colour field."""
+    handle: object
+    attr: str                                  # "colors" (point cloud) | "batched_colors" (instanced boxes)
+    colors: dict                               # mode -> uint8 [N,3]
 
 
 class WebViewer:
@@ -144,6 +141,16 @@ class WebViewer:
             self.c_lidar = gui.add_checkbox("LiDAR", True)
             self.c_path = gui.add_checkbox("Planned path", True)
             self.c_follow = gui.add_checkbox("Follow robot", True)
+            self.dd_map_color = gui.add_dropdown(
+                "Map colour", [m.upper() if m == "osm" else m.capitalize() for m in MAP_COLORS],
+                initial_value="OSM" if sim.map_color == "osm" else sim.map_color.capitalize(),
+                hint="OSM: building / ground colours from OpenStreetMap, height where a scan has none | "
+                     "Height: turbo by height | Plain: grey. Switches the MuJoCo window too.")
+        self.map_mode = sim.map_color                  # the mode both viewers should show (main thread writes)
+        self._map_color = None                         # mode asked in the browser, consumed by take_map_color()
+        self._map_layers = None                        # [MapLayer]: set once by the map thread, then main thread only
+        self._map_shown = None                         # mode the layers currently show
+        self.dd_map_color.on_update(lambda _: self.request_map_color(self.dd_map_color.value))
         self._teleop = None                            # (vx, vy, wz) while the joystick is held, or None = ROS /cmd_vel
         self._stop_pending = False                     # send one zero command, then hand back to ROS
         self._drag = False                             # joystick handle being dragged (viser thread sets, main thread reads)
@@ -154,7 +161,9 @@ class WebViewer:
         with gui.add_folder("Teleop"):
             gui.add_markdown("Drag the handle on the robot: it walks toward the handle and stops when it gets there; "
                              "release = zero.")
-            self.s_speed = gui.add_slider("Max speed m/s", min=0.1, max=1.0, step=0.05, initial_value=0.4)
+            self.s_speed = gui.add_slider("Max speed m/s", min=0.1, max=round(MAX_SPEED, 1), step=0.1,
+                                          initial_value=0.4, hint="16.7 m/s = 60 km/h; the ideal base clips "
+                                                                  "at robot.vel_limits, a legged gait at its policy")
             self.s_turn = gui.add_slider("Max turn rad/s", min=0.2, max=1.5, step=0.05, initial_value=0.8)
             self.g_cmd = gui.add_text("Command", "ROS /cmd_vel", disabled=True)
             b_stop = gui.add_button("Stop", icon=viser.Icon.PLAYER_STOP, color="red",
@@ -286,48 +295,81 @@ class WebViewer:
 
     def _build_map(self, sim) -> None:
         """Background thread: read the scene and add it under /map. Reads only the scene files and the arrays the
-        Simulator loaded at start (sim.boxes / sim.slabs, never written afterwards)."""
-        w, sc = self.cfg, self.server.scene
+        Simulator loaded at start (sim.boxes / sim.slabs / sim.colors, never written afterwards). The colours of every
+        mode are computed here, once; the handle is published last and the main thread owns it from then on."""
+        builders = {"points": self._points_map, "boxes": self._boxes_map}
         t0 = time.perf_counter()
         try:
-            mode = str(w["map"])
-            if mode == "points":
-                from pcd2sim.pcd_io import read_pcd
-                xyz, _ = read_pcd(os.path.join(self.scene_dir, "map_ds.pcd"))
-                n_all = len(xyz)
-                xyz, cell = downsample_points(xyz, int(w["max_map_points"]), self.voxel)
-                xyz32 = xyz.astype(np.float32)
-                sc.add_point_cloud("/map/points", xyz32, height_colors(xyz32[:, 2]), point_size=float(cell),
-                                   point_shape="square", point_shading="flat", precision=str(w["map_precision"]))
-                info = f"{len(xyz)} points" + (f" (of {n_all}, {cell:.2f} m cells)" if len(xyz) < n_all else "")
-            elif mode == "boxes":
-                boxes = np.asarray(nearest_boxes(sim.boxes, self._base[:2], int(w["max_map_boxes"])), dtype=np.float64)
-                # one unit cube (same winding as the MuJoCo viewer mesh), instanced per box: position = centre,
-                # per-axis scale = full extents, its own colour so neighbouring boxes do not merge into one face
-                verts, faces = hexahedra_arrays(box_corners(np.array([[0.0, 0.0, 0.0, 0.5, 0.5, 0.5]])))
-                n = len(boxes)
-                sc.add_batched_meshes_simple(
-                    "/map/boxes", verts.astype(np.float32), faces.astype(np.uint32),
-                    batched_wxyzs=np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (n, 1)),
-                    batched_positions=boxes[:, :3].astype(np.float32),
-                    batched_scales=(2.0 * boxes[:, 3:6]).astype(np.float32),
-                    batched_colors=box_colors(boxes, self.voxel),
-                    lod="auto", flat_shading=True, cast_shadow=False, receive_shadow=False)
-                info = f"{n} boxes, per-box colour" + (f" ({n} of {len(sim.boxes)}, nearest the spawn)" if n < len(sim.boxes) else "")
-                if sim.slabs is not None and len(sim.slabs):
-                    verts, faces = hexahedra_arrays(sim.slabs)
-                    sc.add_mesh_simple("/map/ground", verts.astype(np.float32), faces.astype(np.uint32), color=(107, 120, 107),
-                                       flat_shading=True, cast_shadow=False, receive_shadow=False)
-                    info += f", {len(sim.slabs)} floor slabs"
-            else:
+            build = builders.get(str(self.cfg["map"]))
+            if build is None:
                 info = "off"
+            else:
+                shown = self.map_mode
+                layers, info = build(sim, shown)
+                self._map_shown = shown
+                self._map_layers = layers                    # last: the main thread syncs the mode once this is set
         except Exception as e:  # noqa: BLE001  (a viewer problem must not take the sim down)
             info = f"failed: {e!r}"
         self.map_info = info
         self.g_map.value = info
         self.log(f"web viewer: map {info} in {time.perf_counter() - t0:.1f} s")
 
-    # -- controls (main thread polls, viser thread sets) -------------------------
+    def _points_map(self, sim, shown):
+        """The scan as a cloud (map_ds.pcd points without a scene colour, voxel-downsampled to web.max_map_points)
+        and the boxes with a scene colour (OSM) as boxes: map_ds has one stand-in point per such box, far too
+        sparse to see (a 20 m ground tile is one point)."""
+        from pcd2sim.pcd_io import read_pcd
+        w = self.cfg
+        xyz, _ = read_pcd(os.path.join(self.scene_dir, "map_ds.pcd"))
+        rgba_path = os.path.join(self.scene_dir, "map_ds_colors.npy")
+        rgba = np.load(rgba_path) if os.path.exists(rgba_path) else None
+        scan = np.arange(len(xyz)) if rgba is None or len(rgba) != len(xyz) else np.flatnonzero(rgba[:, 3] == 0)
+        idx, cell = downsample_indices(xyz[scan], int(w["max_map_points"]), self.voxel)
+        xyz32 = xyz[scan][idx].astype(np.float32)
+        colors = {m: map_colors(xyz32[:, 2], None, m) for m in MAP_COLORS}
+        handle = self.server.scene.add_point_cloud("/map/points", xyz32, colors[shown], point_size=float(cell),
+                                                   point_shape="square", point_shading="flat",
+                                                   precision=str(w["map_precision"]))
+        layers = [MapLayer(handle, "colors", colors)]
+        info = f"{len(idx)} points" + (f" (of {len(scan)}, {cell:.2f} m cells)" if len(idx) < len(scan) else "")
+        own = np.flatnonzero(sim.colors[:, 3] > 0) if sim.colors is not None else np.zeros(0, np.int64)
+        if len(own):
+            layer, n = self._box_layer("/map/osm", sim, own, shown)
+            layers.append(layer)
+            info += f" + {n} OSM boxes"
+        return layers, info
+
+    def _box_layer(self, name: str, sim, rows: np.ndarray, shown) -> tuple["MapLayer", int]:
+        """sim.boxes[rows] nearest the spawn (web.max_map_boxes) as one instanced unit cube each, in its map colour."""
+        near = rows[nearest_box_indices(sim.boxes[rows], self._base[:2], int(self.cfg["max_map_boxes"]))]
+        boxes = np.asarray(sim.boxes[near], dtype=np.float64)
+        rgba = None if sim.colors is None else sim.colors[near]
+        colors = {m: box_colors(boxes, self.voxel, rgba, m) for m in MAP_COLORS}
+        # one unit cube (same winding as the MuJoCo viewer mesh), instanced per box: position = centre,
+        # per-axis scale = full extents, its own colour so neighbouring boxes do not merge into one face
+        verts, faces = hexahedra_arrays(box_corners(np.array([[0.0, 0.0, 0.0, 0.5, 0.5, 0.5]])))
+        n = len(boxes)
+        handle = self.server.scene.add_batched_meshes_simple(
+            name, verts.astype(np.float32), faces.astype(np.uint32),
+            batched_wxyzs=np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (n, 1)),
+            batched_positions=boxes[:, :3].astype(np.float32),
+            batched_scales=(2.0 * boxes[:, 3:6]).astype(np.float32),
+            batched_colors=colors[shown],
+            lod="auto", flat_shading=True, cast_shadow=False, receive_shadow=False)
+        return MapLayer(handle, "batched_colors", colors), n
+
+    def _boxes_map(self, sim, shown):
+        """The scene boxes nearest the spawn (web.max_map_boxes), one instance each, coloured from colors.npy."""
+        layer, n = self._box_layer("/map/boxes", sim, np.arange(len(sim.boxes)), shown)
+        info = f"{n} boxes, per-box colour" + (f" ({n} of {len(sim.boxes)}, nearest the spawn)" if n < len(sim.boxes) else "")
+        if sim.slabs is not None and len(sim.slabs):
+            verts, faces = hexahedra_arrays(sim.slabs)
+            self.server.scene.add_mesh_simple("/map/ground", verts.astype(np.float32), faces.astype(np.uint32),
+                                              color=(107, 120, 107), flat_shading=True, cast_shadow=False,
+                                              receive_shadow=False)
+            info += f", {len(sim.slabs)} floor slabs"
+        return [layer], info
+
     def teleop_cmd(self):
         """(vx, vy, wz) while the joystick is held: send it every tick. After release / Stop, one zero command is
         returned and then None, so ROS /cmd_vel drives again."""
@@ -359,6 +401,33 @@ class WebViewer:
         """"stand" | "walk" | "lie" | "damp" once per click, or None."""
         m, self._motion = self._motion, None
         return m
+
+    def request_map_color(self, label) -> None:
+        """viser thread (the dropdown): only store the request; take_map_color() hands it to the main thread."""
+        self._map_color = parse_map_color(label)
+
+    def take_map_color(self):
+        """Map colour mode once per dropdown change, or None."""
+        m, self._map_color = self._map_color, None
+        return m
+
+    def show_map_color(self, mode) -> None:
+        """Main thread: the browser map follows mode (now when the map is built, else once it is)."""
+        self.map_mode = parse_map_color(mode)
+        self._sync_map_color()
+
+    @property
+    def map_layers(self) -> list:
+        """The viser handles of the map (cloud and / or boxes); empty until the map thread has built them."""
+        return [layer.handle for layer in self._map_layers or []]
+
+    def _sync_map_color(self) -> None:
+        layers = self._map_layers
+        if layers is None or self._map_shown == self.map_mode:
+            return
+        for layer in layers:
+            setattr(layer.handle, layer.attr, layer.colors[self.map_mode])
+        self._map_shown = self.map_mode
 
     def take_policy(self):
         """RL policy slot once per dropdown change, or None."""
@@ -407,6 +476,7 @@ class WebViewer:
         self._next = now + self.period
         d = sim.d
         self._base = np.array(d.xpos[self.base_body])
+        self._sync_map_color()                       # a mode chosen while the map thread was still building
         clients = self.server.get_clients()
         self.n_clients = len(clients)
         if not clients:

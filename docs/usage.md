@@ -299,6 +299,40 @@ docker/run.sh "python3 scripts/make_stairs.py --scene scenes/dp_bt --draft scene
 
 實測（2026-10-29）對手寫 spec：`scenes/dp_bt` 六段 flight 全部找到——W1 和手寫完全一樣（(−10.75, −12.2)→(−10.75, −10.05)，9 × 0.156，−0.2 → 1.2），E1 被破洞切成兩段後自動接回成 16 × 0.1625、腳印差 0.3 m，E2 的 z0 讀到平台中間掃描凹下去的 2.0（手寫 2.3），W2–W4 階數差 1、高度跟著各接點的掃描地板走；另外列出約 20 個小 staircase 候選（多數標 CHECK）。`scenes/dp_full_003`（平面化、樓梯黏成斜坡）抓到 E1 的 12 / 16 階（x 和手寫差 0.03 m）、E2 18 階、W1 8 / 9 階，其餘段落是帶 CHECK 的碎片。
 
+### 2.6 OSM 戶外場景（streets.gl → `scenes/`，`pcd2sim.osm_scene`）
+
+GNSS 的天空比例是從天線往場景射 9 條射線算的（`gnss.sky`），室內的 dp 只能強制 `sky.mode=always`。戶外場景要有真的建物，fix 才會在牆邊、大樓峽谷降級。來源是 OpenStreetMap：[streets.gl](https://streets.gl) 畫的就是 OSM，用它選區、看建物有沒有資料，把網址貼給 `pcd2sim.osm_scene`（網址 `#lat,lon,pitch,yaw,distance` 的前兩個數是中心）。資料 © OpenStreetMap contributors，ODbL，使用時要標示出處（`meta.json` 的 `osm.attribution`）。
+
+```bash
+# 獨立場景：中心 ±1 km，map = 中心的 ENU（yaw 0），地面 z = 0
+docker/run.sh "python3 -m pcd2sim.osm_scene --url 'https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00' --radius 1000 --out scenes/osm_tucheng"
+scripts/run_sim.sh --scene scenes/osm_tucheng spawn=null gnss.sky.mode=map gnss.rtk=true
+
+# 疊在 dp 上：dp 的 map 座標（yaw 31°）、dp 的地板高 / spawn，dp 掃到的範圍外擴 2 m 讓給 dp；--register 以 OSM 為準修正 datum；
+# --clear 清出大門（參考點 A (29.1, 39.5) / B (39.9, 40.3) 一帶）讓機器狗走得出去
+docker/run.sh "python3 -m pcd2sim.osm_scene --url 'https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00' --radius 1000 \
+    --base scenes/dp --osm Maps/osm_tucheng/overpass.json --out scenes/osm_tucheng_dp --register --clear 26 38 43 50"
+scripts/run_sim.sh --scene scenes/osm_tucheng_dp gnss.sky.mode=map
+scripts/run_sim.sh --scene scenes/osm_tucheng_dp gnss.sky.mode=map spawn=gate    # 從大門口出生，面朝外（+y）
+```
+
+- **下載一次**：Overpass 的回應存在 `Maps/<out 名>/overpass.json`（`--osm` 可指定），檔案在就不再下載；要更新就刪掉。建置是純本機運算，重跑結果逐位元組相同。
+- **建物 → box**：輪廓投影到目標 map 座標（WGS84 → ENU → map，`quadsim.gnss`），在對齊 map 軸的 0.5 m 格網（`--cell`）上取格心在輪廓內的格子，每格是地面到屋頂的柱子，`pcd2sim.voxel.merge_boxes` 合併。不經點雲 / 體素化：2 × 2 km 用 0.1 m 體素放不進記憶體。地面是 20 m 平板（`--tile`），全部進 contact set；中庭（multipolygon 的 inner）不挖。
+- **高度**：`height` tag → `building:levels` × 3 m（`--level-height`）→ `--default-height`（6 m）。`meta.json` 的 `osm.height_source` 記各用了幾棟。
+- **datum 跟著場景**：`meta.json` 的 `geo` 就是這個場景的 datum，`quadsim.gnss.resolve_datum` 優先用它，沒有 `geo` 的舊場景（dp）才用 `config/sim.yaml` 的 `gnss.datum`。`scripts/gnss_ekf_check.py` 和 `scripts/export_datum.py` 用 `--scene` 讀同一個場景；導航堆疊那邊的 datum 是定位地圖旁的 `<map>.geo.yaml`（3.4），用 `export_datum.py` 從場景匯出，兩邊才會一致。
+- **具名 spawn**：`config/sim.yaml` 的 `spawns` 存 `[x, y, yaw, z_floor]`，`spawn=<名字>` 選用；`gate` = dp 大門口 (34.5, 41.0)，在參考點 A / B 之間、`--clear` 清過的範圍裡，面朝外（yaw π/2），地面 −0.76 m。預設的 `spawn`（dp 1F (0, 0)）不變。名字打錯會列出有哪些。
+- **spawn**：獨立場景寫的是離中心最近、離建物 1 m 以上的格點；`config/sim.yaml` 的 `spawn` 是 dp 的，跑獨立場景要加 `spawn=null`。疊合場景沿用 base 的 spawn。
+- **疊合（`--base`）**：base 的 box、contact、`voxels.npz` 原封不動排在最前面，OSM 的建物在 base 每個 box 的 xy 範圍外擴 `--margin`（2 m）內全部挖掉；地面高 = base spawn 的地板高（dp −0.4，`--ground-z` 覆寫）。base 沒有 `geo` 時用 config 的 `gnss.datum`。
+- **接上掃描（`Apron`，`--blend` 10 m）**：OSM 地面不留 margin，一路鋪到掃描邊緣（只有 base 的低處 box——底面在地板 +1.5 m 以下——蓋住的格子不鋪），高度從掃描邊緣的地面（每格在地板 −1.5 / +0.8 m 內最高的 box 頂）以 Laplace 內插平滑地降回 `ground_z`，`--blend` 公尺外完全是平的。以前地面在掃描外留 2 m 的溝、又固定在 −0.4，而 dp 邊緣的地面在 −1.1 到 0 之間，機器人走不出去。
+- **清出大門（`--clear X0 Y0 X1 Y1`，可重複）**：base map 座標的矩形裡，掃描「貼地」的東西（底面在地板 +1.5 m 以下的 box，與 `Apron` 同一條線：地面、路緣、門檻、雜點）和 map_ds 的點被切掉，長 box 只切掉矩形內那段（剩下最多四塊，各自保留 contact 和顏色）；更高的東西（雨遮、天花板）留著。矩形裡改鋪 OSM 地面，高度由 `Apron` 從周圍掃描邊緣平滑補上，OSM 建物也不會鋪進矩形 margin 內。在 `--register` 之後才清，所以 datum 照舊用整個掃描去對。紀錄在 `meta.json` 的 `base.clear`。2026-11-12 dp 大門（y≈44–46 有一排比院子地面 −1.0 m 高 0.6–0.8 m 的路緣 / 門 / 雜點，加上掃描破洞）：清 `26 38 43 50` 之前，從院子 y = 34 往北開的 23 條線全部在 y 39–45 被擋；清了之後 x 27–40 的 13 條全部開到 y≈57 的 OSM 街道上（`tests/test_osm_clear.py` 用同樣的路緣驗：清了走得過、沒清走不過）。
+- **以 OSM 為準（`--register`）**：OSM 是參考，錯的是 base 的 datum。把 base 頂面高於地板 2 m 的格子閉合 / 開運算、取最大一塊、填洞（建物本體，不含樹和雜點），先和 80 m 內的 OSM 輪廓做面積互相關找起點，再對輪廓做去除離群的 ICP（只平移，航向不動）。base 的 map 座標、box、spawn、導航點、樓梯 spec 全部不變，只有這個場景 `meta.json` 的 `geo`（datum 原點）移動，OSM 依修正後的 datum 重新投影；sim 跑這個場景時 GNSS 經緯度就和 OSM 一致。結果記在 `meta.json` 的 `registration`（`shift_m`、輪廓距離中位數前後、2 m 內比例、原 datum）。找不到 80 m 內的 OSM 建物時 `ok: false`、datum 不動。`--register` 本身不改 `config/sim.yaml` 的 `gnss.datum`（其他 dp 場景用的）；2026-11-12 已把它手動改成下面的修正值，所以現在對 dp 再跑 `--register` 只剩約 5 cm 的位移。
+- **疊合品質（`meta.json` 的 `overlay`）**：base 裡頂面高於地板 2 m 的格子（牆、屋頂）和重疊最多的那棟 OSM 輪廓的 IoU、重心距離。量的是 datum 和 OSM 輪廓合起來的誤差。
+- **LiDAR**：OSM 沒有反射率，獨立場景的 `voxels.npz` 是空的（強度 0）；`map_ds.pcd` 是每個 box 的頂面中心。viewer 只畫離 spawn 最近的 `max_map_boxes` 個 box。
+- **顏色（`colors.npy`、`map_ds_colors.npy`）**：每個 box / 地圖點一個 RGBA（A = 255 有 OSM 顏色，A = 0 沒有：dp 掃描的部分），兩個 viewer 都照它畫（[4.1](#41-瀏覽器-viewerviser預設開) 的 `Map colour`）。建物：`building:colour` → `roof:colour` → 依 `building=*` 類型的色盤（`pcd2sim/osm_colors.py` 的 `BUILDING_PALETTE`：apartments 米、school 磚紅、industrial 灰藍、commercial 淡紫、temple 紅…）→ 預設；這一帶 226 棟只有 6 棟有 `building:colour`。地面：第二個 Overpass 查詢（`pcd2sim/osm_ground.py`：`highway`、`amenity=parking`、`landuse` / `leisure` / `natural` / `waterway`，含 multipolygon），一樣只下載一次，存在 `Maps/<out 名>/overpass_ground.json`（`--osm-ground` 指定、`--no-ground` 不畫）。每格 0.5 m 塗一個地面類別，優先序 道路 > 步道 > 水 > 停車場 > 草地 / 公園 > 森林 > 農地 > 建成區 > 裸地；道路寬 = `width` → `lanes` × 3.5 m → 依等級（primary 10、secondary 8、residential 6、service 4、footway 2 m）。整片同一類、又不在 apron 裡的 20 m 地磚維持一塊，其他的照格子依（類別, 高度）合併。`meta.json` 的 `osm.ground` 記各類別的 feature 數和格數。
+
+
+2026-11-12 的結果（streets.gl 中心 24.95919 / 121.41896，±1 km）：地面查詢 680 KB、833 個 feature（道路 487、步道 243、建成區 80、草地 62、停車場 25、森林 12、水 4），`osm_tucheng_dp` 從 16 萬變 32 萬個 box、建置 37 s（含下載）。Overpass 回 225 棟、0 棟被拒，**70 棟有樓層數、155 棟（69 %）沒有高度用 6 m**、沒有一棟有 `height`——這一帶 OSM 建物很稀疏（實際遠多於 225 棟），streets.gl 看到的也是這些。`scenes/osm_tucheng`：11 883 個建物 box + 10 000 片地面，1.2 s。`scenes/osm_tucheng_dp`：dp 126 621 box + OSM 4 852 建物 box + 地面，0.9 s；**overlay IoU 0.31、重心差 26 m**（OSM 536506348，dp 那棟沒有高度）：dp 掃描的西牆和 OSM 西邊對得上，但掃描往 map +y 多出約 20 m、OSM 往 −y 多出約 18 m——dp 的 datum（兩個參考點推出，sim.yaml 註記 ~1.5 m）或 OSM 輪廓有約 20 m 的偏差，疊合場景裡 dp 和 OSM 的相對位置不能當真，要先用現場量測重定 datum。**`--register` 之後**：dp 要在 map 座標移 (−0.51, −16.93) m（面積互相關起點 (−2, −19)，ICP 從 (0, 0) 起跑也收斂到同一點），datum 從 24.960860 / 121.421968 變成 **24.9607266 / 121.4220500**（yaw 31° 不變；轉角掃 −12°～+12° 時 −1°～+3° 分數幾乎相同，所以不改）。輪廓距離中位數 11.9 → 4.0 m、IoU 0.31 → 0.50；剩下的是形狀本身不同——OSM 那棟往南比掃描長約 20 m（重心差仍有 10.6 m，就是這段），掃描的西側也有 OSM 沒畫的部分。精度大約就是 OSM 輪廓本身的幾公尺。**接縫**（2026-11-12，`--blend 10`）：掃描邊緣的地面格和相鄰 OSM 地面高差 ≤ 0.22 m（`max_step_up`）的比例 81.7 %，和 dp 自己邊緣相鄰格之間的 82.8 % 相當（剩下的是掃描邊緣本身的雜訊）；舊的平地面是 52.6 %。ramp 內部相鄰格 > 0.22 m 的只有 165 / 89 495。理想底盤以 60 km/h 走 20 條在 box 資料上沒有障礙的出口車道：5 條開上 OSM 地面超過 5 m（舊場景 0 條，16 條卡在 2 m 的溝），其餘幾乎都在接縫前就被 dp 邊緣的坑 / 凸塊擋下。`tests/test_osm_scene_build.py` 用兩棟 20 m 高的方塊驗天空：空地 rtk_fixed（sky 1.0）、離牆 1.5 m rtk_float（0.67）、3 m 寬的街谷 single（0.33）。
+
 ## 3. 跑模擬
 
 ```bash
@@ -440,27 +474,27 @@ sim t=10.0s pose=[...]                          # 每 10 sim 秒一行
 
 ### 3.4 GNSS 融合測試（robot_localization）
 
-用 ROS 2 的 robot_localization 把 sim 的 GNSS（第 5 章 `/robot01/gnss/fix`）和導航堆疊的 odometry 融合成一個 map 座標的估計，和真值、導航自己的 `tracked_pose` 比。robot_localization 裝在 quadsim-g23 映像裡（`docker/Dockerfile.g23`），在 quadsim 容器跑，不動 robot01；它**不發 TF**（`publish_tf: false`，map → odom 還是 transform_fusion 的），只是比對。
+GNSS 融合在導航堆疊那邊：獨立 repo `SyncAI-Robot-Global-Localization` 的套件 `syncai_gnss_localization`，掛進 SyncAI-Device-Workspace 的 `src/`（`docker-compose.robots.yml` 的 `GNSS_LOC_DIR`），由獨立的 `location_3d_gnss.launch.py` 啟動（原本的 `location_3d.launch.py` 不變）。它用 robot_localization 的標準組合：
+
+- `navsat_transform_node`：`/robot01/gnss/fix` → `/robot01/odometry/gps`（fix 換成 map 座標的 base 位置，天線偏移經 TF `base_link → gnss_link` 扣掉）。
+- `ekf_node`（`ekf_global`，`world_frame: map`、`two_d_mode`、不發 TF）：融合 `/robot01/odom`（差分）、LiDAR 定位的位姿（`/robot01/gnss_fusion/lidar_pose`，只有配準被接受時才有）和 `/robot01/odometry/gps`，輸出 `/robot01/odometry/filtered`。
+- `localization_bridge`：把 EKF 對 LiDAR 位姿的平面修正量套到 `map_to_odom` 上，發成 `map_to_odom_fused`。
+- `gnss_seed`：冷啟動或 LiDAR 定位丟失且和 GNSS 差太多時，發 `/robot01/initialpose`。
+
+預設是**比對模式**：map → odom 和 `tracked_pose` 還是 LiDAR 定位的，多出來的只是 topic。加 `drive_tf:=true` 後 transform_fusion 改讀 `map_to_odom_fused`，TF 和 `tracked_pose` 才跟著 EKF 走。sim 這邊不再自己跑 EKF（原本的 `launch/gnss_ekf.launch.py`、`config/gnss_ekf.yaml`、`scripts/gnss_map_odom.py` 已移除），只負責發 GNSS 和打分數。
 
 ```bash
 scripts/run_sim.sh web.hz=10 web.lidar_hz=2 web.lidar_points=2000 gnss.sky.mode=always   # 室內地圖要強制有天空
-# robot01 裡重開 nav-sim（docker exec -it robot01 byobu → scripts/tmuxp/start.sh sim），tracked_pose 偏掉就發 /robot01/initialpose
-QUADSIM_G23=1 docker/run.sh "ros2 launch launch/gnss_ekf.launch.py"      # scripts/gnss_map_odom.py + ekf_map（config/gnss_ekf.yaml）
-QUADSIM_G23=1 docker/run.sh "python3 scripts/gnss_ekf_check.py"          # 開車 27 s：直走、轉 90°、直走、停，每秒印誤差，結果進 results/gnss_ekf/
+python3 scripts/export_datum.py -o <定位地圖>.geo.yaml       # 場景的 datum 匯出成導航堆疊的 sidecar（dp 已有一份）
+# nav3d 容器裡：ros2 launch syncai_launch_ws location_3d_gnss.launch.py sim:=true [drive_tf:=true]
+QUADSIM_G23=1 docker/run.sh "python3 scripts/gnss_ekf_check.py --expect datum_err=0.05"   # 開車 27 s，每秒印誤差，結果進 results/gnss_ekf/
 ```
 
-**fix 怎麼進 map 座標**：`scripts/gnss_map_odom.py` 用 sim.yaml 的 `gnss.datum`（地圖原點的經緯度和地圖 x 軸方位）把每筆 NavSatFix 經 `quadsim.gnss` 轉成 map 座標的 `nav_msgs/Odometry`（`/odometry/gps`），天線偏移用 odom 的 yaw 扣掉，協方差帶 fix 自己的 sigma。datum 是地圖的屬性，只寫在一個地方；上實機時同一支節點改讀地圖自己的 datum。**沒有用** robot_localization 自帶的 `navsat_transform_node`：它的 datum 錨在機器人啟動時的位姿（手動 `datum` 的意思是「機器人此刻在這個經緯度、朝這個方向」，自動模式則拿第一筆 fix），第一筆 fix 的雜訊會變成永久偏移；而且 humble 的套件在 `use_local_cartesian` 模式會丟 `MGRS string too short` 直接 abort。`ekf_map` 吃 `/robot01/odom` 的 yaw、vx、vy、vyaw 和 `/odometry/gps` 的 x、y，`two_d_mode`。
+**datum**：地圖的屬性，寫在定位地圖旁的 `<map>.geo.yaml`（`datum: {lat, lon, alt, yaw_deg}`，和 `config/sim.yaml` 的 `gnss.datum`、場景 `meta.json` 的 `geo` 同一組鍵）。`navsat_transform_node` 設 `wait_for_datum: true` 加 `datum: [lat, lon, yaw]`，map 原點就固定在 datum 的經緯度、map +x 軸朝正東逆時針 `yaw`，和機器人當下在哪無關；UTM 的子午線收斂角節點自己會補（dp 這裡 −0.67°，啟動 log 印 `meridian convergence of -0.0116 ... heading factor is now 0.5294`）。`use_local_cartesian` 要維持 `false`：humble 版的 local cartesian 模式是壞的（`MGRS string too short`，而且 fix 還是用 UTM 換算）。UTM 和 sim 用的 ENU 切平面差約 1 cm / 100 m。
 
-2026-11-05 的結果（scenes/dp 原點附近，`gnss.rtk: false` 單機：白雜訊 1.5 m + 時間常數 100 s 的慢漂 1 m；控制器 94c5531 rl_fcn，指令 0.3 m/s 實走約 0.12 m/s，每趟 1.5 m；對真值的誤差，27 s 270 筆）：
+**`gnss_ekf_check.py` 的欄位**（對真值）：`ekf_*` = `/robot01/odometry/filtered`、`nav_*` = `/robot01/tracked_pose`、`fix_dxy` = 原始 fix 經場景 datum 換到 map。不需要真值的兩個：`ekf_nav_dxy` = EKF 和 `tracked_pose` 的差；`datum_err` = `/robot01/odometry/gps` 和本 repo 對**同一筆 fix** 的精確 WGS84 換算的差，只反映 datum / 投影有沒有對上，不含接收器雜訊（應 < 5 cm）。`--expect key=上限` 超過就以非零結束。
 
-| | navsat_transform 第一趟 | navsat_transform 第二趟（8 分鐘後） | 固定 datum（gnss_map_odom） |
-|---|---|---|---|
-| EKF `/odometry/filtered` xy RMS / 最大 | 0.86 / 1.48 m | 3.41 / 4.06 m | **0.79 / 1.38 m** |
-| 原始 fix 換到 map 座標 xy RMS / 最大 | 2.64 / 8.83 m | 2.47 / 5.72 m | 2.25 / 4.87 m |
-| 導航 `tracked_pose` xy RMS（參考） | 0.10 m | 0.08 m | 0.06 m |
-| EKF yaw RMS（= odom yaw） | 0.9° | 0.9° | 0.9° |
-
-navsat_transform 兩趟差這麼多就是 datum 錨在第一筆 fix：第一趟 datum 誤差和慢漂剛好抵消，第二趟同向相加。固定 datum 後 EKF 剩下的誤差就是慢漂本身（σ 1 m），白雜訊被濾掉；heading 完全來自 odom，GNSS 不觀測 yaw。要再往下：RTK（`gnss.rtk: true`，fix 1 cm，慢漂 1 cm）、融合 `fix_velocity`。
+**2026-11-05 的舊結果和當時的誤判**。第一版在 sim 這邊直接跑 `navsat_transform_node` + EKF（EKF 只吃 odom 和 GNSS，沒有 LiDAR 位姿），兩趟 EKF xy RMS 0.86 m 和 3.41 m，於是改成自寫的固定 datum 轉換（0.79 m）。當時的結論「手動 `datum` 的意思是機器人此刻在這個經緯度」是錯的：那次設定是 `wait_for_datum: false`，原點才會錨在第一筆 fix、把它的雜訊變成永久偏移。`wait_for_datum: true` 的 datum 就是 map 原點（`syncai_gnss_localization` 的 `test/navsat_datum_launchtest.py` 用真的節點驗過：機器人放在別處，原點不動；100 m 外誤差 < 3 cm）。那三趟的 0.8 m 等級誤差是單機 GNSS 的慢漂（σ 1 m）本身，EKF 沒有 LiDAR 位姿時就只能跟著它。
 
 ## 4. 畫面（GUI）
 
@@ -476,12 +510,12 @@ scripts/run_sim.sh web.port=9000 web.map=boxes web.max_map_points=500000   # 設
 
 畫面內容：
 
-- **地圖**：`map_ds.pcd` 當點雲畫，顏色照高度。超過 `web.max_map_points`（預設 150 萬）就體素降採樣（dp_1008 的 170 萬點 → 128 萬點、0.11 m；0.03 m 場景 1,700 萬點也能開）。整張地圖在連線時送一次（約 20 MB），在背景執行緒建好，sim 不等它。`web.map=boxes` 改畫場景的 box（離出生點最近的 `web.max_map_boxes` 個）：每個 box 一個 instance（GPU instancing，比整塊 mesh 便宜），顏色用和點雲一樣的高度色再加棋盤式明暗，相鄰同高的 box 也分得開，所以 box 的邊、階梯的踏面都看得到；`none` 不畫。
+- **地圖**：`map_ds.pcd` 的掃描點（沒有場景顏色的點）當點雲畫；有場景顏色的 box（OSM 建物和地面）直接畫成 box（`/map/osm`，離出生點最近的 `web.max_map_boxes` 個）——`map_ds.pcd` 裡每個 OSM box 只有頂面中心一點（20 m 地磚也是一點），當點畫幾乎看不到。`osm_tucheng_dp`：58.7 萬掃描點 + 19.5 萬 OSM box，0.2 s。顏色照 `Map colour`（Layers 資料夾的下拉選單：**OSM** = 場景顏色、沒有的照高度 / **Height** = 全部照高度 / **Plain** = 灰；初始值 `viewer.map_color`，預設 osm）。切換時 MuJoCo viewer 視窗的地圖也一起換（sim_node 主迴圈在 viewer lock 內改 `geom_rgba`，不用重編模型）；MuJoCo 的地圖是每個（場景顏色, 高度帶 16 段）一個 mesh geom，材質無高光。超過 `web.max_map_points`（預設 150 萬）就體素降採樣（dp_1008 的 170 萬點 → 128 萬點、0.11 m；0.03 m 場景 1,700 萬點也能開）。整張地圖在連線時送一次（約 20 MB），在背景執行緒建好，sim 不等它。`web.map=boxes` 改畫場景的 box（離出生點最近的 `web.max_map_boxes` 個）：每個 box 一個 instance（GPU instancing，比整塊 mesh 便宜），顏色和點雲一樣照 `Map colour`，再加棋盤式明暗，相鄰同高的 box 也分得開，所以 box 的邊、階梯的踏面都看得到；`none` 不畫。
 - **機器人**：MuJoCo 模型的 visual geom（G23 的 STL、理想底盤的 box），每個 body 一個 frame，姿態最多 `web.hz`（30）Hz 更新，沒變就不送。碰撞 geom 和代理 box 不畫。
 - **LiDAR**：最新一幀轉到 map 座標，均勻抽到 `web.lidar_points`（8000）點，最多 `web.lidar_hz`（10）Hz。
 - **規劃路徑**：訂閱 `web.path_topic`（預設 `/robot01/planned_path`，nav_msgs/Path），畫成綠線；設成空字串關掉。
 - 右上面板：sim 時間、即時倍率、機身位置、LiDAR 點數，圖層開關（地圖 / LiDAR / 路徑 / 相機跟隨機身）。
-- **Teleop（搖桿）**：機器人身上有一個可以拖的把手（transform gizmo）。把它拖到想去的地方，機器人就朝把手走（把手在機身座標的方向決定轉速、距離決定速度，到了就自動減到 0；把手在後方會先原地轉）；放開就歸零、把手跳回機身。拖著的時候 sim 每 tick 重送命令（不會碰到 `robot.cmd_timeout`）並蓋過 `/cmd_vel`，放開後交還給 ROS；瀏覽器中途斷線也視同放開。`Max speed` / `Max turn` 滑桿是上限，Stop 按鈕立刻歸零。走的是和 `/cmd_vel` 同一條路（g23 模式轉成 AXES 給控制器）。
+- **Teleop（搖桿）**：機器人身上有一個可以拖的把手（transform gizmo）。把它拖到想去的地方，機器人就朝把手走（把手在機身座標的方向決定轉速、距離決定速度，到了就自動減到 0；把手在後方會先原地轉）；放開就歸零、把手跳回機身。拖著的時候 sim 每 tick 重送命令（不會碰到 `robot.cmd_timeout`）並蓋過 `/cmd_vel`，放開後交還給 ROS；瀏覽器中途斷線也視同放開。`Max speed` / `Max turn` 滑桿是上限（speed 到 16.7 m/s = 60 km/h，開 OSM 場景用；理想底盤再被 `robot.vel_limits` 的 vx 16.7 限住，G23 走不到那麼快，看 policy），Stop 按鈕立刻歸零。理想底盤每 tick 的移動以 0.1 m 為一段逐段檢查（`base.MAX_SUBSTEP`），60 km/h 一 tick 0.33 m 也不會穿過 0.2 m 的牆。走的是和 `/cmd_vel` 同一條路（g23 模式轉成 AXES 給控制器）。
 - **Motion**（只有 g23）：Stand / Walk / Lie down / Damping 四個鈕，各送 `RESET_SAFETY`+`MODE STAND`、`MODE <policy>`+`MODE RL`、`MODE LIE`、`MODE R` 給控制器（和他們的 ROS bridge 同一組字串）；Stand 之後不會自動進步態，要按 Walk。`RL policy` 下拉選單換 PPO / HIMLoco / IsaacSim（走路中即時切換，等同 `/robot01/policy_mode`）。
 - **Reset**：「Reset to spawn」把機器人瞬移回設定檔的出生點，「Re-stand here」在原地 set_pose（倒了可以重新站起來；3 秒防連點）。兩者等同發 `/robot01/set_pose`，會有 `set_pose` 事件；跑著定位 stack 時瞬移會讓 Point-LIO 失準，要重新 seed。
 
@@ -529,7 +563,7 @@ MuJoCo viewer 把整張地圖當一個 mesh 畫（dp_1008 約 310 萬個三角�
 
 Frame（`ros.frames`）：`map`、`odom`、`base_link`、`livox_frame`、`gnss_link`。靜態 `base_link → livox_frame`（有 GNSS 時加 `→ gnss_link`）一律發布；`publish_gt_tf` 預設 `false`：`map → odom` 和 `odom → base_link` 由 Point-LIO / 定位 stack 發。用 `ros.publish_gt_tf=true` 打開後，sim 才會再發 `map → odom`（單位矩陣）和 `odom → base_link`（真值）。
 
-**GNSS（`gnss` 區塊，`quadsim/gnss.py`，2026-11-05）。** 模擬一顆 u-blox ZED-F9P 或 ZED-F9R（`gnss.model`），訊息和上游 ublox ROS 2 驅動的 `fix` / `fix_velocity` 相同，所以為實機寫的消費端不用分支。`datum`（地圖原點的 WGS84 經緯度、橢球高、地圖 x 軸相對正東的方位角）把 map 座標轉成 ENU 再經 ECEF 轉成經緯度；`datum: null` 就沒有 GNSS。dp 地圖的 datum 由兩個參考點解出（map (29.10, 39.50) ↔ 24.961306 / 121.422022、map (39.90, 40.30) ↔ 24.961353 / 121.422095）：原點 24.960860 / 121.421968、方位角 31.0°；兩點的距離差 17 %，原點帶約 1.5 m 誤差，橢球高 130 m 是佔位值。天線是 base 上的 `gnss` site（`gnss.mount_xyz`，目前是佔位的機身後上方，URDF 還沒有 gnss link），靜態 TF `base_link → robot01/gnss_link`。**fix 品質由地圖決定**：每次取樣從天線往天頂錐內射 9 條射線（`sky`：半角 60°、50 m 內打到東西就不算天空），天空比例 ≥ `good` 是 `rtk_fixed`（`rtk: true`）或 `single`、≥ `degraded` 是 `rtk_float` / `single`、≥ `poor` 是 `single`、再低就沒 fix；dp 室內原點 9 條全打到 9 m 內，所以沒 fix，走到門口才會有。`sky.mode: always` 強制有天空（室內地圖測協定用）、`none` 強制沒有。雜訊按 fix 類型（`noise`）：白雜訊加一階 Gauss-Markov 偏差（多路徑那種慢漂）；F9R 在天空消失後靠 IMU 航位推算撐 `holdover.secs`（`dead_reckoning`，位置隨機漫步、sigma 漸增），F9P 立刻沒 fix。導航堆疊目前沒有任何東西吃 GNSS：要接的話，robot01.ini 的 `[map]` 要有同一組 datum、URDF 要有 gnss link、global_localization 可以拿 fix 當 seed。
+**GNSS（`gnss` 區塊，`quadsim/gnss.py`，2026-11-05）。** 模擬一顆 u-blox ZED-F9P 或 ZED-F9R（`gnss.model`），訊息和上游 ublox ROS 2 驅動的 `fix` / `fix_velocity` 相同，所以為實機寫的消費端不用分支。`datum`（地圖原點的 WGS84 經緯度、橢球高、地圖 x 軸相對正東的方位角）把 map 座標轉成 ENU 再經 ECEF 轉成經緯度；`datum: null` 就沒有 GNSS。dp 地圖的 datum 由兩個參考點解出（map (29.10, 39.50) ↔ 24.961306 / 121.422022、map (39.90, 40.30) ↔ 24.961353 / 121.422095）：原點 24.960860 / 121.421968、方位角 31.0°；兩點的距離差 17 %，原點帶約 1.5 m 誤差，橢球高 130 m 是佔位值。天線是 base 上的 `gnss` site（`gnss.mount_xyz`，目前是佔位的機身後上方，URDF 還沒有 gnss link），靜態 TF `base_link → robot01/gnss_link`。**fix 品質由地圖決定**：每次取樣從天線往天頂錐內射 9 條射線（`sky`：半角 60°、50 m 內打到東西就不算天空），天空比例 ≥ `good` 是 `rtk_fixed`（`rtk: true`）或 `single`、≥ `degraded` 是 `rtk_float` / `single`、≥ `poor` 是 `single`、再低就沒 fix；dp 室內原點 9 條全打到 9 m 內，所以沒 fix，走到門口才會有。`sky.mode: always` 強制有天空（室內地圖測協定用）、`none` 強制沒有。雜訊按 fix 類型（`noise`）：白雜訊加一階 Gauss-Markov 偏差（多路徑那種慢漂）；F9R 在天空消失後靠 IMU 航位推算撐 `holdover.secs`（`dead_reckoning`，位置隨機漫步、sigma 漸增），F9P 立刻沒 fix。導航堆疊用 `syncai_gnss_localization` 吃 GNSS（3.4）：datum 在定位地圖旁的 `<map>.geo.yaml`，要和這裡同一組；實機的 URDF 還沒有 gnss link（sim 自己發 `base_link → gnss_link`）。
 
 `/sim/events` 的 `type`：
 
@@ -667,7 +701,7 @@ python3 scripts/make_waypoints_from_poses.py Maps/dp_1008/poses.txt --spacing 8 
 | `lidar` | Mid-360 參數：安裝位置 `mount_xyz` / `mount_rpy`（base_link 座標，照機器人 URDF 的 `base_link → lidar_top`：0.195 / 0 / 0.155 m、pitch 0.25 rad；點雲在感測器座標，傾斜由 TF 帶）、頻率、點數、FOV、距離、雜訊（掃描樣式固定為合成的非重複樣式） |
 | `imu` | 頻率、雜訊、bias random walk（加速度單位固定為 g，和 livox_ros_driver2 相同） |
 | `gnss` | ZED-F9P / F9R：`model`、`rate_hz`、`rtk`、天線 `mount_xyz`、`datum`（null = 關）、`sky`（射線數、半角、距離、good / degraded / poor 門檻、`mode` map / always / none）、`noise`（每種 fix 的 sigma、偏差、速度雜訊）、`holdover`（F9R）；第 5 章 |
-| `viewer` | `shadows`、`sync_hz`、`max_map_boxes`（MuJoCo viewer，`--viewer`） |
+| `viewer` | `shadows`、`sync_hz`、`map_color`（osm / height / plain，兩個 viewer 的初始值）、`max_map_boxes`（MuJoCo viewer，`--viewer`） |
 | `web` | 瀏覽器 viewer：`enabled`、`port`（8755）、`hz`、`lidar_hz`、`lidar_points`、`map`（points / boxes / none）、`max_map_points`、`max_map_boxes`、`map_precision`、`path_topic`（[4.1](#41-瀏覽器-viewerviser預設開)） |
 | `ros` | frame 名、`publish_gt_tf`、`publish_custom_msg`、`publish_pointcloud2`、`pointcloud2_format`、`publish_map_cloud`、各 topic 名 |
 

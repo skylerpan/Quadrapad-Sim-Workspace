@@ -13,6 +13,8 @@ from typing import Callable
 
 import numpy as np
 
+MAX_SUBSTEP = 0.1        # m: the longest move checked in one piece (half a 0.2 m wall voxel)
+
 
 def rot_zyx(yaw: float, pitch: float, roll: float) -> np.ndarray:
     cy, sy, cp, sp, cr, sr = np.cos(yaw), np.sin(yaw), np.cos(pitch), np.sin(pitch), np.cos(roll), np.sin(roll)
@@ -149,11 +151,18 @@ class IdealBase:
             cy, sy = np.cos(yaw), np.sin(yaw)
             x = self.x + (cy * v[0] - sy * v[1]) * dt
             y = self.y + (sy * v[0] + cy * v[1]) * dt
-            reason = self._check(x, y, yaw)
-            if reason is None:
-                self.x, self.y, self.yaw = x, y, yaw
-            else:
-                v = np.zeros(3)
+            # fast moves are checked every MAX_SUBSTEP so a tick cannot jump a wall; the robot stops at the last
+            # free substep
+            n = max(1, int(np.ceil(np.hypot(x - self.x, y - self.y) / MAX_SUBSTEP)))
+            x0, y0, yaw0 = self.x, self.y, self.yaw
+            for k in range(1, n + 1):
+                f = k / n
+                xs, ys, yws = x0 + (x - x0) * f, y0 + (y - y0) * f, yaw0 + (yaw - yaw0) * f
+                reason = self._check(xs, ys, yws)
+                if reason is not None:
+                    v = np.zeros(3)
+                    break
+                self.x, self.y, self.yaw = xs, ys, yws
         self.v = v
         a = 1.0 - np.exp(-dt / max(self.smooth_tau, 1e-6))
         g = self.ground
