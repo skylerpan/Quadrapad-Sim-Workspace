@@ -543,13 +543,22 @@ class G2DeployBackend(G23Physics):
         elif isinstance(intent, VelStop):
             self.send_command("AXES 0.000 0.000 0.000")
 
-    def set_policy_mode(self, mode: int, t: float) -> dict:
-        """Choose the RL policy (0 PPO, 1 HIMLoco, 4 IsaacSim): sent now when the gait is on (the controller
-        switches live), otherwise before MODE RL in the start sequence."""
+    def set_policy_mode(self, mode, t: float) -> dict:
+        """Choose the RL policy (0 PPO, 1 HIMLoco, 4 IsaacSim) or "lma" (OCS2 NMPC + WBC): sent now when the gait
+        is on (the controller switches live), otherwise it is what the start sequence / Walk sends."""
+        if str(mode).lower() == "lma":
+            live = self.stage == "gait" and self.gait != "LMA"
+            self.gait = "LMA"
+            if live:
+                self.send_command("MODE LMA")
+            return {"type": "controller", "state": "policy", "policy_mode": "lma", "t": t, "live": live}
         self.policy_mode = int(mode)
-        live = self.stage == "gait" and self.gait == "RL"
+        live = self.stage == "gait"
         if live:
             self.send_command(f"MODE {self.policy_mode}")
+            if self.gait != "RL":                  # leaving LMA: the slot first, then back to the RL state
+                self.send_command("MODE RL")
+        self.gait = "RL"
         return {"type": "controller", "state": "policy", "policy_mode": self.policy_mode, "t": t, "live": live}
 
     def close(self):

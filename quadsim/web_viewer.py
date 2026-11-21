@@ -177,9 +177,11 @@ class WebViewer:
                 hints = ("reset + stand / the behavior / rest / rest to the controller",
                          "by way of stand while walking")
             else:
-                policies = {"0 PPO flat": 0, "1 HIMLoco stairs": 1, "4 IsaacSim": 4}
-                cur = int(cfg["robot"].get("policy_mode") or 0)
-                hints = ("MODE STAND / MODE RL / MODE LIE / MODE R to the controller", "MODE <n>: switches live while walking")
+                policies = {"0 PPO flat": 0, "1 HIMLoco stairs": 1, "4 IsaacSim": 4, "LMA (OCS2 MPC)": "lma"}
+                lma = str(cfg["robot"].get("gait", "rl")).lower() == "lma"
+                cur = "lma" if lma else int(cfg["robot"].get("policy_mode") or 0)
+                hints = ("MODE STAND / MODE RL|LMA / MODE LIE / MODE R to the controller",
+                         "MODE <n> / MODE LMA: switches live while walking (LMA needs a legged_mpc_amp build)")
             initial = next((k for k, v in policies.items() if v == cur), next(iter(policies)))
             with gui.add_folder("Motion"):
                 self.bg_motion = gui.add_button_group("Motion", ["Stand", "Walk", "Lie down", "Damping"], hint=hints[0])
