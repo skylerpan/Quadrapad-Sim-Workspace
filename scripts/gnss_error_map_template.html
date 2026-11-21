@@ -1,0 +1,611 @@
+<title>dp GNSS 誤差地圖</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a survey sheet. Summary strip, then the map with its controls and legend, then the per-level
+   shares, the error model, and method notes. One column; the map is the widest object. */
+:root {
+  --bg: #f4f6f5; --surface: #ffffff; --ink: #15191b; --ink2: #4b5559; --muted: #7a8488; --line: #dce2e2;
+  --accent: #1c5cab; --accent-soft: #e3edf9;
+  --base-lo: #e9ecea; --base-hi: #a7afb1; --hatch-bg: #d7dbdb; --hatch: #8d9698; --nodata: #f4f6f5;
+  --c-fixed: #0ca30c; --c-float: #fab219; --c-single: #ec835a; --c-dr: #6250d6; --ray-hit: #d03b3b;
+  --font-display: "Space Grotesk", "Noto Sans TC", system-ui, sans-serif;
+  --font-body: "Noto Sans TC", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111416; --surface: #191d1f; --ink: #edf1f1; --ink2: #b6bfc2; --muted: #848e90; --line: #2b3234;
+  --accent: #5598e7; --accent-soft: #1b2a3b;
+  --base-lo: #22282a; --base-hi: #4c5557; --hatch-bg: #2a3032; --hatch: #586164; --nodata: #111416;
+  --c-fixed: #0ca30c; --c-float: #fab219; --c-single: #ec835a; --c-dr: #9085e9; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #111416; --surface: #191d1f; --ink: #edf1f1; --ink2: #b6bfc2; --muted: #848e90; --line: #2b3234;
+  --accent: #5598e7; --accent-soft: #1b2a3b;
+  --base-lo: #22282a; --base-hi: #4c5557; --hatch-bg: #2a3032; --hatch: #586164; --nodata: #111416;
+  --c-fixed: #0ca30c; --c-float: #fab219; --c-single: #ec835a; --c-dr: #9085e9; color-scheme: dark }
+* { box-sizing: border-box }
+[hidden] { display: none !important }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.wrap { max-width: 1080px; margin: 0 auto; padding-block: 32px 64px; display: grid; gap: 36px }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; letter-spacing: -0.01em }
+h1 { font-size: clamp(26px, 4vw, 36px); font-weight: 700 }
+h2 { font-size: 21px; font-weight: 600 }
+h3 { font-size: 16px; font-weight: 600 }
+p { margin: 0; max-width: 68ch }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted) }
+.mono, code { font-family: var(--font-mono); font-size: .9em }
+code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px }
+header { display: grid; gap: 10px }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--ink2); font-size: 13px }
+.meta span b { font-weight: 500; color: var(--ink) }
+section { display: grid; gap: 14px; min-width: 0 }
+.lede { color: var(--ink2) }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px }
+.kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 2px; align-content: start }
+.kpi .v { font-family: var(--font-display); font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.2 }
+.kpi .v small { font-size: 15px; color: var(--ink2); font-weight: 500; margin-left: 2px }
+.kpi .l { font-size: 13px; color: var(--ink2) }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 14px; min-width: 0 }
+.controls { display: flex; flex-wrap: wrap; gap: 12px 22px; align-items: end }
+.ctl { display: grid; gap: 4px }
+.ctl > span { font-size: 12px; color: var(--muted) }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; flex-wrap: wrap }
+.seg button { font: inherit; font-size: 13px; padding: 5px 11px; border: 0; background: transparent; color: var(--ink2); cursor: pointer; border-right: 1px solid var(--line) }
+.seg button:last-child { border-right: 0 }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff }
+.seg button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+select { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink) }
+.mapbox { position: relative; width: 100%; max-width: 820px; margin: 0 auto }
+.mapbox canvas { display: block; width: 100%; height: auto; cursor: crosshair; touch-action: none }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; font-size: 12.5px; line-height: 1.5; box-shadow: 0 4px 16px rgb(0 0 0 / .12); min-width: 190px; z-index: 2 }
+.tip .row { display: flex; justify-content: space-between; gap: 14px; font-variant-numeric: tabular-nums }
+.tip .row span:first-child { color: var(--muted) }
+.tip .fx { display: flex; align-items: center; gap: 6px; font-weight: 500; margin-bottom: 2px }
+.box3d { position: relative; width: 100%; aspect-ratio: 4 / 3; max-height: 74vh; border-radius: 8px; overflow: hidden; background: var(--bg); border: 1px solid var(--line) }
+.host3d { position: absolute; inset: 0 }
+.host3d canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab }
+.load3d { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 14px; pointer-events: none; text-align: center; padding: 16px }
+.btns { display: flex; gap: 8px; flex-wrap: wrap }
+.btn { font: inherit; font-size: 13px; padding: 5px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); cursor: pointer }
+.btn:hover { border-color: var(--accent) }
+.btn:focus-visible, input[type=range]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+input[type=range] { width: 200px; max-width: 100%; accent-color: var(--accent) }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--ink2); align-items: center; justify-content: center }
+.sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; vertical-align: -2px; margin-right: 6px }
+.sw.none { background: repeating-linear-gradient(45deg, var(--hatch) 0 2px, var(--hatch-bg) 2px 5px) }
+.ramp { display: grid; gap: 4px; width: min(420px, 100%) }
+.ramp .bar { height: 12px; border-radius: 3px }
+.ramp .ticks { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 11.5px; color: var(--muted) }
+.note { font-size: 13px; color: var(--ink2) }
+
+.shares { display: grid; gap: 12px }
+.share { display: grid; grid-template-columns: 130px 1fr 92px; gap: 12px; align-items: center }
+.share .nm { font-size: 14px; font-weight: 500 }
+.share .nm small { display: block; color: var(--muted); font-weight: 400; font-size: 12px }
+.stack { display: flex; height: 22px; gap: 2px; border-radius: 4px; overflow: hidden }
+.stack > div { min-width: 0 }
+.share .ar { font-family: var(--font-mono); font-size: 12px; color: var(--muted); text-align: right }
+@media (max-width: 560px) { .share { grid-template-columns: 1fr; gap: 4px } .share .ar { text-align: left } }
+
+.tbl { overflow-x: auto }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; font-variant-numeric: tabular-nums }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap }
+th { font-weight: 500; color: var(--muted); font-size: 12.5px }
+td.n, th.n { text-align: right }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px }
+.two > div { display: grid; gap: 10px; align-content: start; min-width: 0 }
+ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 72ch }
+pre { margin: 0; background: var(--accent-soft); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55 }
+footer { color: var(--muted); font-size: 12.5px }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Quadrapad Sim · GNSS 涵蓋評估</div>
+    <h1>dp 場景 GNSS 誤差地圖</h1>
+    <p class="lede">在 dp 掃描場景的每個可行走地面格上，用模擬器同一套天空射線（<code>quadsim/gnss.py</code>）從天線高度往天頂錐射，得到天空比例，再換成 fix 類型和預期水平誤差。</p>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <section>
+    <h2>重點</h2>
+    <div class="kpis" id="kpis"></div>
+    <p class="note" id="kpinote"></p>
+  </section>
+
+  <section>
+    <h2>誤差地圖</h2>
+    <div class="panel">
+      <div class="controls">
+        <div class="ctl"><span>檢視</span><div class="seg" id="seg-view"></div></div>
+        <div class="ctl"><span>樓層</span><div class="seg" id="seg-level"></div></div>
+        <label class="ctl"><span>接收機情境</span>
+          <select id="scen">
+            <option value="cur">目前設定：F9P、無 RTK</option>
+            <option value="rtk">F9P + RTK</option>
+            <option value="f9r">F9R + RTK（含航位推算）</option>
+          </select></label>
+        <div class="ctl"><span>圖層</span><div class="seg" id="seg-layer"></div></div>
+        <div class="ctl"><span>射線</span><div class="seg" id="seg-rays"></div></div>
+      </div>
+      <div class="mapbox" id="mapbox"><canvas id="map" role="img" aria-label="dp 場景的 GNSS 誤差地圖"></canvas><div class="tip" id="tip" hidden></div></div>
+      <div class="box3d" id="box3d" hidden>
+        <div class="host3d" id="host3d" role="img" aria-label="dp 場景的 3D GNSS 誤差地圖"></div>
+        <div class="load3d" id="load3d">載入 3D 檢視…</div>
+        <div class="tip" id="tip3" hidden></div>
+      </div>
+      <div class="controls" id="ctl3d" hidden>
+        <div class="ctl"><span>建物</span><div class="seg" id="seg-bld"></div></div>
+        <label class="ctl" for="clip"><span>剖切高度 <b class="mono" id="clipv"></b></span><input type="range" id="clip" min="-2" max="24" step="0.2"></label>
+        <div class="ctl"><span>&nbsp;</span><div class="btns"><button type="button" class="btn" id="reset3d">重設視角</button><button type="button" class="btn" id="clear3d">清除射線</button></div></div>
+      </div>
+      <div class="legend" id="legend"></div>
+      <p class="note" id="mapnote"></p>
+    </div>
+  </section>
+
+  <section>
+    <h2>各樓層的 fix 分布</h2>
+    <p class="lede" id="sharelede"></p>
+    <div class="panel"><div class="shares" id="shares"></div><div class="legend" id="sharelegend"></div></div>
+    <div class="tbl"><table id="sharetbl"></table></div>
+  </section>
+
+  <section class="two">
+    <div>
+      <h2>誤差模型</h2>
+      <p class="lede">每種 fix 的水平誤差是白雜訊 <span class="mono">σ_h</span> 加一階 Gauss-Markov 偏差（<span class="mono">bias_σ</span>, <span class="mono">τ</span>），E、N 各自獨立。每軸 σ = √(σ_h² + bias_σ²)；95 % 半徑 R95 = 2.448 σ，DRMS = √2 σ。</p>
+      <div class="tbl"><table id="modeltbl"></table></div>
+      <p class="note" id="modelnote"></p>
+    </div>
+    <div>
+      <h2>怎麼算的</h2>
+      <ul id="method"></ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>限制</h2>
+    <ul id="caveats"></ul>
+  </section>
+
+  <section>
+    <h2>重跑</h2>
+    <pre>python3 scripts/gnss_error_map.py                    # config/sim.yaml 的 scene → results/gnss_errmap/&lt;scene&gt;.html
+python3 scripts/gnss_error_map.py --scene scenes/dp_1012 --cell 1   # 別的場景、0.2 m 格</pre>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const D = __DATA__;
+const $ = id => document.getElementById(id);
+const dec = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const NX = D.nx, NY = D.ny, CELL = D.cell, OX = D.origin[0], OY = D.origin[1];
+const TOP = dec(D.top);
+const LV = D.levels.map(l => ({ ...l, s9: dec(l.sky9), sd: dec(l.skyd), f: dec(l.fz) }));
+const SK = D.sky_cfg, NZ = D.noise, HOLD = D.holdover;
+const SPEED = 1.0;   // m/s walking speed for the F9R holdover reach
+const K95 = 2.4477;
+const axisSigma = n => Math.hypot(n.sigma_h, n.bias_sigma);
+const R95 = { rtk_fixed: K95 * axisSigma(NZ.rtk_fixed), rtk_float: K95 * axisSigma(NZ.rtk_float), single: K95 * axisSigma(NZ.single) };
+const CLS = ["rtk_fixed", "rtk_float", "single", "dead_reckoning", "none"];
+const CLS_NAME = { rtk_fixed: "RTK fixed", rtk_float: "RTK float", single: "單點 single", dead_reckoning: "航位推算 DR", none: "無 fix" };
+const CLS_VAR = { rtk_fixed: "--c-fixed", rtk_float: "--c-float", single: "--c-single", dead_reckoning: "--c-dr" };
+const st = { level: 0, level3: -1, scen: "cur", layer: "fix", rays: "sim", view: "2d", bld: "glass", clip: 24 };
+try { Object.assign(st, JSON.parse(localStorage.getItem("gnss-errmap") || "{}")); } catch (e) {}
+const save = () => { try { localStorage.setItem("gnss-errmap", JSON.stringify(st)); } catch (e) {} };
+
+function skyAt(L, k, rays) {
+  if (rays === "sim") { const v = L.s9[k]; return v === 255 ? null : v / D.rays9; }
+  const v = L.sd[k]; return v === 255 ? null : v / 200;
+}
+function fixFor(sky, rtk) {
+  if (sky >= SK.good) return rtk ? "rtk_fixed" : "single";
+  if (sky >= SK.degraded) return rtk ? "rtk_float" : "single";
+  if (sky >= SK.poor) return "single";
+  return "none";
+}
+// per (level, rays, scen): class[], r95[], dr seconds[]
+const cache = new Map();
+function grid(li, rays, scen) {
+  const key = li + rays + scen;
+  if (cache.has(key)) return cache.get(key);
+  const L = LV[li], N = NX * NY;
+  const cls = new Uint8Array(N).fill(255), r95 = new Float32Array(N).fill(NaN), drt = new Float32Array(N).fill(NaN), src = new Uint8Array(N);
+  const rtk = scen !== "cur";
+  for (let k = 0; k < N; k++) {
+    const s = skyAt(L, k, rays); if (s === null) continue;
+    const c = fixFor(s, rtk); cls[k] = CLS.indexOf(c); if (c !== "none") r95[k] = R95[c];
+  }
+  if (scen === "f9r" && HOLD.secs > 0) {
+    // Dial's algorithm over the level's floor cells, chamfer 2-3 (unit = CELL/2 m), from every cell with a fix
+    const unit = CELL / 2, maxU = Math.ceil(HOLD.secs * SPEED / unit);
+    const dist = new Int32Array(N).fill(1 << 30), buckets = Array.from({ length: maxU + 4 }, () => []);
+    for (let k = 0; k < N; k++) if (cls[k] !== 255 && cls[k] !== 4) { dist[k] = 0; src[k] = cls[k]; buckets[0].push(k); }
+    const nb = [[1, 0, 2], [-1, 0, 2], [0, 1, 2], [0, -1, 2], [1, 1, 3], [1, -1, 3], [-1, 1, 3], [-1, -1, 3]];
+    for (let d = 0; d <= maxU; d++) {
+      const b = buckets[d];
+      for (let q = 0; q < b.length; q++) {
+        const k = b[q]; if (dist[k] !== d) continue;
+        const i = (k / NY) | 0, j = k % NY;
+        for (const [di, dj, w] of nb) {
+          const a = i + di, c = j + dj; if (a < 0 || c < 0 || a >= NX || c >= NY) continue;
+          const kk = a * NY + c; if (cls[kk] === 255) continue;
+          const nd = d + w; if (nd > maxU || nd >= dist[kk]) continue;
+          dist[kk] = nd; src[kk] = src[k]; buckets[nd].push(kk);
+        }
+      }
+    }
+    for (let k = 0; k < N; k++) if (cls[k] === 4 && dist[k] <= maxU) {
+      const t = dist[k] * unit / SPEED, last = NZ[CLS[src[k]]];
+      cls[k] = 3; drt[k] = t; r95[k] = K95 * Math.sqrt(last.bias_sigma ** 2 + HOLD.drift ** 2 * t);
+    }
+  }
+  const g = { cls, r95, drt }; cache.set(key, g); return g;
+}
+
+// ---- colours
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const hex = h => { h = h.replace("#", ""); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)); };
+const BLUE = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"].map(hex);
+function ramp(t) { t = Math.min(1, Math.max(0, t)) * (BLUE.length - 1); const i = Math.min(BLUE.length - 2, Math.floor(t)), f = t - i;
+  return BLUE[i].map((v, c) => Math.round(v + (BLUE[i + 1][c] - v) * f)); }
+const ERR_LO = 0.02, ERR_HI = 6;
+const errT = r => Math.log(r / ERR_LO) / Math.log(ERR_HI / ERR_LO);
+
+// ---- map rendering
+const PX = 4, PADL = 46, PADB = 34, PADT = 12, PADR = 12;
+const off = document.createElement("canvas"); off.width = NX * PX; off.height = NY * PX;
+const cv = $("map"), ctx = cv.getContext("2d");
+let view = null;
+function paintOff() {
+  const g = grid(st.level, st.rays, st.scen), L = LV[st.level];
+  const lo = hex(css("--base-lo")), hi = hex(css("--base-hi")), hb = hex(css("--hatch-bg")), ht = hex(css("--hatch")), nd = hex(css("--nodata"));
+  const cc = CLS.slice(0, 4).map(c => hex(css(CLS_VAR[c])));
+  const W = off.width, H = off.height, img = new ImageData(W, H), px = img.data;
+  for (let i = 0; i < NX; i++) for (let j = 0; j < NY; j++) {
+    const k = i * NY + j; let col;
+    const c = g.cls[k];
+    if (c === 255) {
+      const t = TOP[k]; if (t === 255) col = nd; else { const f = Math.min(1, Math.max(0, (t * 0.2 - 3 + 1) / 14)); col = lo.map((v, q) => Math.round(v + (hi[q] - v) * f)); }
+    } else if (c === 4) col = null;
+    else if (st.layer === "fix") col = cc[c];
+    else if (st.layer === "err") col = ramp(errT(g.r95[k]));
+    else { const s = skyAt(L, k, st.rays); col = ramp(s); }
+    if (st.layer === "sky" && c === 4) { const s = skyAt(L, k, st.rays); col = ramp(s); }
+    for (let a = 0; a < PX; a++) for (let b = 0; b < PX; b++) {
+      const x = i * PX + a, y = (NY - 1 - j) * PX + b, o = (y * W + x) * 4;
+      const cl = col || (((x + y) % 5) < 2 ? ht : hb);
+      px[o] = cl[0]; px[o + 1] = cl[1]; px[o + 2] = cl[2]; px[o + 3] = 255;
+    }
+  }
+  off.getContext("2d").putImageData(img, 0, 0);
+}
+function draw() {
+  const box = $("mapbox"), w = box.clientWidth, dpr = window.devicePixelRatio || 1;
+  const mw = w - PADL - PADR, mh = mw * NY / NX, h = mh + PADT + PADB;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv.style.height = h + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+  ctx.imageSmoothingEnabled = false; ctx.drawImage(off, PADL, PADT, mw, mh);
+  const s = mw / (NX * CELL);                      // css px per metre
+  view = { s, mw, mh };
+  const X = x => PADL + (x - OX) * s, Y = y => PADT + mh - (y - OY) * s;
+  ctx.strokeStyle = css("--line"); ctx.lineWidth = 1; ctx.strokeRect(PADL + .5, PADT + .5, mw - 1, mh - 1);
+  ctx.fillStyle = css("--muted"); ctx.font = `11px ${css("--font-mono")}`; ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (let x = Math.ceil(OX / 20) * 20; x <= OX + NX * CELL; x += 20) { ctx.fillRect(X(x), PADT + mh, 1, 4); ctx.fillText(x, X(x), PADT + mh + 6); }
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (let y = Math.ceil(OY / 20) * 20; y <= OY + NY * CELL; y += 20) { ctx.fillRect(PADL - 4, Y(y), 4, 1); ctx.fillText(y, PADL - 7, Y(y)); }
+  ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.fillText("map x (m)", PADL + mw / 2, h - 1);
+  ctx.save(); ctx.translate(11, PADT + mh / 2); ctx.rotate(-Math.PI / 2); ctx.textBaseline = "middle"; ctx.fillText("map y (m)", 0, 0); ctx.restore();
+  // spawn
+  if (D.spawn) { const sx = X(D.spawn[0]), sy = Y(D.spawn[1]); ctx.lineWidth = 2; ctx.strokeStyle = css("--surface"); ctx.fillStyle = css("--ink");
+    ctx.beginPath(); ctx.arc(sx, sy, 5, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.font = `600 12px ${css("--font-body")}`; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.lineWidth = 3; ctx.strokeText("spawn", sx + 9, sy); ctx.fillText("spawn", sx + 9, sy); }
+  // north arrow (map frame: north = (sin yaw, cos yaw))
+  const yaw = D.datum.yaw_deg * Math.PI / 180, nx = Math.sin(yaw), ny = Math.cos(yaw);
+  const cx = PADL + mw - 30, cy = PADT + 34, L = 20;
+  ctx.strokeStyle = css("--ink"); ctx.fillStyle = css("--ink"); ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(cx - nx * L, cy + ny * L); ctx.lineTo(cx + nx * L, cy - ny * L); ctx.stroke();
+  ctx.beginPath(); const tx = cx + nx * L, ty = cy - ny * L, px_ = -ny, py_ = -nx;
+  ctx.moveTo(tx + nx * 2, ty - ny * 2); ctx.lineTo(tx - nx * 8 + px_ * 5, ty + ny * 8 + py_ * 5); ctx.lineTo(tx - nx * 8 - px_ * 5, ty + ny * 8 - py_ * 5); ctx.fill();
+  ctx.font = `600 12px ${css("--font-display")}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("N", cx + nx * (L + 10), cy - ny * (L + 10));
+  // scale bar 20 m
+  const sb = 20 * s, bx = PADL + 12, by = PADT + mh - 14;
+  ctx.fillStyle = css("--ink"); ctx.fillRect(bx, by, sb, 3); ctx.fillRect(bx, by - 4, 1.5, 7); ctx.fillRect(bx + sb - 1.5, by - 4, 1.5, 7);
+  ctx.font = `11px ${css("--font-mono")}`; ctx.textAlign = "left"; ctx.textBaseline = "bottom"; ctx.fillText("20 m", bx, by - 5);
+}
+function render() { if (st.view === "2d") { paintOff(); draw(); } else update3d(); legend(); shares(); mapnote(); }
+
+// ---- tooltip
+const fmtM = r => r < 0.1 ? (r * 100).toFixed(1) + " cm" : r.toFixed(2) + " m";
+function latlon(x, y) {
+  const yaw = D.datum.yaw_deg * Math.PI / 180, e = Math.cos(yaw) * x - Math.sin(yaw) * y, n = Math.sin(yaw) * x + Math.cos(yaw) * y;
+  const a = 6378137, e2 = 0.00669437999014, la = D.datum.lat * Math.PI / 180, w = 1 - e2 * Math.sin(la) ** 2;
+  const M = a * (1 - e2) / w ** 1.5, Nr = a / Math.sqrt(w);
+  return [D.datum.lat + n / M * 180 / Math.PI, D.datum.lon + e / (Nr * Math.cos(la)) * 180 / Math.PI];
+}
+function cellTip(li, k) {
+  const L = LV[li], g = grid(li, st.rays, st.scen), i = (k / NY) | 0, j = k % NY;
+  const x = OX + (i + .5) * CELL, y = OY + (j + .5) * CELL, [lat, lon] = latlon(x, y);
+  if (g.cls[k] === 255) {
+    const t = TOP[k];
+    return `<div class="fx">${L.name} 這格沒有地面</div><div class="row"><span>map</span><span>${x.toFixed(1)}, ${y.toFixed(1)}</span></div>` +
+      (t !== 255 ? `<div class="row"><span>最高點 z</span><span>${(t * .2 - 3).toFixed(1)} m</span></div>` : "");
+  }
+  const c = CLS[g.cls[k]], s9 = skyAt(L, k, "sim"), sd = skyAt(L, k, "dense"), fz = L.f[k] * .1 - 3;
+  return `<div class="fx">${sw(c)}${CLS_NAME[c]}${c === "none" ? "" : " · R95 " + fmtM(g.r95[k])}</div>` +
+    `<div class="row"><span>樓層</span><span>${L.name}</span></div>` +
+    `<div class="row"><span>map</span><span>${x.toFixed(1)}, ${y.toFixed(1)} m</span></div>` +
+    `<div class="row"><span>地面 z</span><span>${fz.toFixed(1)} m</span></div>` +
+    `<div class="row"><span>天空（模擬 ${D.rays9} 條）</span><span>${Math.round(s9 * D.rays9)}/${D.rays9}</span></div>` +
+    `<div class="row"><span>天空（密集 ${D.raysd} 條）</span><span>${Math.round(sd * 100)} %</span></div>` +
+    (c === "dead_reckoning" ? `<div class="row"><span>離開天空</span><span>${g.drt[k].toFixed(1)} s @ ${SPEED} m/s</span></div>` : "") +
+    `<div class="row"><span>lat, lon</span><span>${lat.toFixed(6)}, ${lon.toFixed(6)}</span></div>`;
+}
+function placeTip(tip, box, mx, my, html) {
+  tip.innerHTML = html; tip.hidden = false;
+  const bw = box.clientWidth, bh = box.clientHeight, tw = tip.offsetWidth, th = tip.offsetHeight;
+  let tx = mx + 14, ty = my + 14; if (tx + tw > bw) tx = mx - tw - 14; if (ty + th > bh) ty = my - th - 14;
+  tip.style.left = Math.max(0, tx) + "px"; tip.style.top = Math.max(0, ty) + "px";
+}
+function onMove(ev) {
+  if (!view) return;
+  const r = cv.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  const i = Math.floor((mx - PADL) / view.mw * NX), j = NY - 1 - Math.floor((my - PADT) / view.mh * NY);
+  if (i < 0 || j < 0 || i >= NX || j >= NY) { $("tip").hidden = true; return; }
+  placeTip($("tip"), $("mapbox"), mx, my, cellTip(st.level, i * NY + j));
+}
+cv.addEventListener("pointermove", onMove); cv.addEventListener("pointerdown", onMove);
+cv.addEventListener("pointerleave", () => $("tip").hidden = true);
+
+// ---- legend / notes
+const sw = c => c === "none" ? `<span class="sw none"></span>` : `<span class="sw" style="background:var(${CLS_VAR[c]})"></span>`;
+function activeClasses() { return st.scen === "cur" ? ["single", "none"] : st.scen === "rtk" ? ["rtk_fixed", "rtk_float", "single", "none"] : ["rtk_fixed", "rtk_float", "single", "dead_reckoning", "none"]; }
+function legend() {
+  const base = st.view === "3d"
+    ? `<span><span class="sw" style="background:var(--base-hi)"></span>建物（${D.block} m 方塊）</span><span><span class="sw" style="background:var(--ray-hit)"></span>射線打到</span><span><span class="sw" style="background:var(--accent)"></span>射線到天空</span>`
+    : `<span><span class="sw" style="background:linear-gradient(90deg,var(--base-lo),var(--base-hi))"></span>本樓層無地面（灰階 = 最高點高度）</span>`;
+  let h = "";
+  if (st.layer === "fix") h = activeClasses().map(c => `<span>${sw(c)}${CLS_NAME[c]}${R95[c] ? ` <span class="mono">R95 ${fmtM(R95[c])}</span>` : c === "dead_reckoning" ? ` <span class="mono">R95 隨時間增加</span>` : ""}</span>`).join("");
+  else if (st.layer === "err") {
+    const ticks = [0.03, 0.1, 0.3, 1, 3]; const stops = BLUE.map(c => `rgb(${c})`).join(",");
+    h = `<div class="ramp"><div class="bar" style="background:linear-gradient(90deg,${stops})"></div><div class="ticks" style="position:relative;height:14px">${ticks.map(t => `<span style="position:absolute;left:${(errT(t) * 100).toFixed(1)}%;transform:translateX(-50%)">${t < 1 ? t * 100 + "cm" : t + "m"}</span>`).join("")}</div><div class="note" style="text-align:center">95 % 水平誤差半徑（對數刻度）</div></div><span>${sw("none")}無 fix</span>`;
+  } else {
+    const stops = BLUE.map(c => `rgb(${c})`).join(",");
+    h = `<div class="ramp"><div class="bar" style="background:linear-gradient(90deg,${stops})"></div><div class="ticks" style="position:relative;height:14px">${[0, SK.poor, SK.degraded, SK.good].map(t => `<span style="position:absolute;left:${t * 100}%;transform:translateX(${t === 0 ? 0 : -50}%)">${t}</span>`).join("")}<span style="position:absolute;right:0">1</span></div><div class="note" style="text-align:center">天空比例；刻度是 poor / degraded / good 門檻</div></div>`;
+  }
+  $("legend").innerHTML = h + base;
+}
+function mapnote() {
+  const t = { cur: "目前 config：F9P、rtk: false。天空 ≥ 0.2 一律是單點解（R95 約 4.4 m），低於 0.2 沒有 fix；RTK 和航位推算都不會出現。",
+    rtk: "假設有基地台 / NTRIP 修正。天空 ≥ 0.9 為 RTK fixed、≥ 0.5 為 RTK float、≥ 0.2 為單點、其餘沒有 fix。",
+    f9r: `F9R：沒有天空後還有 ${HOLD.secs} s 航位推算。地圖假設以 ${SPEED} m/s 沿地面格最短路徑離開最近有 fix 的格子，所以 ${HOLD.secs * SPEED} m 內的無天空格塗成 DR；誤差用的是模擬器實際加的量（凍結的偏差加上 ${HOLD.drift} m/√s 隨機漫步），不是它回報的 σ。` }[st.scen];
+  $("mapnote").textContent = t + (st.rays === "dense" ? ` 目前顯示密集 ${D.raysd} 條射線的天空，用來看模擬器 9 條射線的量化誤差；模擬器實際用的是 9 條。` : "");
+}
+
+// ---- shares
+function counts(li, rays, scen) { const g = grid(li, rays, scen), n = {}; CLS.forEach(c => n[c] = 0); let tot = 0;
+  for (let k = 0; k < g.cls.length; k++) if (g.cls[k] !== 255) { n[CLS[g.cls[k]]]++; tot++; } return { n, tot }; }
+function shares() {
+  const act = activeClasses(); let rows = "", tb = `<thead><tr><th>樓層</th><th class="n">地面格</th><th class="n">面積</th>${act.map(c => `<th class="n">${CLS_NAME[c]}</th>`).join("")}</tr></thead><tbody>`;
+  LV.forEach((L, li) => {
+    const { n, tot } = counts(li, st.rays, st.scen), area = tot * CELL * CELL;
+    rows += `<div class="share"><div class="nm">${L.name}<small>z ${L.z[0]} ~ ${L.z[1]} m</small></div><div class="stack" role="img" aria-label="${L.name} fix 分布">` +
+      act.filter(c => n[c]).map(c => `<div title="${CLS_NAME[c]} ${(n[c] / tot * 100).toFixed(1)} %" style="flex:${n[c]};${c === "none" ? "background:repeating-linear-gradient(45deg,var(--hatch) 0 2px,var(--hatch-bg) 2px 5px)" : `background:var(${CLS_VAR[c]})`}"></div>`).join("") +
+      `</div><div class="ar">${Math.round(area).toLocaleString()} m²</div></div>`;
+    tb += `<tr><td>${L.name}</td><td class="n">${tot.toLocaleString()}</td><td class="n">${Math.round(area).toLocaleString()} m²</td>${act.map(c => `<td class="n">${(n[c] / tot * 100).toFixed(1)} %</td>`).join("")}</tr>`;
+  });
+  $("shares").innerHTML = rows; $("sharetbl").innerHTML = tb + "</tbody>";
+  $("sharelegend").innerHTML = act.map(c => `<span>${sw(c)}${CLS_NAME[c]}</span>`).join("");
+  $("sharelede").textContent = `依目前選的情境（${$("scen").selectedOptions[0].text}）和射線（${st.rays === "sim" ? "模擬 " + D.rays9 + " 條" : "密集 " + D.raysd + " 條"}）計算，每格 ${CELL} m × ${CELL} m。`;
+}
+
+// ---- static sections
+function statics() {
+  const dm = D.datum;
+  $("meta").innerHTML = [["場景", D.scene], ["格子", CELL + " m"], ["天線", `地面上 ${D.antenna} m`], ["天空錐", `${D.rays9} 條、半角 ${SK.half_angle_deg}°、${SK.range} m`],
+    ["datum", `${dm.lat}, ${dm.lon}，x 軸 ${dm.yaw_deg}°（${D.datum_src}）`], ["產生", D.generated]].map(([a, b]) => `<span>${a} <b>${b}</b></span>`).join("");
+  const g0 = counts(0, "sim", "cur"), g0r = counts(0, "sim", "rtk"), g0d = counts(0, "dense", "rtk"), gu = counts(2, "sim", "rtk");
+  const pct = (a, b) => (a / b * 100).toFixed(0);
+  const k = [
+    [pct(g0.tot - g0.n.none, g0.tot), "%", "1F 地面層有 fix 的格子（目前設定，全是單點解）"],
+    [fmtM(R95.single).replace(" m", ""), "m", "單點解的 95 % 水平誤差半徑，目前設定下能拿到的最好值"],
+    [pct(g0r.n.rtk_fixed, g0r.tot), "%", `1F 能 RTK fixed 的格子（開 RTK；密集射線 ${pct(g0d.n.rtk_fixed, g0d.tot)} %）`],
+    [pct(gu.n.rtk_fixed, gu.tot), "%", "3F 以上 / 屋頂能 RTK fixed 的格子（開 RTK）"],
+  ];
+  $("kpis").innerHTML = k.map(([v, u, l]) => `<div class="kpi"><div class="v">${v}<small>${u}</small></div><div class="l">${l}</div></div>`).join("");
+  $("kpinote").textContent = `spawn (0, 0) 在室內：${D.rays9} 條射線全被擋住，沒有 fix，和 usage.md 的描述一致。1F 地面層周圍有建物和樹，60° 錐內總有一條射線在 ${SK.range} m 內打到東西，所以整層沒有一格達到 good (≥ ${SK.good})。`;
+  const rows = [["rtk_fixed", NZ.rtk_fixed], ["rtk_float", NZ.rtk_float], ["single", NZ.single]];
+  $("modeltbl").innerHTML = `<thead><tr><th>fix</th><th>天空門檻</th><th class="n">σ_h</th><th class="n">bias_σ / τ</th><th class="n">DRMS</th><th class="n">R95</th></tr></thead><tbody>` +
+    rows.map(([c, n]) => `<tr><td>${sw(c)}${CLS_NAME[c]}</td><td>${c === "rtk_fixed" ? "≥ " + SK.good : c === "rtk_float" ? "≥ " + SK.degraded : "≥ " + SK.poor + "（無 RTK 時 ≥ " + SK.poor + " 全是）"}</td><td class="n">${n.sigma_h} m</td><td class="n">${n.bias_sigma} m / ${n.bias_tau} s</td><td class="n">${fmtM(Math.SQRT2 * axisSigma(n))}</td><td class="n">${fmtM(R95[c])}</td></tr>`).join("") +
+    `<tr><td>${sw("dead_reckoning")}${CLS_NAME.dead_reckoning}</td><td>F9R，&lt; ${SK.poor} 後 ${HOLD.secs} s</td><td class="n">—</td><td class="n">凍結 + ${HOLD.drift} m/√s</td><td class="n" colspan="2">√(bias² + ${HOLD.drift}²·t)</td></tr>` +
+    `<tr><td>${sw("none")}${CLS_NAME.none}</td><td>&lt; ${SK.poor}</td><td class="n" colspan="4">NavSatFix status −1，沒有位置</td></tr></tbody>`;
+  $("modelnote").innerHTML = `對照：<code>results/gnss_ekf/</code> 2026-11-05 三次實跑（<code>sky.mode=always</code>，全程單點解）量到原始 fix 誤差 RMS 2.25 / 2.47 / 2.64 m，和模型的 DRMS ${fmtM(Math.SQRT2 * axisSigma(NZ.single))} 相符；每次只跑 27 s，比偏差的 τ = ${NZ.single.bias_tau} s 短，所以偏差沒取樣完整，次次不同。`;
+  $("method").innerHTML = [
+    `地面格：佔據體素上方 ≥ 1.0 m 淨空、8 鄰格中 ≥ 6 格也是（上下一格內），牆頂和家具邊緣因此被排除。每個 ${CELL} m 格在各高度帶取最低的那層。`,
+    `天線高 = <code>robot.stand_height</code> + <code>gnss.mount_xyz</code> z = ${D.antenna} m，再加模擬器同樣的 5 cm 起點偏移。`,
+    `射線在場景的 0.2 m 佔據格（<code>voxels.npz</code>）裡以 0.1 m 步進，不經過 Embree，所以在 host 上就能跑；${SK.range} m 內打到體素算沒天空，離開掃描範圍算天空，和 Embree 的未命中相同。`,
+    `fix 門檻、雜訊參數、holdover 全部讀 <code>config/sim.yaml</code> 的 <code>gnss</code> 區塊，判斷邏輯照 <code>quadsim/gnss.py</code> 的 <code>fix_for</code>。`,
+    `密集射線（${D.raysd} 條：天頂 + 20°/40°/60° 三圈）是參考值，用來看 9 條射線的量化會把天空高估或低估多少。`,
+  ].map(s => `<li>${s}</li>`).join("");
+  $("caveats").innerHTML = [
+    `<b>掃描邊緣過度樂觀</b>：dp 掃描範圍外什麼都沒有，射線一出去就算天空，地圖邊緣的格子天空偏高。`,
+    `<b>樹木算成實心</b>：octomap 裡的樹冠和牆一樣擋射線。實際上樹葉下多半還有降級的 fix，所以樹下的「無 fix」偏悲觀。`,
+    `<b>沒有多路徑</b>：誤差只看 fix 類型，不看離牆多近。真實接收機在牆邊、街谷裡的單點誤差常常比開闊處大好幾倍。`,
+    `<b>DR 誤差偏小</b>：模擬器的航位推算只有凍結偏差加隨機漫步，沒有白雜訊，所以 DR 格的 R95 可能比單點還小；回報的 σ（1.5 m + ${HOLD.drift} m/s）比較保守。真實 F9R 的漂移和車速、IMU 校正有關。`,
+    `<b>datum 本身有系統誤差</b>：目前的 datum 是把 dp 掃描的建物對到 OSM 輪廓得到的（2026-11-12，輪廓中位差 4.0 m，約等於 OSM 本身的精度）。這個偏差疊加在上表所有誤差上，而且不會平均掉。橢球高 130 m 是佔位值。`,
+    `<b>F9R DR 範圍</b>是假設以 ${SPEED} m/s 走最短路徑；走得慢、繞路或停下來，可用範圍就更小。`,
+  ].map(s => `<li>${s}</li>`).join("");
+  $("foot").textContent = `由 scripts/gnss_error_map.py 產生 · ${D.generated} · ${D.scene}`;
+}
+
+// ---- 3D view (three.js r128, loaded on first use)
+const THREE_URLS = ["https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js",
+  "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"];
+let T = null, loading3d = false;
+function loadScript(u) { return new Promise((ok, no) => { const e = document.createElement("script"); e.src = u; e.onload = ok; e.onerror = no; document.head.appendChild(e); }); }
+async function ensure3d() {
+  if (T || loading3d) return;
+  loading3d = true;
+  try { for (const u of THREE_URLS) await loadScript(u); init3d(); $("load3d").hidden = true; render(); }
+  catch (e) { $("load3d").textContent = "3D 引擎載入失敗（需要連到 cdn.jsdelivr.net）。2D 檢視仍可使用。"; }
+  loading3d = false;
+}
+const RANK = LV.map(L => { const r = new Int32Array(NX * NY).fill(-1); let n = 0; for (let k = 0; k < NX * NY; k++) if (L.s9[k] !== 255) r[k] = n++; return r; });
+const R9 = LV.map(L => dec(L.r9));
+const ZTOP = 24;
+function init3d() {
+  const host = $("host3d"), TH = THREE;
+  const renderer = new TH.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); renderer.localClippingEnabled = true;
+  host.appendChild(renderer.domElement);
+  const scene = new TH.Scene();
+  const camera = new TH.PerspectiveCamera(40, 4 / 3, 0.5, 3000); camera.up.set(0, 0, 1);
+  const center = new TH.Vector3(OX + NX * CELL / 2, OY + NY * CELL / 2, 0);
+  const home = () => { camera.position.copy(center).add(new TH.Vector3(-75, -120, 105)); controls.target.copy(center); controls.update(); };
+  const controls = new TH.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true; controls.dampingFactor = 0.12; controls.maxPolarAngle = Math.PI * 0.495; controls.screenSpacePanning = true;
+  home();
+  const hemi = new TH.HemisphereLight(0xffffff, 0x8a8f90, 0.85); hemi.position.set(0, 0, 1); scene.add(hemi);
+  const sun = new TH.DirectionalLight(0xffffff, 0.55); sun.position.set(-0.6, -1, 2); scene.add(sun);
+  const plane = new TH.Plane(new TH.Vector3(0, 0, -1), st.clip);
+  // buildings
+  const bb = dec(D.blocks), nb = bb.length / 3, bs = D.block;
+  const bmat = new TH.MeshLambertMaterial({ color: 0x999999, transparent: true, opacity: 0.22, depthWrite: false, clippingPlanes: [plane] });
+  const bmesh = new TH.InstancedMesh(new TH.BoxGeometry(bs, bs, bs), bmat, nb);
+  const m4 = new TH.Matrix4();
+  for (let q = 0; q < nb; q++) { m4.makeTranslation(OX + (bb[3 * q] + .5) * bs, OY + (bb[3 * q + 1] + .5) * bs, D.zorg + (bb[3 * q + 2] + .5) * bs); bmesh.setMatrixAt(q, m4); }
+  bmesh.renderOrder = 2; scene.add(bmesh);
+  // floor tiles, every level
+  const tiles = []; LV.forEach((L, li) => { for (let k = 0; k < NX * NY; k++) if (L.s9[k] !== 255) tiles.push([li, k]); });
+  const tmat = new TH.MeshLambertMaterial({ color: 0xffffff, clippingPlanes: [plane] });
+  const tmesh = new TH.InstancedMesh(new TH.BoxGeometry(CELL * 0.94, CELL * 0.94, 0.12), tmat, tiles.length);
+  tmesh.instanceMatrix.setUsage(TH.DynamicDrawUsage);
+  const col = new TH.Color(); tiles.forEach((_, q) => tmesh.setColorAt(q, col.setRGB(1, 1, 1)));
+  scene.add(tmesh);
+  // spawn + north arrow
+  const ink = new TH.MeshBasicMaterial({ color: 0x15191b });
+  if (D.spawn) { const sp = new TH.Mesh(new TH.ConeGeometry(0.7, 2.2, 16), ink); sp.rotation.x = -Math.PI / 2; sp.position.set(D.spawn[0], D.spawn[1], (D.spawn[3] ?? 0) + 1.1); scene.add(sp); }
+  const yaw = D.datum.yaw_deg * Math.PI / 180;
+  const north = new TH.ArrowHelper(new TH.Vector3(Math.sin(yaw), Math.cos(yaw), 0), new TH.Vector3(OX + NX * CELL - 14, OY + NY * CELL - 18, -0.5), 12, 0x15191b, 3, 2);
+  scene.add(north);
+  const rays = new TH.Group(); scene.add(rays);
+  T = { TH, renderer, scene, camera, controls, plane, bmesh, bmat, tmesh, tiles, rays, home, ink, north, hover: null, visible: st.view === "3d" };
+  const ro = new ResizeObserver(() => { const w = host.clientWidth, h = host.clientHeight; if (!w || !h) return; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); });
+  ro.observe(host);
+  // picking
+  const rc = new TH.Raycaster(), ndc = new TH.Vector2();
+  let pend = null, down = null;
+  function pick(ev) {
+    const r = renderer.domElement.getBoundingClientRect();
+    ndc.set((ev.clientX - r.left) / r.width * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+    rc.setFromCamera(ndc, camera);
+    const hit = rc.intersectObject(tmesh).find(h => h.point.z <= T.plane.constant + 0.2);
+    return { hit, mx: ev.clientX - r.left, my: ev.clientY - r.top };
+  }
+  renderer.domElement.addEventListener("pointermove", ev => {
+    if (pend) return; pend = requestAnimationFrame(() => { pend = null;
+      if (ev.buttons) { $("tip3").hidden = true; return; }
+      const { hit, mx, my } = pick(ev);
+      if (!hit) { $("tip3").hidden = true; return; }
+      const [li, k] = tiles[hit.instanceId];
+      placeTip($("tip3"), $("box3d"), mx, my, cellTip(li, k) + `<div class="row"><span></span><span style="color:var(--muted)">點一下看 ${D.rays9} 條天空射線</span></div>`);
+    });
+  });
+  renderer.domElement.addEventListener("pointerleave", () => $("tip3").hidden = true);
+  renderer.domElement.addEventListener("pointerdown", ev => { down = [ev.clientX, ev.clientY]; });
+  renderer.domElement.addEventListener("pointerup", ev => {
+    if (!down || Math.hypot(ev.clientX - down[0], ev.clientY - down[1]) > 4) return;
+    const { hit } = pick(ev); if (hit) showRays(...tiles[hit.instanceId]);
+  });
+  (function loop() { requestAnimationFrame(loop); if (!T.visible) return; controls.update(); renderer.render(scene, camera); })();
+}
+function showRays(li, k) {
+  const { TH, rays } = T; clearRays();
+  const L = LV[li], i = (k / NY) | 0, j = k % NY, r = RANK[li][k]; if (r < 0) return;
+  const o = new TH.Vector3(OX + (i + .5) * CELL, OY + (j + .5) * CELL, L.f[k] * .1 - 3 + D.antenna + 0.05);
+  const hitC = new TH.Color(css("--ray-hit")), skyC = new TH.Color(css("--accent"));
+  const ant = new TH.Mesh(new TH.SphereGeometry(0.35, 16, 12), T.ink); ant.position.copy(o); rays.add(ant);
+  D.dirs9.forEach((d, q) => {
+    const v = R9[li][r * D.rays9 + q], hit = v !== 255, len = hit ? v * 0.2 : 14;
+    const end = o.clone().add(new TH.Vector3(d[0], d[1], d[2]).multiplyScalar(len));
+    const g = new TH.BufferGeometry().setFromPoints([o, end]);
+    rays.add(new TH.Line(g, new TH.LineBasicMaterial({ color: hit ? hitC : skyC, depthTest: false, transparent: true })));
+    if (hit) { const s = new TH.Mesh(new TH.SphereGeometry(0.3, 12, 8), new TH.MeshBasicMaterial({ color: hitC, depthTest: false, transparent: true })); s.position.copy(end); rays.add(s); }
+  });
+  rays.children.forEach(c => c.renderOrder = 10);
+}
+function clearRays() { if (!T) return; T.rays.children.slice().forEach(c => { c.geometry.dispose(); T.rays.remove(c); }); }
+function update3d() {
+  if (!T) return;
+  const { TH, tmesh, tiles } = T, m4 = new TH.Matrix4(), zero = new TH.Matrix4().makeScale(0, 0, 0), col = new TH.Color();
+  const cc = {}; CLS.slice(0, 4).forEach(c => cc[c] = new TH.Color(css(CLS_VAR[c]))); const none = new TH.Color(css("--hatch"));
+  const gs = LV.map((_, li) => grid(li, st.rays, st.scen));
+  tiles.forEach(([li, k], q) => {
+    if (st.level3 >= 0 && li !== st.level3) { tmesh.setMatrixAt(q, zero); return; }
+    const i = (k / NY) | 0, j = k % NY;
+    m4.makeTranslation(OX + (i + .5) * CELL, OY + (j + .5) * CELL, LV[li].f[k] * .1 - 3 + 0.06); tmesh.setMatrixAt(q, m4);
+    const g = gs[li], c = CLS[g.cls[k]];
+    if (st.layer === "sky") { const s = skyAt(LV[li], k, st.rays), rgb = ramp(s); col.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255); }
+    else if (c === "none") col.copy(none);
+    else if (st.layer === "fix") col.copy(cc[c]);
+    else { const rgb = ramp(errT(g.r95[k])); col.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255); }
+    tmesh.setColorAt(q, col);
+  });
+  tmesh.instanceMatrix.needsUpdate = true; tmesh.instanceColor.needsUpdate = true;
+  T.scene.background = new TH.Color(css("--bg"));
+  T.bmat.color.set(css("--base-hi")); T.bmesh.visible = st.bld !== "off";
+  T.bmat.opacity = st.bld === "solid" ? 1 : 0.22; T.bmat.transparent = st.bld !== "solid"; T.bmat.depthWrite = st.bld === "solid"; T.bmat.needsUpdate = true;
+  T.plane.constant = st.clip; $("clipv").textContent = st.clip >= ZTOP ? "不剖切" : `z ≤ ${st.clip.toFixed(1)} m`;
+  T.ink.color.set(css("--ink")); T.north.setColor(new TH.Color(css("--ink")));
+}
+
+// ---- controls
+function seg(id, opts, key, cast = v => v) {
+  const el = $(id); el._key = key; el._cast = cast;
+  el.innerHTML = opts.map(([v, t]) => `<button type="button" data-v="${v}" aria-pressed="${String(st[key]) === String(v)}">${t}</button>`).join("");
+  if (el._bound) return; el._bound = true;
+  el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; st[el._key] = el._cast(b.dataset.v); save();
+    el.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b)); if (el._key === "view") setView(); else render(); });
+}
+function levelSeg() {
+  if (st.view === "3d") seg("seg-level", [[-1, "全部"], ...LV.map((l, i) => [i, l.name])], "level3", Number);
+  else seg("seg-level", LV.map((l, i) => [i, l.name]), "level", Number);
+}
+function setView() {
+  const v3 = st.view === "3d";
+  $("mapbox").hidden = v3; $("box3d").hidden = !v3; $("ctl3d").hidden = !v3;
+  if (T) T.visible = v3;
+  $("seg-view").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x.dataset.v === st.view));
+  levelSeg();
+  const h = v3 ? "#3d" : "#2d"; if (location.hash !== h) history.replaceState(null, "", h);
+  if (v3) ensure3d(); else draw();
+  render();
+}
+if (location.hash === "#3d" || location.hash === "#2d") st.view = location.hash.slice(1);
+if (!(st.level >= 0 && st.level < LV.length)) st.level = 0;
+if (!(st.level3 >= -1 && st.level3 < LV.length)) st.level3 = -1;
+if (!(st.clip >= -2 && st.clip <= ZTOP)) st.clip = ZTOP;
+seg("seg-view", [["2d", "2D 平面"], ["3d", "3D"]], "view");
+seg("seg-layer", [["fix", "fix 類型"], ["err", "95% 誤差"], ["sky", "天空比例"]], "layer");
+seg("seg-rays", [["sim", `模擬 ${D.rays9} 條`], ["dense", `密集 ${D.raysd} 條`]], "rays");
+seg("seg-bld", [["off", "隱藏"], ["glass", "半透明"], ["solid", "實心"]], "bld");
+$("clip").value = st.clip;
+$("clip").addEventListener("input", e => { st.clip = Number(e.target.value); save(); update3d(); });
+$("reset3d").addEventListener("click", () => T && T.home());
+$("clear3d").addEventListener("click", clearRays);
+$("scen").value = st.scen; $("scen").addEventListener("change", e => { st.scen = e.target.value; save(); render(); });
+addEventListener("hashchange", () => { const v = location.hash.slice(1); if ((v === "3d" || v === "2d") && v !== st.view) { st.view = v; setView(); } });
+statics(); setView();
+new ResizeObserver(() => { if (st.view === "2d") draw(); }).observe($("mapbox"));
+const rerender = () => { if (st.view === "2d") paintOff(); render(); };
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", rerender);
+new MutationObserver(rerender).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+</script>
