@@ -101,7 +101,9 @@ def _add_hexahedra(spec, name: str, corners, rgba):
     """One visual-only mesh geom from [K,8,3] corners (corner index = 4*ix + 2*iy + iz), matte."""
     import mujoco
 
-    if spec.material(MAP_MATERIAL) is None:
+    # not spec.material(): after spec.delete() (build_g23_spec drops the floor) MuJoCo 3.15's name lookup
+    # misses materials added later, so the second call would add a duplicate
+    if not any(m.name == MAP_MATERIAL for m in spec.materials):
         spec.add_material(name=MAP_MATERIAL, specular=0.0, shininess=0.0, reflectance=0.0)
 
     verts, faces = hexahedra_arrays(corners)

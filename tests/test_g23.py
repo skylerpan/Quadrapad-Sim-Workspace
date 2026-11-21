@@ -110,6 +110,11 @@ def test_model_stands_on_the_map_with_a_fake_controller():
         assert sim.g23.sent[sim.g23.sent.index("MODE RL") - 1] == "MODE 0"
         e = sim.set_policy_mode(1)
         assert e["live"] and sim.g23.sent[-1] == "MODE 1" and e["policy_mode"] == 1
+        # LMA (the web dropdown's MPC entry) live, and back to an RL slot: the slot, then MODE RL
+        e = sim.set_policy_mode("lma")
+        assert e["live"] and sim.g23.sent[-1] == "MODE LMA" and sim.g23.gait == "LMA"
+        e = sim.set_policy_mode(0)
+        assert e["live"] and sim.g23.sent[-2:] == ["MODE 0", "MODE RL"] and sim.g23.gait == "RL"
         # a teleport while the gait runs: damping first, then RESET_SAFETY before the new stand sequence
         n0 = len(sim.g23.sent)
         sim.set_pose(sim.base.x + 0.3, sim.base.y, 0.0, None)
