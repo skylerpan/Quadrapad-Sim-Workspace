@@ -70,6 +70,53 @@ class TickOutput:
     clock: list[float] = field(default_factory=list)
 
 
+def add_solids(spec, solids) -> None:
+    """Scene file solids.npy: oriented static boxes [cx, cy, cz, hx, hy, hz, qw, qx, qy, qz] (a smooth incline,
+    scripts/make_slope.py) added to the model as world geoms that collide like the proxy boxes. The map boxes stay
+    axis-aligned and go through the proxy pool; a solid's ray/visual stand-in is a ground.npz slab."""
+    if solids is None or not len(solids):
+        return
+    proxy = spec.geom("proxy_0")
+    for i, s in enumerate(np.asarray(solids, dtype=np.float64)):
+        spec.worldbody.add_geom(name=f"solid_{i}", type=mujoco.mjtGeom.mjGEOM_BOX, pos=s[:3].tolist(),
+                                size=s[3:6].tolist(), quat=s[6:10].tolist(), contype=proxy.contype,
+                                conaffinity=proxy.conaffinity, group=3, rgba=[0.5, 0.55, 0.5, 1.0])
+
+
+def _apply_mj_opt(m, overrides: dict | None):
+    """robot.mj_opt: MuJoCo solver options set after compiling, for experiments on the contact model
+    (noslip_iterations, impratio, cone: pyramidal | elliptic). Nothing is changed without it."""
+    for key, value in (overrides or {}).items():
+        if key == "cone":
+            cones = {"pyramidal": mujoco.mjtCone.mjCONE_PYRAMIDAL, "elliptic": mujoco.mjtCone.mjCONE_ELLIPTIC}
+            if value not in cones:
+                raise ValueError(f"robot.mj_opt.cone: expected pyramidal or elliptic, got {value!r}")
+            m.opt.cone = cones[value]
+        elif key in ("noslip_iterations", "impratio"):
+            setattr(m.opt, key, type(getattr(m.opt, key))(value))
+        else:
+            raise ValueError(f"robot.mj_opt: unknown option {key!r} (known: cone, impratio, noslip_iterations)")
+
+
+def _apply_contact_timeconst(m, robot_root: int | None, world_geoms, robot_cfg: dict):
+    """robot.contact_timeconst / robot.world_contact_timeconst: the solref time constant (s) of the robot's
+    collision geoms (MJCF 0.005) / of the map proxies and scene solids (MuJoCo default 0.02), damping ratio kept.
+    MuJoCo averages the two geoms' solref, so a contact's time constant is the mean of both. Null = unchanged."""
+    for key, geoms in (("contact_timeconst", None), ("world_contact_timeconst", world_geoms)):
+        value = robot_cfg.get(key)
+        if value is None:
+            continue
+        value = float(value)
+        if not value > 0.0:
+            raise ValueError(f"robot.{key}: expected a time constant > 0 s, got {value!r}")
+        if geoms is None:
+            if robot_root is None:
+                raise ValueError(f"robot.{key}: only for the legged robot (robot.type=g23)")
+            geoms = [g for g in range(m.ngeom) if m.body_rootid[m.geom_bodyid[g]] == robot_root
+                     and (m.geom_contype[g] or m.geom_conaffinity[g])]
+        m.geom_solref[np.asarray(geoms, dtype=np.int64), 0] = value
+
+
 def spawn_pose(spawn, spawns: dict, meta_spawn) -> tuple[float, float, float, float]:
     """(x, y, yaw, z_floor) from config `spawn`: a [x, y, yaw, z_floor] list (yaw / z_floor optional), a name in
     config `spawns`, or None for the scene's meta.json spawn (yaw 0)."""
@@ -100,6 +147,8 @@ class Simulator:
         ground = os.path.join(scene_dir, "ground.npz")      # flattened floor slabs (absent in --no-flatten scenes)
         slabs = np.load(ground)["slabs"] if os.path.exists(ground) else None
         self.boxes, self.slabs = boxes, slabs            # kept for the viewers (visual map)
+        solids_path = os.path.join(scene_dir, "solids.npy")   # oriented static boxes (e.g. an incline)
+        self.solids = np.load(solids_path) if os.path.exists(solids_path) else None
         colors_path = os.path.join(scene_dir, "colors.npy")   # scene colour per box (A = 0: none), OSM scenes
         self.colors = np.load(colors_path) if os.path.exists(colors_path) else None
         if self.colors is not None and len(self.colors) != len(boxes):
@@ -137,6 +186,7 @@ class Simulator:
         else:
             self.contact_index = self.index
             spec = mujoco.MjSpec.from_string(build_mjcf(cfg, self.meta["gravity"], pos, r["collision_pool"]))
+        add_solids(spec, self.solids)
         if visual_map:                      # only for the viewer: headless runs keep the small model
             max_vis = int(cfg.get("viewer", {}).get("max_map_boxes", 400_000))
             # draw the boxes nearest the spawn (a 0.03 m map has millions)
@@ -144,10 +194,16 @@ class Simulator:
             self.map_paint = add_map_mesh(spec, boxes[near], slabs,
                                           None if self.colors is None else self.colors[near], max_boxes=max_vis)
         self.m = spec.compile()
+        _apply_mj_opt(self.m, (cfg.get("robot", {}) or {}).get("mj_opt"))
         if self.map_paint is not None:
             self.map_paint.apply(self.m, self.map_color)
         self.d = mujoco.MjData(self.m)
         self.proxies = ProxyPool(self.m, self.d, self.contact_index, r["collision_pool"])
+        solid_geoms = [mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_GEOM, f"solid_{i}")
+                       for i in range(0 if self.solids is None else len(self.solids))]
+        torso = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, "TORSO") if self.legged else -1
+        _apply_contact_timeconst(self.m, int(self.m.body_rootid[torso]) if self.legged else None,
+                                 list(self.proxies.geom) + solid_geoms, r)
         self.lidar_site = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "lidar")
         self.gnss_site = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "gnss")       # -1 without a gnss section
         if self.legged:

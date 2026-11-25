@@ -10,3 +10,6 @@ MJMODEL.TXT
 mjmodel.xml
 # nav goal loop test reports
 results/
+build/
+dist/
+.pixi/

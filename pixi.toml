@@ -1,0 +1,59 @@
+# quadsim without Docker: ROS 2 Humble from RoboStack (conda-forge), packed into one self-extracting .run by
+# packaging/build_bundle.sh. The docker flow (docker/run.sh, scripts/run_sim.sh) is unchanged.
+#   pixi run test          unit tests (dev env)
+#   pixi run sim [args]    the sim from this checkout, DDS picked by quadsim.dds_config (args as scripts/run_sim.sh)
+#   pixi run bundle        dist/quadsim-<ver>-linux-<arch>.run (+ dist/compose for the Mac)
+# Channels come from prefix.dev (conda.anaconda.org is not reachable from every site).
+[workspace]
+name = "quadsim"
+channels = ["https://prefix.dev/robostack-humble", "https://prefix.dev/conda-forge"]
+platforms = ["linux-aarch64", "linux-64"]
+
+# The runtime: exactly what the .run carries.
+[dependencies]
+python = "3.11.*"
+ros-humble-ros-base = "*"
+ros-humble-rmw-cyclonedds-cpp = "*"
+ros-humble-nav-msgs = "*"
+numpy = "<2"
+scipy = "*"
+pyyaml = "*"
+open3d = "*"                        # conda-forge, not PyPI: the wheel needs the system libgomp/libGL/libX11 (RUNPATH /usr/lib/llvm-7)
+
+[pypi-dependencies]
+mujoco = "==3.15.0"
+viser = "==1.1.1"
+
+[activation.env]
+RMW_IMPLEMENTATION = "rmw_cyclonedds_cpp"
+
+# Build tools (livox CustomMsg) and tests: never packed.
+[feature.dev.dependencies]
+compilers = "*"
+cmake = "3.*"                      # RoboStack humble cmake modules predate CMake 4
+ninja = "*"
+pkg-config = "*"
+colcon-common-extensions = "*"
+ros-humble-rosidl-default-generators = "*"
+empy = "3.3.*"                      # rosidl templates break on empy 4
+pytest = "*"
+
+[feature.dev.tasks]
+livox = { cmd = "colcon --log-base build/livox/log build --base-paths docker/livox_msgs --build-base build/livox/build --install-base build/livox/install --cmake-args -DBUILD_TESTING=OFF -DPython_EXECUTABLE=$CONDA_PREFIX/bin/python -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python", outputs = ["build/livox/install/**"], inputs = ["docker/livox_msgs/**"] }
+test = { cmd = "bash -c 'source build/livox/install/local_setup.bash && python -m pytest -q'", depends-on = ["livox"], env = { PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1" } }   # autoload off as in docker/Dockerfile: launch_testing's plugin breaks new pytest
+sim = { cmd = "packaging/quadsim", depends-on = ["livox"] }
+bundle = "packaging/build_bundle.sh"
+
+[feature.quality.dependencies]
+pytest = "*"
+
+[feature.quality.pypi-dependencies]
+radon = "*"
+coverage = "*"
+mutmut = "*"
+pylint = "*"
+
+[environments]
+dev = { features = ["dev"], solve-group = "rt" }
+quality = { features = ["quality"], solve-group = "rt" }
+default = { solve-group = "rt" }

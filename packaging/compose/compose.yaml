@@ -1,0 +1,28 @@
+# The linux-aarch64 quadsim .run on a Mac (Docker Desktop, Apple silicon) or any Docker host. No image to build:
+# the .run carries ROS 2, MuJoCo and the G23 controller, debian:bookworm-slim only supplies glibc (>= 2.35 needed).
+#   docker compose up                                       sim + web viewer on http://localhost:${QUADSIM_WEB_PORT:-8755}
+#   docker compose exec quadsim /opt/quadsim.run shell      ros2 CLI inside (DDS stays in the container: bridge network)
+# Settings in .env (written by packaging/build_bundle.sh; see .env.example). The first start unpacks the .run into
+# the quadsim-home volume (~1 min); a new .run version unpacks next to it.
+# DDS: put XML files in ./dds (mounted at /dds) and set CYCLONEDDS_URI=file:///dds/<file>.xml, or
+# QUADSIM_ARGS=--dds-config /dds/<file>.xml; CYCLONEDDS_CONFIG=<name> picks a bundled conf/ file; ROS_DOMAIN_ID (1).
+services:
+  quadsim:
+    image: debian:bookworm-slim
+    platform: linux/arm64
+    init: true
+    entrypoint: ["bash", "-c", "exec /opt/quadsim.run $$QUADSIM_ARGS"]
+    environment:
+      QUADSIM_HOME: /data
+      QUADSIM_ARGS: ${QUADSIM_ARGS:-}
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-}
+      CYCLONEDDS_URI: ${CYCLONEDDS_URI:-}
+      CYCLONEDDS_CONFIG: ${CYCLONEDDS_CONFIG:-}
+    volumes:
+      - ${QUADSIM_RUN:?set QUADSIM_RUN in .env to the quadsim .run}:/opt/quadsim.run:ro
+      - ./dds:/dds:ro
+      - quadsim-home:/data
+    ports:
+      - "${QUADSIM_WEB_PORT:-8755}:8755"
+volumes:
+  quadsim-home:
