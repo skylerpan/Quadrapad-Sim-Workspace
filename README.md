@@ -46,6 +46,85 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 The `viewer:` section of the config sets `shadows` (the map casting shadows on itself costs a second pass over the mesh) and `sync_hz` (the maximum wall-clock rate at which the sim pushes its state to the window; each push takes the render lock). The sim logs `viewer: gl=... map mesh ... faces` at start-up so the path in use is visible. In the MuJoCo viewer, press `3` to show the active collision proxy boxes (red).
 The container uses `--net=host` and the same DDS settings as WebRvizLite: CycloneDDS (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`), `ROS_DOMAIN_ID=1`, and `conf/cyclonedds.xml` (unicast on loopback, multicast off), so the WebRvizLite viewer connects without extra setup. A navigation stack on the host or in another container connects directly as long as it uses the same RMW and domain (override with `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<file under conf/>` when running `docker/run.sh`). **Every other node must set `use_sim_time:=true`**.
 
+## What's new
+Three additions since the navigation MVP. Everything below was run on `main` on 2026-11-25 (Jetson AGX Thor, linux-aarch64); the GIFs are recordings of the browser viewer and of real program output.
+
+### GNSS and OSM outdoor scenes
+![The G23 walks out of dp's gate into the OSM street scene while the map colouring is switched](docs/img/gnss_osm_gate.gif)
+
+*`scenes/osm_tucheng_dp`, `spawn=gate`, about 3.6× speed: the G23 walks out of the scanned building onto OSM ground. The panel's `GNSS` line shows the fix type and position; `Map colour` is switched OSM → Height → Plain → OSM.*
+
+The sim carries a u-blox ZED-F9P / F9R model (`gnss` section of `config/sim.yaml`) that publishes `sensor_msgs/NavSatFix` on `/robot01/gnss/fix`. The fix type follows the sky the antenna really sees: rays are cast from the antenna into the scene, so walls and buildings degrade it (`rtk_fixed` → `rtk_float` → `single` → none). Indoor scans have no outdoor geometry, so `pcd2sim.osm_scene` builds it from OpenStreetMap:
+
+```bash
+# stand-alone scene: ±1 km around a streets.gl view (the Overpass answer is cached in Maps/<out name>/)
+docker/run.sh "python3 -m pcd2sim.osm_scene --url 'https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00' --radius 1000 --out scenes/osm_tucheng"
+# the same area laid around the dp scan: --register corrects the datum onto OSM, --clear opens the gate
+docker/run.sh "python3 -m pcd2sim.osm_scene --url 'https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00' --radius 1000 \
+    --base scenes/dp --osm Maps/osm_tucheng/overpass.json --out scenes/osm_tucheng_dp --register --clear 26 38 43 50"
+scripts/run_sim.sh --scene scenes/osm_tucheng_dp spawn=gate gnss.sky.mode=map gnss.rtk=true   # start at the gate, facing out
+
+python3 scripts/export_datum.py --scene scenes/osm_tucheng_dp -o <map>.geo.yaml   # the scene's datum, for the nav stack
+python3 scripts/gnss_error_map.py                                                 # results/gnss_errmap/<scene>.html
+python3 scripts/osm_route.py --scene scenes/osm_tucheng_dp --from <lat,lon> --to <lat,lon> -o route.yaml
+```
+
+- **OSM scene**: 225 buildings become 11 883 boxes plus ground tiles; rebuilding from the cached Overpass answer is byte-identical. Building and ground colours come from OSM tags and show in both viewers (`Map colour`).
+- **Overlay on a scan** (`--base`): the scan's boxes stay as they are, OSM fills the surroundings, and `--register` moves only the datum (here by (−0.02, 0.05) m) so GNSS coordinates agree with OSM.
+- **Named spawns**: `spawn=<name>` picks an entry of `spawns:` in the config; `gate` is dp's gate. A wrong name lists the valid ones.
+- **Route**: `osm_route.py` turns two lat/lon points into map-frame waypoints along OSM ways (521 m for the committed `config/route_danuan_milksha.yaml`, no blocked waypoint).
+
+<img src="docs/img/gnss_error_map.png" alt="GNSS error map report for the dp scene" width="560">
+
+*`scripts/gnss_error_map.py`: for every walkable floor cell, the sky fraction, fix type and expected error, per floor, as one HTML page.*
+
+Limits: the error map casts its rays against the scan's voxels only, so OSM buildings of an overlay scene are not in it. The fusion check against the navigation stack (`scripts/gnss_ekf_check.py`) needs that stack running. Details: [`docs/usage.md`](docs/usage.md) sections 2.6 (OSM scenes), 3.4 (GNSS fusion) and 4.1 (viewer).
+
+### Standalone bundle (no Docker)
+![First start of the bundle: it unpacks itself, picks the DDS config, starts the controller and stands up](docs/img/bundle_first_run.gif)
+
+*First start of `quadsim-20261125-d0a454f-linux-aarch64.run`, 4× speed: real output with the DDS and controller log lines dropped.*
+
+```mermaid
+flowchart LR
+  env["pixi-pack env: ROS 2 Humble (RoboStack), MuJoCo, viser"] --> run
+  app["app: quadsim, pcd2sim, config, scenes/dp, scenes/dp_bt_s16"] --> run
+  ctl["controller: robotdog_control, models, ONNX Runtime"] --> run
+  run(["quadsim-VER-linux-aarch64.run"])
+  run -->|"Linux aarch64, glibc 2.35+"| host["./quadsim-VER.run: unpacks once, then runs the sim"]
+  run -->|"Mac or any Docker host"| mac["docker compose up: debian:bookworm-slim"]
+```
+
+`pixi run bundle` builds one self-extracting file with everything a run needs; the target machine needs no Docker, no ROS and no network. Measured here: the file is 673 MB, the first start unpacks 3.1 GB in 20 s, and the robot is standing and in `rl_fcn` 9 s later. LiDAR arrives at 9 Hz as `CustomMsg` and joint states at 50 Hz, the same as in the Docker image, and `pixi run test` passes the same 301 tests. Through `dist/compose` (plain `debian:bookworm-slim`, the Mac path) the same file is up in 29 s. Commands, DDS selection and limits are in [the next section](#standalone-bundle-no-docker-poc).
+
+### Odometry-validation tools
+![The G23 walks a figure-8 on the 10 degree incline](docs/img/odom_figure8_slope.gif)
+
+*`scenes/slope_10`, one figure-8 lap driven by `scripts/drive_figure8.py`, about 6× speed. Orange: the current LiDAR frame.*
+
+To test an odometry or state estimator you need a known trajectory, a known disturbance and the truth to compare with. These are config keys and scripts, off by default:
+
+| What | How |
+|---|---|
+| Noise on the IMU the controller reads | `robot.controller.imu_noise.{acc, gyro, acc_bias_rw, gyro_bias_rw, gyro_bias, rp, seed}`; all 0 = exact |
+| Per-step ground truth of feet and contacts | `robot.controller.truth_log=<file.npz>`: one row per physics step (1 kHz) with foot velocity, load and contact normal, base pose and velocity, sim time and Unix time |
+| Contact model experiments | `robot.mj_opt.{noslip_iterations, impratio, cone}`, `robot.contact_timeconst`, `robot.world_contact_timeconst` |
+| A smooth incline | `scripts/make_slope.py --out scenes/slope_10 --angle 10` |
+| A repeatable closed path | `scripts/drive_figure8.py`: pure pursuit on ground truth, reports laps done and the largest cross-track error |
+
+```bash
+docker/run.sh "python3 scripts/make_slope.py --out scenes/slope_10 --angle 10"
+scripts/run_sim.sh --scene scenes/slope_10 spawn=null \
+    robot.controller.imu_noise.gyro=0.002 robot.controller.imu_noise.seed=1 robot.mj_opt.noslip_iterations=10
+docker/run.sh "python3 scripts/drive_figure8.py --center 8 0 --heading 0 --laps 3"
+```
+
+![Ground-truth track of two figure-8 laps against the ideal path](docs/img/odom_figure8_track.png)
+
+*Ground truth of two laps against the ideal path: 0.15 m largest cross-track error, the same with IMU noise, `noslip` and both contact time constants switched on.*
+
+Limits: `truth_log` is written only with `robot.controller.kind=g2_deploy_rs`; the default controller ignores the key. Unknown `imu_noise` / `mj_opt` keys and non-positive time constants are refused at start.
+
 ## Standalone bundle (no Docker, PoC)
 `pixi run bundle` packs everything a run needs into one self-extracting file, `dist/quadsim-<yyyymmdd>-<sha>-linux-<arch>.run`. It contains ROS 2 Humble from [RoboStack](https://robostack.github.io/) (pixi-pack of `pixi.toml`'s default env), MuJoCo, open3d, the livox CustomMsg, the app with `scenes/dp` and `scenes/dp_bt_s16` (`BUNDLE_SCENES` overrides the list), and the G23 controller (SyncAI-Device-MotorControl `robotdog_control` + its models and ONNX Runtime). It needs Linux with glibc >= 2.35 (Ubuntu 22.04+) on the same arch, and nothing else is installed.
 ```bash

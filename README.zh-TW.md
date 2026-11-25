@@ -46,6 +46,85 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 設定檔的 `viewer:` 區塊可以設 `shadows`（地圖對自己投影要多畫一遍整個 mesh）和 `sync_hz`（sim 把狀態推給視窗的最高 wall-clock 頻率；每次推送都會取算繪鎖）。sim 啟動時會記錄 `viewer: gl=... map mesh ... faces`，一眼就能看出用的是哪條路徑。MuJoCo viewer 裡，按 `3` 可以顯示目前生效的碰撞代理 box（紅色）。
 容器使用 `--net=host`，DDS 設定與 WebRvizLite 相同：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、`ROS_DOMAIN_ID=1`、`conf/cyclonedds.xml`（loopback 單播、關閉 multicast），所以 WebRvizLite 檢視器不需額外設定即可連上。主機或其他容器裡的導航堆疊，只要使用相同的 RMW 與 domain 就能直接連上（執行 `docker/run.sh` 時可用 `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<conf/ 下的檔名>` 覆寫）。**其他所有節點都要設 `use_sim_time:=true`**。
 
+## 新功能
+導航 MVP 之後新增的三塊功能。以下內容都在 2026-11-25 的 `main` 上實際跑過（Jetson AGX Thor，linux-aarch64）；GIF 是瀏覽器 viewer 和程式真實輸出的錄影。
+
+### GNSS 與 OSM 戶外場景
+![G23 從 dp 大門走進 OSM 街道場景，途中切換地圖配色](docs/img/gnss_osm_gate.gif)
+
+*`scenes/osm_tucheng_dp`、`spawn=gate`，約 3.6 倍速：G23 從掃描的建物走到 OSM 的地面上。面板的 `GNSS` 列顯示 fix 類型和位置；`Map colour` 依序切換 OSM → Height → Plain → OSM。*
+
+sim 內建一顆 u-blox ZED-F9P / F9R 模型（`config/sim.yaml` 的 `gnss` 區塊），在 `/robot01/gnss/fix` 發布 `sensor_msgs/NavSatFix`。fix 類型取決於天線實際看到的天空：從天線往場景射線，被牆和建物擋住就降級（`rtk_fixed` → `rtk_float` → `single` → 無）。室內掃描沒有戶外的建物，所以用 `pcd2sim.osm_scene` 從 OpenStreetMap 建出來：
+
+```bash
+# 獨立場景：streets.gl 視角中心 ±1 km（Overpass 的回應快取在 Maps/<out 名>/）
+docker/run.sh "python3 -m pcd2sim.osm_scene --url 'https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00' --radius 1000 --out scenes/osm_tucheng"
+# 同一區域鋪在 dp 掃描的周圍：--register 以 OSM 為準修正 datum，--clear 清出大門
+docker/run.sh "python3 -m pcd2sim.osm_scene --url 'https://streets.gl/#24.95919,121.41896,45.00,0.00,586.00' --radius 1000 \
+    --base scenes/dp --osm Maps/osm_tucheng/overpass.json --out scenes/osm_tucheng_dp --register --clear 26 38 43 50"
+scripts/run_sim.sh --scene scenes/osm_tucheng_dp spawn=gate gnss.sky.mode=map gnss.rtk=true   # 從大門口出生，面朝外
+
+python3 scripts/export_datum.py --scene scenes/osm_tucheng_dp -o <map>.geo.yaml   # 匯出場景的 datum 給導航堆疊
+python3 scripts/gnss_error_map.py                                                 # results/gnss_errmap/<scene>.html
+python3 scripts/osm_route.py --scene scenes/osm_tucheng_dp --from <lat,lon> --to <lat,lon> -o route.yaml
+```
+
+- **OSM 場景**：225 棟建物變成 11 883 個 box 加地面平板；用快取的 Overpass 回應重建，結果逐位元組相同。建物和地面的顏色來自 OSM tag，兩個 viewer 都看得到（`Map colour`）。
+- **疊在掃描上**（`--base`）：掃描的 box 原封不動，周圍由 OSM 補上；`--register` 只移動 datum（這裡是 (−0.02, 0.05) m），讓 GNSS 經緯度和 OSM 一致。
+- **具名 spawn**：`spawn=<名字>` 選用設定檔 `spawns:` 裡的一筆；`gate` 是 dp 大門口。名字打錯會列出有哪些。
+- **路線**：`osm_route.py` 把兩個經緯度點沿 OSM 道路轉成 map 座標的 waypoint（已提交的 `config/route_danuan_milksha.yaml` 是 521 m，沒有被擋住的點）。
+
+<img src="docs/img/gnss_error_map.png" alt="dp 場景的 GNSS 誤差地圖報表" width="560">
+
+*`scripts/gnss_error_map.py`：每個可行走的地面格算出天空比例、fix 類型和預期誤差，分樓層，輸出成一頁 HTML。*
+
+限制：誤差地圖只對掃描的體素射線，疊合場景裡的 OSM 建物不在計算內。和導航堆疊的融合檢查（`scripts/gnss_ekf_check.py`）需要導航堆疊在跑。細節見 [`docs/usage.md`](docs/usage.md) 的 2.6（OSM 場景）、3.4（GNSS 融合）、4.1（viewer）。
+
+### 免 Docker 的單檔 bundle
+![bundle 首次啟動：自動解包、選定 DDS 設定、啟動控制器、站起來](docs/img/bundle_first_run.gif)
+
+*`quadsim-20261125-d0a454f-linux-aarch64.run` 首次啟動，4 倍速：內容是真實輸出，省略了 DDS 和控制器的 log 行。*
+
+```mermaid
+flowchart LR
+  env["pixi-pack env: ROS 2 Humble (RoboStack), MuJoCo, viser"] --> run
+  app["app: quadsim, pcd2sim, config, scenes/dp, scenes/dp_bt_s16"] --> run
+  ctl["controller: robotdog_control, models, ONNX Runtime"] --> run
+  run(["quadsim-VER-linux-aarch64.run"])
+  run -->|"Linux aarch64, glibc 2.35+"| host["./quadsim-VER.run: unpacks once, then runs the sim"]
+  run -->|"Mac or any Docker host"| mac["docker compose up: debian:bookworm-slim"]
+```
+
+`pixi run bundle` 把執行需要的東西全部包成一個自解壓檔；目標機器不需要 Docker、ROS，也不需要網路。這次實測：檔案 673 MB，首次啟動 20 秒解包出 3.1 GB，再過 9 秒機器狗已站起並進入 `rl_fcn`。LiDAR 以 `CustomMsg` 9 Hz、joint states 50 Hz 送出，和 Docker 映像相同；`pixi run test` 通過同樣的 301 個測試。經 `dist/compose`（單純的 `debian:bookworm-slim`，Mac 走的路徑）同一個檔案 29 秒啟動完成。指令、DDS 選擇和限制見[下一節](#免-docker-單檔執行poc)。
+
+### odom 驗證工具
+![G23 在 10 度斜坡上走 8 字](docs/img/odom_figure8_slope.gif)
+
+*`scenes/slope_10`，由 `scripts/drive_figure8.py` 驅動走一圈 8 字，約 6 倍速。橘色是當下的 LiDAR 一幀。*
+
+要測里程計或狀態估測器，需要已知的軌跡、已知的擾動，和可以對照的真值。以下是設定鍵和腳本，預設都關閉：
+
+| 項目 | 用法 |
+|---|---|
+| 控制器讀到的 IMU 加雜訊 | `robot.controller.imu_noise.{acc, gyro, acc_bias_rw, gyro_bias_rw, gyro_bias, rp, seed}`；全 0 = 精確值 |
+| 每個 step 的腳與接觸真值 | `robot.controller.truth_log=<file.npz>`：每個 physics step 一列（1 kHz），含腳的速度、受力、接觸法向、機身位置與速度、sim 時間和 Unix 時間 |
+| 接觸模型實驗 | `robot.mj_opt.{noslip_iterations, impratio, cone}`、`robot.contact_timeconst`、`robot.world_contact_timeconst` |
+| 平滑斜坡 | `scripts/make_slope.py --out scenes/slope_10 --angle 10` |
+| 可重複的封閉路徑 | `scripts/drive_figure8.py`：在真值上做 pure pursuit，回報完成圈數和最大橫向誤差 |
+
+```bash
+docker/run.sh "python3 scripts/make_slope.py --out scenes/slope_10 --angle 10"
+scripts/run_sim.sh --scene scenes/slope_10 spawn=null \
+    robot.controller.imu_noise.gyro=0.002 robot.controller.imu_noise.seed=1 robot.mj_opt.noslip_iterations=10
+docker/run.sh "python3 scripts/drive_figure8.py --center 8 0 --heading 0 --laps 3"
+```
+
+![兩圈 8 字的真值軌跡對照理想路徑](docs/img/odom_figure8_track.png)
+
+*兩圈的真值對照理想路徑：最大橫向誤差 0.15 m；同時打開 IMU 雜訊、`noslip` 和兩個接觸時間常數時也是 0.15 m。*
+
+限制：`truth_log` 只有 `robot.controller.kind=g2_deploy_rs` 會寫檔，預設控制器會忽略這個設定。`imu_noise` / `mj_opt` 的未知 key 和非正的時間常數在啟動時就會被拒絕。
+
 ## 免 Docker 單檔執行（PoC）
 `pixi run bundle` 會把執行需要的東西全部打包成一個自解壓檔 `dist/quadsim-<yyyymmdd>-<sha>-linux-<arch>.run`，內容包括：[RoboStack](https://robostack.github.io/) 的 ROS 2 Humble（用 pixi-pack 打包 `pixi.toml` 的 default 環境）、MuJoCo、open3d、livox CustomMsg、程式本體加上 `scenes/dp` 和 `scenes/dp_bt_s16`（`BUNDLE_SCENES` 可改清單），以及 G23 控制器（SyncAI-Device-MotorControl 的 `robotdog_control` 和它的模型、ONNX Runtime）。目標機器只要是同架構、glibc 2.35 以上的 Linux（Ubuntu 22.04 以上），不用另外安裝任何東西。
 ```bash
