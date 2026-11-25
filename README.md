@@ -74,6 +74,18 @@ python3 scripts/osm_route.py --scene scenes/osm_tucheng_dp --from <lat,lon> --to
 - **Named spawns**: `spawn=<name>` picks an entry of `spawns:` in the config; `gate` is dp's gate. A wrong name lists the valid ones.
 - **Route**: `osm_route.py` turns two lat/lon points into map-frame waypoints along OSM ways (521 m for the committed `config/route_danuan_milksha.yaml`, no blocked waypoint).
 
+![The fix type drops from RTK fixed to no fix as the G23 walks into an alley between tall OSM buildings](docs/img/gnss_fix_degrade.gif)
+
+*`scenes/osm_tucheng`, `spawn=[50,43,2.37,0] gnss.sky.mode=map gnss.rtk=true`, about 12× speed: the G23 walks from open ground into an alley between tall OSM buildings and the fix goes `rtk_fixed` → `rtk_float` → `single` → no fix → `single` (sky 100 % → 11 %). The strip under the picture repeats the panel's `GNSS` line in full; the LiDAR layer is switched off.*
+
+![The G23 walks along a road of the stand-alone OSM scene, buildings in their OSM colours pass behind it](docs/img/gnss_osm_street.gif)
+
+*`scenes/osm_tucheng` is OSM only, no scan: about 50 m along a road, seen from the side, about 12× speed.*
+
+![The G23 leaves dp's gate and follows the OSM route drawn as a green line](docs/img/gnss_osm_route.gif)
+
+*`scenes/osm_tucheng_dp`, `spawn=gate`, about 24× speed: the first 145 m of `scripts/route_loop_test.py --route config/route_danuan_milksha.yaml --via 34.5,46 --via 34.5,60`, which steers on ground truth. The green line is the same path published as `nav_msgs/Path` on `/robot01/planned_path` (the viewer's `Planned path` layer).*
+
 <img src="docs/img/gnss_error_map.png" alt="GNSS error map report for the dp scene" width="560">
 
 *`scripts/gnss_error_map.py`: for every walkable floor cell, the sky fraction, fix type and expected error, per floor, as one HTML page.*

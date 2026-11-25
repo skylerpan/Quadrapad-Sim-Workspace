@@ -74,6 +74,18 @@ python3 scripts/osm_route.py --scene scenes/osm_tucheng_dp --from <lat,lon> --to
 - **具名 spawn**：`spawn=<名字>` 選用設定檔 `spawns:` 裡的一筆；`gate` 是 dp 大門口。名字打錯會列出有哪些。
 - **路線**：`osm_route.py` 把兩個經緯度點沿 OSM 道路轉成 map 座標的 waypoint（已提交的 `config/route_danuan_milksha.yaml` 是 521 m，沒有被擋住的點）。
 
+![G23 走進兩棟高樓之間的巷子，fix 類型從 RTK fixed 一路降到沒有 fix](docs/img/gnss_fix_degrade.gif)
+
+*`scenes/osm_tucheng`、`spawn=[50,43,2.37,0] gnss.sky.mode=map gnss.rtk=true`，約 12 倍速：G23 從空曠處走進兩棟 OSM 高樓之間的巷子，fix 依序是 `rtk_fixed` → `rtk_float` → `single` → 無 fix → `single`（天空比例 100 % → 11 %）。畫面下方那一條是面板 `GNSS` 列的完整內容；LiDAR 圖層已關閉。*
+
+![G23 沿著純 OSM 場景的道路走，後方是依 OSM 配色的建物](docs/img/gnss_osm_street.gif)
+
+*`scenes/osm_tucheng` 只有 OSM、沒有掃描：沿道路走約 50 m，側面視角，約 12 倍速。*
+
+![G23 走出 dp 大門，沿著畫成綠線的 OSM 路線前進](docs/img/gnss_osm_route.gif)
+
+*`scenes/osm_tucheng_dp`、`spawn=gate`，約 24 倍速：`scripts/route_loop_test.py --route config/route_danuan_milksha.yaml --via 34.5,46 --via 34.5,60`（用真值轉向）的前 145 m。綠線是同一條路徑以 `nav_msgs/Path` 發到 `/robot01/planned_path`（viewer 的 `Planned path` 圖層）。*
+
 <img src="docs/img/gnss_error_map.png" alt="dp 場景的 GNSS 誤差地圖報表" width="560">
 
 *`scripts/gnss_error_map.py`：每個可行走的地面格算出天空比例、fix 類型和預期誤差，分樓層，輸出成一頁 HTML。*
