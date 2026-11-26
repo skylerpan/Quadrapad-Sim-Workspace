@@ -15,6 +15,10 @@
 ## 快速開始
 不想背指令？做完第 1 步之後（或在 pixi 環境、`.run` bundle 裡），`scripts/tui.sh` 會開一個終端機選單：選機器人、場景、功能就能啟動；從地圖檔、OpenStreetMap、合成斜坡或合成樓梯建場景；DDS 與 topic 設定會存下來，下次直接沿用。它只負責組出下面這些指令，執行前會把指令顯示出來（[docs/usage.md](docs/usage.md) §3.0）。
 
+<img src="docs/img/tui.gif" width="820" alt="scripts/tui.sh：設定、啟動精靈、模擬啟動、建場景選單">
+
+*checkout 上的 `scripts/tui.sh`（Docker 後端），由終端機畫面擷取重播。Settings：ROS domain 改 77、機器人 namespace 改成 `/robot02`（14 個 topic 與 frame 名稱跟著改）。Run：G23、`scenes/osm_tucheng_dp`、出生點 `gate`、RTK；確認頁顯示完整的 `scripts/run_sim.sh` 指令與 DDS domain 警告，接著模擬啟動，Ctrl-C 後回到選單。Build scene：12° 的合成斜坡，停在確認頁。*
+
 ```bash
 # 1. 建 Docker 映像檔（以 syncai-robot-base 為基底，加裝 mujoco 和 livox CustomMsg）
 docker build -t quadsim:latest docker/

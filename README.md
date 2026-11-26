@@ -15,6 +15,10 @@ The map enters MuJoCo as a small pool of proxy boxes moved onto the scene boxes 
 ## Quick start
 Prefer menus to command lines? After step 1 (or inside the pixi env / the `.run` bundle), `scripts/tui.sh` opens a terminal UI: pick a robot, a scene and features and run; build a scene from a map file, OpenStreetMap, a synthetic slope or synthetic stairs; and keep your DDS and topic settings between sessions. It only assembles the commands below and shows each one before running it ([docs/usage.md](docs/usage.md) section 3.0).
 
+<img src="docs/img/tui.gif" width="820" alt="scripts/tui.sh: settings, the run wizard, the sim starting, and the build-scene menu">
+
+*`scripts/tui.sh` in a checkout (Docker backend), replayed from terminal captures. Settings: ROS domain 77 and the robot namespace moved to `/robot02` (14 topic and frame names follow). Run: G23, `scenes/osm_tucheng_dp`, spawn `gate`, RTK; the confirm page shows the full `scripts/run_sim.sh` line and the DDS domain warning, then the sim starts and Ctrl-C returns to the menu. Build scene: a 12° synthetic slope, up to its confirm page.*
+
 ```bash
 # 1. Build the Docker image (based on syncai-robot-base, adds mujoco and the livox CustomMsg)
 docker build -t quadsim:latest docker/
