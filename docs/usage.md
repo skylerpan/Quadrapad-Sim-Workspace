@@ -357,7 +357,7 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 | `key=value ...` | 任何設定檔欄位的覆寫（見第 9 章） |
 
 ### 3.0 選單介面（`scripts/tui.sh`）
-不想記指令時用選單操作。它只用 Python 標準函式庫（`curses`），不加任何相依；每個動作在執行前都會顯示實際要跑的指令，所以也可以拿來查指令怎麼寫。
+不想記指令時用選單操作，外觀與操作方式比照 `nmtui`（置中的視窗、`<按鈕>`、紫色配色）。它只用 Python 標準函式庫（`curses`），不加任何相依；每個動作在執行前都會顯示實際要跑的指令，所以也可以拿來查指令怎麼寫。
 
 ```bash
 scripts/tui.sh                  # checkout：有 quadsim Docker 映像檔就走 Docker，否則走目前的 Python 環境
@@ -366,22 +366,23 @@ pixi run sim tui                # pixi 環境
 #   --backend docker|native     強制指定執行方式
 #   --profile <name>            指定要載入並持續更新的設定檔（預設 last）
 ```
-按鍵：上下鍵移動、Enter 選取、空白鍵勾選、`q` 或 Esc 返回；模擬執行中按 Ctrl-C 停止，再按 Enter 回選單。
+按鍵：Tab / Shift-Tab 或上下鍵在欄位與按鈕之間移動，左右鍵在按鈕之間移動；Enter 按下按鈕、打開 `<下拉選單>`，在輸入欄則跳到下一欄（最後一欄跳到預設按鈕）；空白鍵切換 `[X]` 勾選框；PgUp / PgDn 捲動；Esc 取消或返回。模擬執行中按 Ctrl-C 停止，再按 Enter 回選單。終端機至少要 60×16；256 色終端機是紫色配色，8 色退回洋紅，沒有顏色或設了 `NO_COLOR` 時用反白與粗體。
 
 | 選單 | 內容 | 實際執行 |
 |---|---|---|
-| Run simulation | 依序選機器人（G23 / ideal，G23 再選 behaviour）、場景（只列建好的；G23 只列 format 3）、出生點（設定檔預設 / 場景預設 / `spawns` 裡的名稱）、功能（GNSS RTK、天空永遠開闊、瀏覽器 viewer、MuJoCo 視窗、真值 TF、PointCloud2、樓梯碰撞設定） | `scripts/run_sim.sh …`，native 時是 `python -m quadsim.launch …` |
-| Run last | 用上次的選擇直接到確認頁 | 同上 |
-| Build scene | 地圖檔（`Maps/` 裡的 `.pcd` / `.bt` / `.ot` 或自己輸入路徑，三種配方：1:1 不壓平、壓平、樓梯配方）、OpenStreetMap（`LAT LON` 或 streets.gl 網址 + 半徑，可選疊在某個掃描場景周圍）、合成斜坡、合成樓梯（既有場景 + `config/stairs_*.yaml`） | `pcd2sim.build_scene`、`pcd2sim.osm_scene`、`scripts/make_slope.py`、`scripts/make_stairs.py` |
-| Settings | ROS domain ID、CycloneDDS 設定檔、機器人 namespace、個別 topic 與 frame 名稱、設定檔的另存 / 載入 / 刪除 / 重設 | 變成環境變數與 `ros.topics.*` / `ros.frames.*` 覆寫，不改 `config/sim.yaml` |
+| Run simulation | 一頁表單：機器人（G23 / ideal，G23 才有 behaviour 欄）、場景（只列建好的；G23 只列 format 3）、出生點（設定檔預設 / 場景預設 / `spawns` 裡的名稱）、地圖配色，以及功能勾選（GNSS RTK、天空永遠開闊、瀏覽器 viewer、MuJoCo 視窗、真值 TF、PointCloud2、樓梯碰撞設定）。換場景時出生點與樓梯碰撞設定會跟著套用該場景的預設。`<Start>` 後先看確認視窗再 `<Run>` | `scripts/run_sim.sh …`，native 時是 `python -m quadsim.launch …` |
+| Run last | 用上次的選擇直接到確認視窗 | 同上 |
+| Build scene | 每種來源一頁表單：地圖檔（`Maps/` 裡的 `.pcd` / `.bt` / `.ot` 或自己輸入路徑，三種配方：1:1 不壓平、壓平、樓梯配方）、OpenStreetMap（`LAT LON` 或 streets.gl 網址 + 半徑，可選疊在某個掃描場景周圍）、合成斜坡、合成樓梯（既有場景 + `config/stairs_*.yaml`） | `pcd2sim.build_scene`、`pcd2sim.osm_scene`、`scripts/make_slope.py`、`scripts/make_stairs.py` |
+| Settings | 一頁表單：ROS domain ID、CycloneDDS 設定檔、機器人 namespace；`<Topics...>` `<Frames...>` 逐項改名稱，`<Profiles...>` 另存 / 載入 / 刪除 / 重設 | 變成環境變數與 `ros.topics.*` / `ros.frames.*` 覆寫，不改 `config/sim.yaml` |
 
-設定存在 `${XDG_CONFIG_HOME:-~/.config}/quadsim/tui/<name>.json`，每次變更自動寫入目前的設定檔。幾個細節：
+設定存在 `${XDG_CONFIG_HOME:-~/.config}/quadsim/tui/<name>.json`。Settings 表單按 `<OK>` 才寫入目前的設定檔，`<Cancel>` 或 Esc 放棄這次的修改（載入別的設定檔、重設也一樣要按 `<OK>` 才生效）；Run 表單按 `<Start>` 時會記住這次的選擇。幾個細節：
 - **Namespace**：一次把目前 namespace 底下的 topic、frame 和瀏覽器 viewer 的路徑 topic（`web.path_topic`）改到新的 namespace；只有和 `config/sim.yaml` 不同的名稱才會變成覆寫參數。把某一項改回預設值就是取消那一項。
-- **DDS**：Docker 走 `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG`（只能選 `conf/` 底下的檔案）；native 走 `ROS_DOMAIN_ID` 加 `--dds-config`，另外可以選任意路徑的 XML 或不用設定檔（Cyclone 預設值）。設定檔的 `Domain Id` 和 domain ID 不一致時，確認頁會顯示和啟動器相同的警告。
+- **DDS**：Docker 走 `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG`（只能選 `conf/` 底下的檔案）；native 走 `ROS_DOMAIN_ID` 加 `--dds-config`，另外可以選任意路徑的 XML 或不用設定檔（Cyclone 預設值）。設定檔的 `Domain Id` 和 domain ID 不一致時，確認視窗會顯示和啟動器相同的警告。
 - **Docker 只看得到 checkout**：地圖檔要放在 checkout 裡（例如 `Maps/`）；native 可以用任意路徑。
 - **bundle**：不含 `Maps/`，地圖檔請輸入路徑；新場景建在 bundle 的 `app/scenes/` 底下，`--reinstall` 或換版本後要重建。
 - **OSM**：第一次建某個場景名稱時要連網下載，資料存在 `Maps/<場景名>/`，之後重用。
 - 場景名稱、路徑、topic 名稱都不能有空白或引號。
+- G23 控制器用預設的 UDP 埠（遙控通道 40020）時，同一台機器一次只能跑一個 G23 模擬；第二個會在啟動時因為埠被占用而結束（ideal 機器人不受影響，瀏覽器 viewer 的埠被占用時會自動換下一個）。
 
 ### 3.1 機器人類型（`robot.type`）
 

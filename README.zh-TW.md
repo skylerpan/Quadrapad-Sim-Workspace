@@ -13,11 +13,11 @@
 **使用手冊**（依任務分章，所有指令、參數和環境變數）見 [`docs/usage.md`](docs/usage.md)。設計背景見 [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md)（§12–§13）。 dp_1008 導航下點迴圈測試紀錄與失敗分析見 [`docs/archive/nav-goal-loop-test-2026-10-13.md`](docs/archive/nav-goal-loop-test-2026-10-13.md)。
 
 ## 快速開始
-不想背指令？做完第 1 步之後（或在 pixi 環境、`.run` bundle 裡），`scripts/tui.sh` 會開一個終端機選單：選機器人、場景、功能就能啟動；從地圖檔、OpenStreetMap、合成斜坡或合成樓梯建場景；DDS 與 topic 設定會存下來，下次直接沿用。它只負責組出下面這些指令，執行前會把指令顯示出來（[docs/usage.md](docs/usage.md) §3.0）。
+不想背指令？做完第 1 步之後（或在 pixi 環境、`.run` bundle 裡），`scripts/tui.sh` 會開一個操作方式和 `nmtui` 一樣的終端機介面：視窗加 `<按鈕>`，Tab 與方向鍵移動、Enter 選取、空白鍵勾選。在一頁表單上選機器人、場景、功能就能啟動；從地圖檔、OpenStreetMap、合成斜坡或合成樓梯建場景；DDS 與 topic 設定會存下來，下次直接沿用。它只負責組出下面這些指令，執行前會把指令顯示出來（[docs/usage.md](docs/usage.md) §3.0）。
 
-<img src="docs/img/tui.gif" width="820" alt="scripts/tui.sh：設定、啟動精靈、模擬啟動、建場景選單">
+<img src="docs/img/tui.gif" width="800" alt="scripts/tui.sh：Settings 表單、Run 表單、模擬啟動、Build 表單">
 
-*checkout 上的 `scripts/tui.sh`（Docker 後端），由終端機畫面擷取重播。Settings：ROS domain 改 77、機器人 namespace 改成 `/robot02`（14 個 topic 與 frame 名稱跟著改）。Run：G23、`scenes/osm_tucheng_dp`、出生點 `gate`、RTK；確認頁顯示完整的 `scripts/run_sim.sh` 指令與 DDS domain 警告，接著模擬啟動，Ctrl-C 後回到選單。Build scene：12° 的合成斜坡，停在確認頁。*
+*checkout 上的 `scripts/tui.sh`（Docker 後端），由終端機畫面擷取重播。Settings：ROS domain 改 77、機器人 namespace 改成 `/robot02`（10 個 topic 與 4 個 frame 名稱跟著改），按 `<OK>` 存檔。Run：ideal 機器人、`scenes/osm_tucheng_dp`、出生點 `gate`、RTK；確認視窗顯示完整的 `scripts/run_sim.sh` 指令與 DDS domain 警告，接著模擬啟動，Ctrl-C 後回到選單。Build scene：12° 的合成斜坡，停在確認視窗。*
 
 ```bash
 # 1. 建 Docker 映像檔（以 syncai-robot-base 為基底，加裝 mujoco 和 livox CustomMsg）

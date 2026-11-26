@@ -13,11 +13,11 @@ The map enters MuJoCo as a small pool of proxy boxes moved onto the scene boxes 
 **Usage guide** with every command, flag and environment variable, organised by task: [`docs/usage.md`](docs/usage.md) (Traditional Chinese). Design background: [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md) (Traditional Chinese, §12–§13). Navigation goal-loop test record on dp_1008 with the failure analysis: [`docs/archive/nav-goal-loop-test-2026-10-13.md`](docs/archive/nav-goal-loop-test-2026-10-13.md) (Traditional Chinese).
 
 ## Quick start
-Prefer menus to command lines? After step 1 (or inside the pixi env / the `.run` bundle), `scripts/tui.sh` opens a terminal UI: pick a robot, a scene and features and run; build a scene from a map file, OpenStreetMap, a synthetic slope or synthetic stairs; and keep your DDS and topic settings between sessions. It only assembles the commands below and shows each one before running it ([docs/usage.md](docs/usage.md) section 3.0).
+Prefer menus to command lines? After step 1 (or inside the pixi env / the `.run` bundle), `scripts/tui.sh` opens a terminal UI that works like `nmtui`: windows with `<buttons>`, Tab and arrows to move, Enter to select, Space to toggle. Pick a robot, a scene and features on one form and run; build a scene from a map file, OpenStreetMap, a synthetic slope or synthetic stairs; and keep your DDS and topic settings between sessions. It only assembles the commands below and shows each one before running it ([docs/usage.md](docs/usage.md) section 3.0).
 
-<img src="docs/img/tui.gif" width="820" alt="scripts/tui.sh: settings, the run wizard, the sim starting, and the build-scene menu">
+<img src="docs/img/tui.gif" width="800" alt="scripts/tui.sh: the Settings form, the Run form, the sim starting, and a Build form">
 
-*`scripts/tui.sh` in a checkout (Docker backend), replayed from terminal captures. Settings: ROS domain 77 and the robot namespace moved to `/robot02` (14 topic and frame names follow). Run: G23, `scenes/osm_tucheng_dp`, spawn `gate`, RTK; the confirm page shows the full `scripts/run_sim.sh` line and the DDS domain warning, then the sim starts and Ctrl-C returns to the menu. Build scene: a 12° synthetic slope, up to its confirm page.*
+*`scripts/tui.sh` in a checkout (Docker backend), replayed from terminal captures. Settings: ROS domain 77 and the robot namespace moved to `/robot02` (10 topic and 4 frame names follow), saved on `<OK>`. Run: the ideal base on `scenes/osm_tucheng_dp`, spawn `gate`, RTK; the confirm window shows the full `scripts/run_sim.sh` line and the DDS domain warning, then the sim starts and Ctrl-C returns to the menu. Build scene: a 12° synthetic slope, up to its confirm window.*
 
 ```bash
 # 1. Build the Docker image (based on syncai-robot-base, adds mujoco and the livox CustomMsg)
