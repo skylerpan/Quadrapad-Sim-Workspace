@@ -356,6 +356,33 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 | `--no-web` | 不開瀏覽器 viewer（預設開在 8755 埠，見 [4.1](#41-瀏覽器-viewerviser預設開)；等同 `web.enabled=false`） |
 | `key=value ...` | 任何設定檔欄位的覆寫（見第 9 章） |
 
+### 3.0 選單介面（`scripts/tui.sh`）
+不想記指令時用選單操作。它只用 Python 標準函式庫（`curses`），不加任何相依；每個動作在執行前都會顯示實際要跑的指令，所以也可以拿來查指令怎麼寫。
+
+```bash
+scripts/tui.sh                  # checkout：有 quadsim Docker 映像檔就走 Docker，否則走目前的 Python 環境
+pixi run sim tui                # pixi 環境
+./quadsim-<ver>-linux-<arch>.run tui    # 單檔 bundle
+#   --backend docker|native     強制指定執行方式
+#   --profile <name>            指定要載入並持續更新的設定檔（預設 last）
+```
+按鍵：上下鍵移動、Enter 選取、空白鍵勾選、`q` 或 Esc 返回；模擬執行中按 Ctrl-C 停止，再按 Enter 回選單。
+
+| 選單 | 內容 | 實際執行 |
+|---|---|---|
+| Run simulation | 依序選機器人（G23 / ideal，G23 再選 behaviour）、場景（只列建好的；G23 只列 format 3）、出生點（設定檔預設 / 場景預設 / `spawns` 裡的名稱）、功能（GNSS RTK、天空永遠開闊、瀏覽器 viewer、MuJoCo 視窗、真值 TF、PointCloud2、樓梯碰撞設定） | `scripts/run_sim.sh …`，native 時是 `python -m quadsim.launch …` |
+| Run last | 用上次的選擇直接到確認頁 | 同上 |
+| Build scene | 地圖檔（`Maps/` 裡的 `.pcd` / `.bt` / `.ot` 或自己輸入路徑，三種配方：1:1 不壓平、壓平、樓梯配方）、OpenStreetMap（`LAT LON` 或 streets.gl 網址 + 半徑，可選疊在某個掃描場景周圍）、合成斜坡、合成樓梯（既有場景 + `config/stairs_*.yaml`） | `pcd2sim.build_scene`、`pcd2sim.osm_scene`、`scripts/make_slope.py`、`scripts/make_stairs.py` |
+| Settings | ROS domain ID、CycloneDDS 設定檔、機器人 namespace、個別 topic 與 frame 名稱、設定檔的另存 / 載入 / 刪除 / 重設 | 變成環境變數與 `ros.topics.*` / `ros.frames.*` 覆寫，不改 `config/sim.yaml` |
+
+設定存在 `${XDG_CONFIG_HOME:-~/.config}/quadsim/tui/<name>.json`，每次變更自動寫入目前的設定檔。幾個細節：
+- **Namespace**：一次把目前 namespace 底下的 topic、frame 和瀏覽器 viewer 的路徑 topic（`web.path_topic`）改到新的 namespace；只有和 `config/sim.yaml` 不同的名稱才會變成覆寫參數。把某一項改回預設值就是取消那一項。
+- **DDS**：Docker 走 `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG`（只能選 `conf/` 底下的檔案）；native 走 `ROS_DOMAIN_ID` 加 `--dds-config`，另外可以選任意路徑的 XML 或不用設定檔（Cyclone 預設值）。設定檔的 `Domain Id` 和 domain ID 不一致時，確認頁會顯示和啟動器相同的警告。
+- **Docker 只看得到 checkout**：地圖檔要放在 checkout 裡（例如 `Maps/`）；native 可以用任意路徑。
+- **bundle**：不含 `Maps/`，地圖檔請輸入路徑；新場景建在 bundle 的 `app/scenes/` 底下，`--reinstall` 或換版本後要重建。
+- **OSM**：第一次建某個場景名稱時要連網下載，資料存在 `Maps/<場景名>/`，之後重用。
+- 場景名稱、路徑、topic 名稱都不能有空白或引號。
+
 ### 3.1 機器人類型（`robot.type`）
 
 | `robot.type` | 內容 |

@@ -13,6 +13,8 @@ The map enters MuJoCo as a small pool of proxy boxes moved onto the scene boxes 
 **Usage guide** with every command, flag and environment variable, organised by task: [`docs/usage.md`](docs/usage.md) (Traditional Chinese). Design background: [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md) (Traditional Chinese, §12–§13). Navigation goal-loop test record on dp_1008 with the failure analysis: [`docs/archive/nav-goal-loop-test-2026-10-13.md`](docs/archive/nav-goal-loop-test-2026-10-13.md) (Traditional Chinese).
 
 ## Quick start
+Prefer menus to command lines? After step 1 (or inside the pixi env / the `.run` bundle), `scripts/tui.sh` opens a terminal UI: pick a robot, a scene and features and run; build a scene from a map file, OpenStreetMap, a synthetic slope or synthetic stairs; and keep your DDS and topic settings between sessions. It only assembles the commands below and shows each one before running it ([docs/usage.md](docs/usage.md) section 3.0).
+
 ```bash
 # 1. Build the Docker image (based on syncai-robot-base, adds mujoco and the livox CustomMsg)
 docker build -t quadsim:latest docker/
