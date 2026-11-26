@@ -119,6 +119,20 @@ def test_enter_in_an_entry_goes_to_the_next_field():
     assert form.current is on and name.text == "ab"
 
 
+def test_enter_in_the_last_entry_goes_to_the_default_button_not_cancel():
+    last, cancel, ok = tw.Entry("b"), tw.Button("Cancel"), tw.Button("OK")
+    form = tw.Form(FakeUi(), "T", [tw.Entry("a"), last], [cancel, ok])
+    keys(form, 10)
+    assert form.current is last
+    keys(form, 10)
+    assert form.current is ok
+
+
+def test_a_one_question_form_can_submit_on_enter():
+    form = tw.Form(FakeUi(), "T", [tw.Entry("a")], [tw.Button("Cancel"), tw.Button("OK")], enter_submits=True)
+    assert keys(form, "x", 10) == "OK"
+
+
 def test_a_long_entry_scrolls_to_keep_the_cursor_in_view():
     e = tw.Entry("x", "0123456789")
     assert e.view(4) == ("789 ", 3)

@@ -8,7 +8,8 @@ a title in the top edge and a shadow, <Buttons>, Tab to move. Nothing here knows
   message(ui, title, lines, buttons)                   -> the name of the button pressed, None on Esc
 
 Keys: Tab / Down and Shift-Tab / Up move, Left / Right move along the buttons, Enter presses a button, opens a
-<select> or goes to the next field, Space toggles a [ ] box, PgUp / PgDn scroll, Esc cancels.
+<select> or goes on from an entry (to the next field; from the last one to the last button, the default),
+Space toggles a [ ] box, PgUp / PgDn scroll, Esc cancels.
 Colours live in Theme only: 256-colour purple, an 8-colour magenta fallback, and plain reverse / bold without
 colours (or with NO_COLOR set). Standard library only.
 """
@@ -344,8 +345,9 @@ class Form:
     fields counts too), or None on Esc. The form keeps its state: run() again continues where it was."""
 
     def __init__(self, ui, title: str, fields: list[Field], buttons: list[Button], focus: Field | None = None,
-                 hint: str = HINT_FORM):
+                 hint: str = HINT_FORM, enter_submits: bool = False):
         self.ui, self.title, self.fields, self.buttons, self.hint = ui, title, fields, buttons, hint
+        self.enter_submits = enter_submits      # Enter in an entry presses the last button (one-question dialogs)
         self.offset = 0
         self.current = focus or next((f for f in fields if f.focusable and f.shown()), None) or buttons[-1]
 
@@ -390,8 +392,14 @@ class Form:
                     i = self.ui.choose(cur.label, [t for _, t in cur.options], cur.index())
                     if i is not None:
                         cur.set(cur.options[i][0])
-            elif key in ENTER:
-                self.move(1)
+            elif key in ENTER:              # in an entry: on to the next field, or to the default button
+                order = self.order()
+                if self.enter_submits:
+                    return self.buttons[-1].name
+                if order[(order.index(cur) + 1) % len(order)] in self.buttons:
+                    self.current = self.buttons[-1]
+                else:
+                    self.move(1)
         return None
 
     def draw(self) -> None:

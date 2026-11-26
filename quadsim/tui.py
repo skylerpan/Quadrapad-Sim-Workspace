@@ -6,29 +6,28 @@
   options: --backend docker|native    how commands are run (default: docker when the quadsim image exists)
            --profile <name>           the settings profile to start from and keep up to date (default: last)
 
-Keys: Up/Down move, Enter selects, Space toggles, q or Esc goes back. Every action shows the command it is about to
-run; the commands themselves are built in quadsim.tui_plan. Standard library only (curses).
+It looks and works like nmtui: windows with <buttons>, Tab / arrows to move, Enter to select, Space to toggle,
+Esc to go back (quadsim.tui_widgets). Every action shows the command it is about to run; the commands themselves
+are built in quadsim.tui_plan. Standard library only (curses).
 """
 from __future__ import annotations
 
 import argparse
 import copy
 import curses
+import locale
 import os
 import subprocess
 import sys
-import textwrap
 
 from quadsim import tui_plan as tp
+from quadsim.tui_widgets import Button, Checkbox, Entry, Form, Label, Screen, Select, Spacer, listbox, message
 
-ENTER = (curses.KEY_ENTER, 10, 13)
-BACK = (27, ord("q"))
-HINT_MENU = "Up/Down: move   Enter: select   q/Esc: back"
-HINT_CHECK = "Up/Down: move   Space: toggle   Enter: done   q/Esc: back"
-HINT_TEXT = "Enter: accept   Esc: cancel   (empty = default)"
+OTHER = "\0other"           # the "Other file..." row of a <select>
+NO_YAML = "config/sim.yaml could not be read (PyYAML missing?): names cannot be edited"
 
 
-def size_text(n: int) -> str:
+def size_text(n: float) -> str:
     for unit in ("B", "KB", "MB"):
         if n < 1024:
             return f"{n:.0f} {unit}"
@@ -36,121 +35,39 @@ def size_text(n: int) -> str:
     return f"{n:.1f} GB"
 
 
+def short(path: str) -> str:
+    """The path with the home directory written as ~."""
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
+
+
 class Tui:
     def __init__(self, scr, app_dir: str, backend: str, profile: str, directory: str):
         self.scr, self.app, self.backend, self.profile, self.dir = scr, app_dir, backend, profile, directory
-        self.settings, notes = tp.load_profile(profile, directory)
+        self.ui = Screen(scr, f"quadsim   backend: {backend}   profile: {profile}")
+        self.settings, self.notes = tp.load_profile(profile, directory)
         self.topic_defaults, self.frame_defaults, self.spawns = tp.ros_defaults(app_dir)
-        self.note = "; ".join(notes)
-        curses.curs_set(0)
-        scr.keypad(True)
 
-    # ---- drawing -----------------------------------------------------------------------------------------------
+    # ---- small dialogs -----------------------------------------------------------------------------------------
 
-    def put(self, y: int, x: int, text: str, attr=0) -> None:
-        h, w = self.scr.getmaxyx()
-        if 0 <= y < h and x < w - 1:
+    def info(self, title: str, *lines) -> None:
+        message(self.ui, title, list(lines))
+
+    def error(self, e: Exception) -> None:
+        message(self.ui, "Cannot do that", [(str(e) or "not a valid value", "warn")])
+
+    def ask(self, title: str, label: str, default: str = "", info: list | None = None, check=None):
+        """One value in a small form. Returns check(text) (the text without a check), None on Cancel."""
+        entry = Entry(label, default, width=44)
+        form = Form(self.ui, title, [*(Label(t) for t in info or []), *([Spacer()] if info else []), entry],
+                    [Button("Cancel"), Button("OK")], enter_submits=True)
+        while form.run() == "OK":
             try:
-                self.scr.addstr(y, x, text[:w - 1 - x], attr)
-            except curses.error:
-                pass
-
-    def frame(self, title: str, hint: str) -> int:
-        """Draw the header and footer; return the first free row."""
-        self.scr.erase()
-        h, _ = self.scr.getmaxyx()
-        self.put(0, 1, f"quadsim   backend: {self.backend}   profile: {self.profile}", curses.A_DIM)
-        self.put(1, 1, title, curses.A_BOLD)
-        if self.note:
-            self.put(h - 2, 1, self.note, curses.A_BOLD)
-        self.put(h - 1, 1, hint, curses.A_DIM)
-        return 3
-
-    def lines(self, y: int, text: list[str]) -> int:
-        _, w = self.scr.getmaxyx()
-        for line in text:
-            for part in textwrap.wrap(line, max(20, w - 4), subsequent_indent="    ") or [""]:
-                self.put(y, 2, part)
-                y += 1
-        return y
-
-    def key(self) -> int:
-        k = self.scr.getch()
-        if k != curses.KEY_RESIZE:
-            self.note = ""
-        return k
-
-    # ---- widgets -----------------------------------------------------------------------------------------------
-
-    def menu(self, title: str, items: list[str], index: int = 0, info: list[str] | None = None,
-             marks: set[int] | None = None, hint: str = HINT_MENU) -> int | None:
-        """Pick one row (marks is None), or toggle rows with Space (marks: the set of chosen rows, edited in place)."""
-        index = min(max(index, 0), len(items) - 1)
-        top = 0
-        while True:
-            y0 = self.lines(self.frame(title, hint), info or [])
-            y0 += 1 if info else 0
-            h, _ = self.scr.getmaxyx()
-            rows = max(1, h - y0 - 3)
-            top = min(max(top, index - rows + 1), index)
-            for i, item in enumerate(items[top:top + rows], start=top):
-                box = "" if marks is None else ("[x] " if i in marks else "[ ] ")
-                self.put(y0 + i - top, 2, f"{'>' if i == index else ' '} {box}{item}",
-                         curses.A_REVERSE if i == index else 0)
-            if top + rows < len(items):
-                self.put(y0 + rows, 4, f"... {len(items) - top - rows} more", curses.A_DIM)
-            k = self.key()
-            if k in (curses.KEY_UP, ord("k")):
-                index = (index - 1) % len(items)
-            elif k in (curses.KEY_DOWN, ord("j")):
-                index = (index + 1) % len(items)
-            elif k == ord(" ") and marks is not None:
-                marks.symmetric_difference_update({index})
-            elif k in ENTER:
-                return index
-            elif k in BACK:
-                return None
-
-    def ask(self, title: str, label: str, default: str = "", info: list[str] | None = None) -> str | None:
-        """One line of text; None on Esc. An empty answer is the default."""
-        text = ""
-        curses.curs_set(1)
-        try:
-            while True:
-                y = self.lines(self.frame(title, HINT_TEXT), info or [])
-                y += 1 if info else 0
-                prompt = f"{label}{f' [{default}]' if default else ''}: "
-                self.put(y, 2, prompt + text)
-                _, w = self.scr.getmaxyx()
-                self.scr.move(y, min(w - 2, 2 + len(prompt) + len(text)))
-                k = self.key()
-                if k in ENTER:
-                    return text.strip() or default
-                if k == 27:
-                    return None
-                if k in (curses.KEY_BACKSPACE, 127, 8):
-                    text = text[:-1]
-                elif 32 <= k < 127:
-                    text += chr(k)
-        finally:
-            curses.curs_set(0)
-
-    def ask_checked(self, title: str, label: str, default: str, check, info: list[str] | None = None):
-        """ask() until check(text) stops raising PlanError / ValueError; returns check's result, None on Esc."""
-        while True:
-            text = self.ask(title, label, default, info)
-            if text is None:
-                return None
-            try:
-                return check(text)
+                return check(entry.value) if check else entry.value
             except (tp.PlanError, ValueError) as e:
-                self.note = str(e) or "not a valid value"
-
-    def confirm(self, title: str, info: list[str], yes: str = "Start", extra: list[str] | None = None) -> int | None:
-        """0 = yes, 1.. = the extra rows, None = cancel."""
-        items = [yes, *(extra or []), "Cancel"]
-        i = self.menu(title, items, info=info)
-        return None if i is None or i == len(items) - 1 else i
+                self.error(e)
+                form.current = entry
+        return None
 
     # ---- running commands --------------------------------------------------------------------------------------
 
@@ -172,7 +89,8 @@ class Tui:
                 except KeyboardInterrupt:       # Ctrl-C reaches the child too: wait for it to finish stopping
                     continue
         try:
-            input(f"\n[exit code {rc}] press Enter to return to the menu ")
+            print(f"\n[exit code {rc}] press Enter to return to the menu ", end="", flush=True)
+            input()             # the prompt is printed here: input() would send it to stderr when that is redirected
         except (EOFError, KeyboardInterrupt):
             pass
         curses.reset_prog_mode()
@@ -183,22 +101,25 @@ class Tui:
         try:
             tp.save_profile(self.profile, self.settings, self.dir)
         except OSError as e:
-            self.note = f"settings not saved: {e}"
+            self.error(tp.PlanError(f"settings not saved: {e}"))
 
     # ---- main --------------------------------------------------------------------------------------------------
 
     def main(self) -> None:
+        if self.notes:
+            self.info("Settings", *self.notes)
         i = 0
         while True:
             run = self.settings["run"]
             last = f"Run last  ({run['robot']}, {run['scene']})" if run.get("scene") else "Run last  (nothing yet)"
-            i = self.menu("Main menu", ["Run simulation", last, "Build scene", "Settings", "Quit"], i or 0)
+            i = listbox(self.ui, "quadsim", ["Run simulation", last, "Build scene", "Settings", "Quit"], i or 0,
+                        buttons=("Quit", "OK"))
             if i in (None, 4):
                 return
             try:
-                (self.run_wizard, self.run_last, self.build_menu, self.settings_menu)[i]()
+                (self.run_form, self.run_last, self.build_menu, self.settings_form)[i]()
             except tp.PlanError as e:
-                self.note = str(e)
+                self.error(e)
 
     # ---- run ---------------------------------------------------------------------------------------------------
 
@@ -207,210 +128,219 @@ class Tui:
             raise tp.PlanError("nothing has been run yet: use Run simulation")
         self.run_confirm()
 
-    def run_wizard(self) -> None:
-        run = copy.deepcopy(self.settings["run"])
-        keys = [k for k, _ in tp.ROBOTS]
-        i = self.menu("Run 1/4: robot", [label for _, label in tp.ROBOTS], keys.index(run["robot"]))
-        if i is None:
-            return
-        run["robot"] = keys[i]
-        if run["robot"] == "g23":
-            keys = [k for k, _ in tp.BEHAVIORS]
-            i = self.menu("Run 1/4: G23 behaviour", [label for _, label in tp.BEHAVIORS], keys.index(run["behavior"]))
-            if i is None:
-                return
-            run["behavior"] = keys[i]
+    def run_form(self) -> None:
+        run = self.settings["run"]
+        scenes = tp.scan_scenes(self.app)
+        by_path = {s.path: s for s in scenes}
 
-        scenes = [s for s in tp.scan_scenes(self.app) if tp.runs_robot(s, run["robot"])]
-        if not scenes:
-            raise tp.PlanError("no built scene for this robot under scenes/: use Build scene first")
-        paths = [s.path for s in scenes]
-        i = self.menu("Run 2/4: scene", [s.name + s.tags() for s in scenes],
-                      paths.index(run["scene"]) if run["scene"] in paths else 0)
-        if i is None:
-            return
-        scene = scenes[i]
-        if scene.path != run["scene"]:              # a new scene: start from what suits it
-            run["spawn"] = tp.default_spawn(scene)
-            feats = set(run["features"]) - {"stairs_pool"} | ({"stairs_pool"} if scene.stairs else set())
-            run["features"] = [k for k, _, _ in tp.FEATURES if k in feats]
-        run["scene"] = scene.path
+        def scene_options(robot_key):
+            return [(s.path, s.name + s.tags()) for s in scenes if tp.runs_robot(s, robot_key)]
 
-        keys = [tp.SPAWN_CONFIG, tp.SPAWN_SCENE, *self.spawns]
-        labels = ["Config default (spawn in config/sim.yaml)", "Scene default (spawn in the scene's meta.json)",
-                  *(f"{name}  (named spawn, config/sim.yaml)" for name in self.spawns)]
-        i = self.menu("Run 3/4: spawn", labels, keys.index(run["spawn"]) if run["spawn"] in keys else 0)
-        if i is None:
-            return
-        run["spawn"] = keys[i]
+        robot = Select("Robot", list(tp.ROBOTS), run["robot"])
+        behavior = Select("Behaviour", list(tp.BEHAVIORS), run["behavior"])
+        behavior.visible = lambda: robot.key == "g23"
+        scene = Select("Scene", scene_options(robot.key), run["scene"])
+        spawn = Select("Spawn", [(tp.SPAWN_CONFIG, "Config default (config/sim.yaml)"),
+                                 (tp.SPAWN_SCENE, "Scene default (the scene's meta.json)"),
+                                 *((n, f"{n} (named spawn)") for n in self.spawns)], run["spawn"])
+        color = Select("Map colour", [(c, c) for c in tp.MAP_COLORS], run["map_color"])
+        checks = {k: Checkbox(label, k in run["features"]) for k, label, _ in tp.FEATURES}
 
-        keys = [k for k, _, _ in tp.FEATURES]
-        marks = {keys.index(k) for k in run["features"]}
-        if self.menu("Run 4/4: features", [label for _, label, _ in tp.FEATURES], marks=marks,
-                     hint=HINT_CHECK) is None:
-            return
-        run["features"] = [k for n, k in enumerate(keys) if n in marks]
-        self.settings["run"] = run
-        self.autosave()
-        self.run_confirm()
+        def scene_changed(_=None):                  # a new scene: start from what suits it
+            s = by_path.get(scene.key)
+            if s:
+                spawn.set(tp.default_spawn(s))
+                checks["stairs_pool"].checked = s.stairs
 
-    def run_confirm(self) -> None:
-        while True:
-            run, dds = self.settings["run"], self.settings["dds"]
-            cmd = tp.sim_command(self.settings, self.backend)
-            names = len(self.settings["topics"]) + len(self.settings["frames"])
-            info = [f"Robot     {run['robot']}" + (f" ({run['behavior']})" if run["robot"] == "g23" else ""),
-                    f"Scene     {run['scene']}",
-                    f"Spawn     {run['spawn']}",
-                    f"Features  {', '.join(run['features']) or '-'}",
-                    f"DDS       domain {dds['domain_id']}, config {dds['config']}",
-                    f"Names     {names} topic / frame name(s) changed (Settings)" if names else
-                    "Names     topics and frames as in config/sim.yaml",
-                    *(f"WARNING   {w}" for w in tp.dds_warnings(self.settings, self.app)),
-                    "", f"$ {cmd.shown()}", "", "Stop the sim with Ctrl-C."]
-            i = self.confirm("Run: confirm", info, extra=[f"Map colour: {run['map_color']}  (Enter changes)"])
-            if i is None:
-                return
-            if i == 1:
-                run["map_color"] = tp.MAP_COLORS[(tp.MAP_COLORS.index(run["map_color"]) + 1) % len(tp.MAP_COLORS)]
-                self.autosave()
+        scene.on_change = scene_changed
+        robot.on_change = lambda _: scene.set_options(scene_options(robot.key))
+        if scene.key != run["scene"]:
+            scene_changed()
+        form = Form(self.ui, "Run simulation", [robot, behavior, scene, spawn, color, Spacer(), *checks.values()],
+                    [Button("Cancel"), Button("Start")])
+        while form.run() == "Start":
+            if scene.key is None:
+                self.error(tp.PlanError("no built scene for this robot under scenes/: use Build scene first"))
                 continue
-            self.execute(cmd)
-            return
+            self.settings["run"] = {"robot": robot.key, "behavior": behavior.key, "scene": scene.key,
+                                    "spawn": spawn.key, "map_color": color.key,
+                                    "features": [k for k, c in checks.items() if c.checked]}
+            self.autosave()
+            try:
+                if self.run_confirm():
+                    return
+            except tp.PlanError as e:
+                self.error(e)
+
+    def run_confirm(self) -> bool:
+        """Show what will run; True when it ran, False on <Back>."""
+        run, dds = self.settings["run"], self.settings["dds"]
+        cmd = tp.sim_command(self.settings, self.backend)
+        names = len(self.settings["topics"]) + len(self.settings["frames"])
+        lines = [f"Robot     {run['robot']}" + (f" ({run['behavior']})" if run["robot"] == "g23" else ""),
+                 f"Scene     {run['scene']}",
+                 f"Spawn     {run['spawn']}",
+                 f"Features  {', '.join(run['features']) or '-'}   map colour {run['map_color']}",
+                 f"DDS       domain {dds['domain_id']}, config {dds['config']}",
+                 f"Names     {names} topic / frame name(s) changed (Settings)" if names else
+                 "Names     topics and frames as in config/sim.yaml",
+                 *((f"WARNING   {w}", "warn") for w in tp.dds_warnings(self.settings, self.app)),
+                 "", (f"$ {cmd.shown()}", "dim"), "", "Stop the sim with Ctrl-C."]
+        if message(self.ui, "Run simulation", lines, ("Back", "Run")) != "Run":
+            return False
+        self.execute(cmd)
+        return True
 
     # ---- settings ----------------------------------------------------------------------------------------------
 
-    def settings_menu(self) -> None:
-        i = 0
-        while True:
-            s = self.settings
-            ns = tp.namespace(tp.effective(self.topic_defaults, s["topics"]))
-            i = self.menu("Settings (saved as you change them)", [
-                f"ROS domain ID        {s['dds']['domain_id']}",
-                f"DDS config           {s['dds']['config']}",
-                f"Robot namespace      /{ns}" if ns else "Robot namespace      (none)",
-                f"Topics               {len(s['topics'])} changed",
-                f"Frames               {len(s['frames'])} changed",
-                "Profiles             save / load / delete / reset",
-                "Back"], i or 0, info=[f"File: {tp.profile_path(self.profile, self.dir)}"])
-            if i in (None, 6):
-                return
-            try:
-                (self.set_domain, self.set_dds_config, self.set_namespace,
-                 lambda: self.edit_names("Topics", "topics", self.topic_defaults),
-                 lambda: self.edit_names("Frames", "frames", self.frame_defaults), self.profiles_menu)[i]()
-            except tp.PlanError as e:
-                self.note = str(e)
-            self.autosave()
-
-    def set_domain(self) -> None:
-        def check(text):
-            if not text.isdigit() or int(text) > 232:
-                raise tp.PlanError("ROS domain ID: a number from 0 to 232")
-            return int(text)
-        v = self.ask_checked("Settings: ROS domain ID", "ROS_DOMAIN_ID", str(self.settings["dds"]["domain_id"]), check,
-                             ["Every ROS 2 program that should talk to the sim needs the same number."])
-        if v is not None:
-            self.settings["dds"]["domain_id"] = v
-
-    def set_dds_config(self) -> None:
+    def settings_form(self) -> None:
+        """Edit a copy; <OK> makes it the settings and saves the profile, <Cancel> drops the changes."""
+        draft = copy.deepcopy(self.settings)
+        have_names = bool(self.topic_defaults)
         files = tp.dds_configs(self.app)
-        native = self.backend == "native"
-        items = [f"conf/{f}" for f in files]
-        if native:
-            items += ["Cyclone defaults (no config file: multicast on every interface)", "Other file..."]
-        info = ["The CycloneDDS XML the sim starts with."]
-        if not native:
-            info.append("The Docker backend takes files under conf/ only: copy yours there.")
-        cur = self.settings["dds"]["config"]
-        i = self.menu("Settings: DDS config", items, files.index(cur) if cur in files else 0, info=info)
-        if i is None:
-            return
-        if i < len(files):
-            self.settings["dds"]["config"] = files[i]
-        elif i == len(files):
-            self.settings["dds"]["config"] = "none"
-        else:
+
+        def current_ns():
+            return tp.namespace(tp.effective(self.topic_defaults, draft["topics"]))
+
+        def dds_options():
+            opts = [(f, f"conf/{f}") for f in files]
+            if self.backend == "native":
+                opts += [("none", "Cyclone defaults (no file)"), (OTHER, "Other file...")]
+            if draft["dds"]["config"] not in dict(opts):
+                opts.insert(0, (draft["dds"]["config"], draft["dds"]["config"]))
+            return opts
+
+        def dds_changed(sel):
+            if sel.key != OTHER:
+                draft["dds"]["config"] = sel.key
+                return
             def check(text):
                 path = os.path.abspath(os.path.expanduser(text))
                 if not os.path.isfile(path):
                     raise tp.PlanError(f"no such file: {path}")
                 return tp.check_path(path, "DDS config")
-            v = self.ask_checked("Settings: DDS config", "XML file", "", check)
-            if v is not None:
-                self.settings["dds"]["config"] = v
+            path = self.ask("DDS config", "XML file", "", check=check)
+            if path:
+                draft["dds"]["config"] = path
+            sel.options = dds_options()
+            sel.key = draft["dds"]["config"]
 
-    def set_namespace(self) -> None:
-        if not self.topic_defaults:
-            raise tp.PlanError("config/sim.yaml could not be read (PyYAML missing?): names cannot be edited")
-        ns = tp.namespace(tp.effective(self.topic_defaults, self.settings["topics"]))
-        v = self.ask("Settings: robot namespace", "Namespace", ns,
-                     [f"Renames every /{ns}/... topic and {ns}/... frame in one go."])
-        if v is not None and v.strip("/") != ns:
-            tp.rename_namespace(self.settings, self.topic_defaults, self.frame_defaults, v)
+        domain = Entry("ROS domain ID", str(draft["dds"]["domain_id"]), width=6)
+        dds = Select("DDS config", dds_options(), draft["dds"]["config"], on_change=dds_changed)
+        ns = Entry("Robot namespace", current_ns(), width=20)
+        counts = Label("", "dim")
+        fields = [domain, dds, *([ns] if have_names else [Label(NO_YAML, "dim")]), Spacer(), counts,
+                  *([Button("topics", "Topics..."), Button("frames", "Frames...")] if have_names else []),
+                  Button("profiles", "Profiles..."), Spacer(),
+                  Label("Saved on <OK> to", "dim"),
+                  Label("  " + short(tp.profile_path(self.profile, self.dir)), "dim")]
+        if self.backend == "docker":
+            fields.insert(2, Label("  (the Docker backend takes files under conf/ only)", "dim"))
+        form = Form(self.ui, "Settings", fields, [Button("Cancel"), Button("OK")])
 
-    def edit_names(self, title: str, section: str, defaults: dict[str, str]) -> None:
-        if not defaults:
-            raise tp.PlanError("config/sim.yaml could not be read (PyYAML missing?): names cannot be edited")
-        keys, i = list(defaults), 0
-        width = max(map(len, keys))
+        def collect():
+            """The entries -> draft; raises PlanError on a bad value."""
+            if not domain.value.isdigit() or int(domain.value) > 232:
+                form.current = domain
+                raise tp.PlanError("ROS domain ID: a number from 0 to 232")
+            draft["dds"]["domain_id"] = int(domain.value)
+            if have_names and ns.value.strip("/") != current_ns():
+                try:
+                    tp.rename_namespace(draft, self.topic_defaults, self.frame_defaults, ns.value)
+                except tp.PlanError:
+                    form.current = ns
+                    raise
+
+        def refresh():
+            domain.set(str(draft["dds"]["domain_id"]))
+            dds.options = dds_options()
+            dds.key = draft["dds"]["config"]
+            ns.set(current_ns())
+
         while True:
-            changed = self.settings[section]
-            now = tp.effective(defaults, changed)
-            rows = [f"{k:<{width}}  {now[k]}{'   *' if k in changed else ''}" for k in keys]
-            i = self.menu(f"Settings: {title}  (* = changed)", [*rows, "Reset all to config/sim.yaml", "Back"], i or 0)
-            if i is None or i == len(keys) + 1:
+            counts.text = f"{len(draft['topics'])} topic and {len(draft['frames'])} frame name(s) changed"
+            pressed = form.run()
+            if pressed in (None, "Cancel"):
                 return
-            if i == len(keys):
-                changed.clear()
-            else:
-                k = keys[i]
-                v = self.ask(f"Settings: {title}", k, now[k], [f"config/sim.yaml: {defaults[k]}",
-                                                               "Type the default to undo a change."])
-                if v is not None:
-                    try:
-                        tp.set_name(changed, defaults, k, v)
-                    except tp.PlanError as e:
-                        self.note = str(e)
-            self.autosave()
+            try:
+                collect()
+                if pressed == "OK":
+                    self.settings = draft
+                    self.autosave()
+                    return
+                if pressed == "topics":
+                    self.edit_names("Topics", draft["topics"], self.topic_defaults)
+                elif pressed == "frames":
+                    self.edit_names("Frames", draft["frames"], self.frame_defaults)
+                elif pressed == "profiles":
+                    self.profiles_menu(draft)
+                refresh()
+            except tp.PlanError as e:
+                self.error(e)
 
-    def profiles_menu(self) -> None:
-        i = self.menu("Settings: profiles", ["Save as...", "Load...", "Delete...", "Reset to defaults", "Back"],
-                      info=[f"Directory: {self.dir}", f"Current: {self.profile} (kept up to date automatically)"])
-        if i in (None, 4):
+    def edit_names(self, title: str, changed: dict[str, str], defaults: dict[str, str]) -> None:
+        """One entry per name; <OK> writes the ones that differ from config/sim.yaml into `changed`."""
+        entries = {k: Entry(k, v, width=44) for k, v in tp.effective(defaults, changed).items()}
+        form = Form(self.ui, title, [Label("Empty or the config/sim.yaml value = not changed.", "dim"), Spacer(),
+                                     *entries.values()], [Button("reset", "Reset all"), Button("Cancel"), Button("OK")])
+        while True:
+            pressed = form.run()
+            if pressed in (None, "Cancel"):
+                return
+            if pressed == "reset":
+                for k, e in entries.items():
+                    e.set(defaults[k])
+                continue
+            new = {}
+            try:
+                for k, e in entries.items():
+                    form.current = e
+                    tp.set_name(new, defaults, k, e.value)
+            except tp.PlanError as e:
+                self.error(e)
+                continue
+            changed.clear()
+            changed.update(new)
+            return
+
+    def profiles_menu(self, draft: dict) -> None:
+        i = listbox(self.ui, "Profiles", ["Save as...", "Load...", "Delete...", "Reset to defaults"],
+                    info=[f"Directory: {short(self.dir)}", f"Current profile: {self.profile}"])
+        if i is None:
             return
         if i == 0:
-            name = self.ask_checked("Profiles: save as", "Name", "", lambda t: tp.check_name(t, "profile name"))
+            name = self.ask("Save profile as", "Name", check=lambda t: tp.check_name(t, "profile name"))
             if name:
-                tp.save_profile(name, self.settings, self.dir)
-                self.note = f"saved {tp.profile_path(name, self.dir)}"
+                self.info("Profiles", f"Saved {short(tp.save_profile(name, draft, self.dir))}")
         elif i == 3:
-            self.settings = tp.default_settings()
-            self.note = "settings reset to the defaults"
+            draft.clear()
+            draft.update(tp.default_settings())
         else:
             names = [n for n in tp.list_profiles(self.dir) if n != self.profile]
             if not names:
                 raise tp.PlanError("no other saved profile yet: use Save as...")
-            n = self.menu("Profiles: " + ("load" if i == 1 else "delete"), names)
+            n = listbox(self.ui, "Load profile" if i == 1 else "Delete profile", names)
             if n is None:
                 return
             if i == 1:
-                self.settings, notes = tp.load_profile(names[n], self.dir)
-                self.note = "; ".join(notes) or f"loaded {names[n]}"
-            else:
+                loaded, notes = tp.load_profile(names[n], self.dir)
+                draft.clear()
+                draft.update(loaded)
+                self.info("Profiles", f"Loaded {names[n]}: press <OK> in Settings to keep it.", *notes)
+            elif message(self.ui, "Delete profile", [f"Delete {names[n]}?"], ("No", "Yes")) == "Yes":
                 tp.delete_profile(names[n], self.dir)
-                self.note = f"deleted {names[n]}"
 
     # ---- build -------------------------------------------------------------------------------------------------
 
     def build_menu(self) -> None:
-        i = self.menu("Build scene", ["From a map file (.pcd / .bt / .ot)", "From OpenStreetMap (streets and buildings)",
-                                      "Synthetic slope", "Synthetic stairs on an existing scene", "Back"],
-                      info=[f"New scenes go to {os.path.join(self.app, 'scenes')}"])
-        if i in (None, 4):
+        i = listbox(self.ui, "Build scene", ["From a map file (.pcd / .bt / .ot)",
+                                             "From OpenStreetMap (streets and buildings)", "Synthetic slope",
+                                             "Synthetic stairs on an existing scene"],
+                    info=[f"New scenes go to {short(os.path.join(self.app, 'scenes'))}"])
+        if i is None:
             return
         made = (self.build_map, self.build_osm, self.build_slope, self.build_stairs)[i]()
-        if made and self.confirm("Build: done", [f"{made} is ready."], yes="Run it now") == 0:
+        if made and message(self.ui, "Build scene", [f"{made} is ready.", "", "Run it now?"], ("No", "Yes")) == "Yes":
             self.run_new(made)
 
     def run_new(self, path: str) -> None:
@@ -426,96 +356,115 @@ class Tui:
         self.autosave()
         self.run_confirm()
 
-    def ask_name(self, title: str, default: str = "") -> str | None:
-        return self.ask_checked(title, "New scene name", default, tp.check_name,
-                                ["Letters, digits, _ and -. The scene is written to scenes/<name>."])
+    def build_form(self, title: str, fields: list, plan) -> str | None:
+        """Show the form until plan() gives (command, name, info lines) and the user builds, or cancels.
+        Returns the new scene's path when the build succeeded."""
+        form = Form(self.ui, title, fields, [Button("Cancel"), Button("Build")])
+        while form.run() == "Build":
+            try:
+                cmd, name, lines = plan()
+                out = tp.scene_out(name)
+            except (tp.PlanError, ValueError) as e:
+                self.error(e)
+                continue
+            full = os.path.join(self.app, out)
+            lines = [*lines, f"Output    {short(full)}",
+                     *([("This scene already exists and will be OVERWRITTEN.", "warn")] if os.path.exists(full) else []),
+                     "", (f"$ {cmd.shown()}", "dim")]
+            if message(self.ui, title, lines, ("Back", "Build")) == "Build":
+                return out if self.execute(cmd) == 0 else None
+        return None
 
-    def run_build(self, title: str, cmd: tp.Command, name: str, info: list[str]) -> str | None:
-        out = tp.scene_out(name)
-        full = os.path.join(self.app, out)
-        info = [*info, f"Output    {full}",
-                *(["", "This scene already exists and will be OVERWRITTEN."] if os.path.exists(full) else []),
-                "", f"$ {cmd.shown()}"]
-        if self.confirm(title, info, yes="Build") != 0:
-            return None
-        return out if self.execute(cmd) == 0 else None
+    def name_entry(self, default: str = "") -> Entry:
+        return Entry("New scene name", default, width=30)
 
     def build_map(self) -> str | None:
-        title = "Build from a map file"
         maps = tp.list_maps(self.app)
-        i = self.menu(title + ": map", [*(f"{p}  ({size_text(n)})" for p, n in maps), "Other file..."],
-                      info=None if maps else ["No map files under Maps/: give a path."])
-        if i is None:
-            return None
-        if i < len(maps):
-            path = tp.map_path(maps[i][0], self.app, self.backend)
-        else:
-            path = self.ask_checked(title, "Map file", "", lambda t: tp.map_path(t, self.app, self.backend))
-            if path is None:
-                return None
-        keys = [k for k, _ in tp.RECIPES]
-        r = self.menu(title + ": recipe", [label for _, label in tp.RECIPES],
-                      info=["1:1 keeps the scan as it is (the default scenes are built this way).",
-                            "Flattened replaces the floor with clean slabs; the stairs recipe keeps steps sharp."])
-        if r is None:
-            return None
-        name = self.ask_name(title, os.path.splitext(os.path.basename(path))[0].replace(".", "_"))
-        if name is None:
-            return None
-        cmd = tp.build_map_command(path, name, keys[r], self.backend)
-        return self.run_build(title, cmd, name, [f"Map       {path}", f"Recipe    {tp.RECIPES[r][1]}",
-                                                 "A large point cloud takes from seconds to a few minutes."])
+        auto = lambda path: os.path.splitext(os.path.basename(path))[0].replace(".", "_") if path else ""  # noqa: E731
+        options = [*((p, f"{p}  ({size_text(n)})") for p, n in maps), (OTHER, "Other file...")]
+        chosen = {"path": maps[0][0] if maps else ""}
+
+        def map_changed(sel):
+            old = chosen["path"]
+            if sel.key == OTHER:
+                path = self.ask("Map file", "Path", check=lambda t: tp.map_path(t, self.app, self.backend),
+                                info=["A .pcd, .bt or .ot file." + ("" if self.backend == "native" else
+                                                                    " With Docker it must be inside the checkout.")])
+                if path and path not in dict(sel.options):
+                    sel.options.insert(0, (path, path))
+                sel.key = path or old or OTHER
+            chosen["path"] = "" if sel.key == OTHER else sel.key
+            if name.value == auto(old):
+                name.set(auto(chosen["path"]))
+
+        source = Select("Map", options, chosen["path"] or OTHER, on_change=map_changed)
+        recipe = Select("Recipe", list(tp.RECIPES))
+        name = self.name_entry(auto(chosen["path"]))
+
+        def plan():
+            if not chosen["path"]:
+                raise tp.PlanError("pick a map file first")
+            path = tp.map_path(chosen["path"], self.app, self.backend)
+            return (tp.build_map_command(path, name.value, recipe.key, self.backend), name.value,
+                    [f"Map       {path}", f"Recipe    {recipe.text()}",
+                     "A large point cloud takes from seconds to a few minutes."])
+
+        return self.build_form("Build from a map file", [
+            source, recipe, name, Spacer(),
+            Label("1:1 keeps the scan as it is (the default scenes are built this way).", "dim"),
+            Label("Flattened replaces the floor with clean slabs; the stairs recipe keeps steps sharp.", "dim")], plan)
 
     def build_osm(self) -> str | None:
-        title = "Build from OpenStreetMap"
-        loc = self.ask_checked(title, "Centre", "", lambda t: (tp.parse_location(t), t)[1],
-                               ["'LAT LON' (e.g. 24.95919 121.41896) or a streets.gl URL of the place."])
-        if loc is None:
-            return None
-        radius = self.ask_checked(title, "Half side of the square (m)", "1000", float)
-        if radius is None:
-            return None
         scans = [s for s in tp.scan_scenes(self.app) if not s.geo]
-        b = self.menu(title + ": around a scan?", ["Stand-alone (OSM only)", *(f"Around {s.name}" for s in scans)],
-                      info=["Around a scan: the scanned scene stays where it is and OSM fills the area around it."])
-        if b is None:
-            return None
-        base = scans[b - 1].path if b else None
-        name = self.ask_name(title)
-        if name is None:
-            return None
-        cmd = tp.build_osm_command(loc, radius, name, base, self.backend)
-        return self.run_build(title, cmd, name, [f"Centre    {loc}", f"Radius    {radius:g} m", f"Base      {base or '-'}",
-                                                 f"The first build downloads OSM data (needs a network) into "
-                                                 f"Maps/{name}/; later builds reuse it."])
+        centre, radius = Entry("Centre", "", width=44), Entry("Half side (m)", "1000", width=8)
+        base = Select("Around a scan", [("", "No: OSM only"), *((s.path, s.name) for s in scans)])
+        name = self.name_entry()
+
+        def plan():
+            return (tp.build_osm_command(centre.value, float(radius.value), name.value, base.key or None, self.backend),
+                    name.value, [f"Centre    {centre.value}", f"Radius    {float(radius.value):g} m",
+                                 f"Base      {base.key or '-'}",
+                                 f"The first build downloads OSM data (needs a network) into Maps/{name.value}/; "
+                                 "later builds reuse it."])
+
+        return self.build_form("Build from OpenStreetMap", [
+            centre, radius, base, name, Spacer(),
+            Label("Centre: 'LAT LON' (24.95919 121.41896) or a streets.gl URL of the place.", "dim"),
+            Label("Around a scan: that scene stays where it is, OSM fills the area around it.", "dim")], plan)
 
     def build_slope(self) -> str | None:
-        title = "Build a synthetic slope"
-        angle = self.ask_checked(title, "Incline angle (deg)", "10", float)
-        if angle is None:
-            return None
-        name = self.ask_name(title, f"slope_{angle:g}".replace(".", "_"))
-        if name is None:
-            return None
-        return self.run_build(title, tp.build_slope_command(angle, name, self.backend), name, [f"Angle     {angle:g} deg"])
+        angle, name = Entry("Incline angle (deg)", "10", width=8), self.name_entry("slope_10")
+
+        def plan():
+            return (tp.build_slope_command(float(angle.value), name.value, self.backend), name.value,
+                    [f"Angle     {float(angle.value):g} deg"])
+
+        return self.build_form("Build a synthetic slope", [angle, name], plan)
 
     def build_stairs(self) -> str | None:
-        title = "Build synthetic stairs"
         scenes, specs = tp.scan_scenes(self.app), tp.list_stair_specs(self.app)
         if not scenes or not specs:
             raise tp.PlanError("needs a built scene and a config/stairs_*.yaml spec written for it")
-        s = self.menu(title + ": base scene", [x.name + x.tags() for x in scenes],
-                      info=["The scanned staircases listed in the spec are replaced with clean steps."])
-        if s is None:
-            return None
-        p = self.menu(title + ": spec", specs, info=["The spec must have been written for this scene's map."])
-        if p is None:
-            return None
-        name = self.ask_name(title, scenes[s].name + "_s16")
-        if name is None:
-            return None
-        cmd = tp.build_stairs_command(scenes[s].path, specs[p], name, self.backend)
-        return self.run_build(title, cmd, name, [f"Base      {scenes[s].path}", f"Spec      {specs[p]}"])
+        base = Select("Base scene", [(s.path, s.name + s.tags()) for s in scenes])
+        spec = Select("Spec", [(p, p) for p in specs])
+        name = self.name_entry(os.path.basename(base.key) + "_s16")
+        auto = {"name": name.value}
+
+        def base_changed(sel):
+            if name.value == auto["name"]:
+                auto["name"] = os.path.basename(sel.key) + "_s16"
+                name.set(auto["name"])
+
+        base.on_change = base_changed
+
+        def plan():
+            return (tp.build_stairs_command(base.key, spec.key, name.value, self.backend), name.value,
+                    [f"Base      {base.key}", f"Spec      {spec.key}"])
+
+        return self.build_form("Build synthetic stairs", [
+            base, spec, name, Spacer(),
+            Label("The scanned staircases listed in the spec are replaced with clean steps.", "dim"),
+            Label("The spec must have been written for this scene's map.", "dim")], plan)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -533,6 +482,10 @@ def main(argv: list[str] | None = None) -> None:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         sys.exit("[quadsim tui] needs a terminal")
     os.environ.setdefault("ESCDELAY", "25")
+    # Borders: in a UTF-8 locale have ncurses send real box-drawing characters; the VT100 alternate character set
+    # it would use for TERM=xterm and the like comes out as "lqqqk" on terminals that ignore it in UTF-8 mode.
+    locale.setlocale(locale.LC_ALL, "")
+    os.environ.setdefault("NCURSES_NO_UTF8_ACS", "1")
     os.chdir(app)
     try:
         curses.wrapper(lambda scr: Tui(scr, app, backend, a.profile, tp.profile_dir()).main())
