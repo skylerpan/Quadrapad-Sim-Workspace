@@ -2,6 +2,7 @@
 
   quadsim [--dds-config <xml>|none] [sim_node args...]   the sim, args as scripts/run_sim.sh
   quadsim [--dds-config ...] shell [cmd...]              a shell (or cmd) with the same ROS / DDS environment
+  quadsim tui [--profile <name>]                         the menu front end (quadsim.tui); it keeps its own DDS settings
 
 Run from the app directory (the bundle's app/ or the checkout): conf/ and the relative scene paths resolve there.
 The DDS rules live in quadsim.dds_config; the G23 controller repo defaults to the bundled copy (controller/mc next to
@@ -37,8 +38,13 @@ def controller_repo(app_dir: str) -> str:
 
 def main(argv: list[str] | None = None) -> None:
     app = os.getcwd()
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["tui"]:             # before the DDS rules: the TUI passes its saved choice with every command
+        cmd = [sys.executable, "-m", "quadsim.tui", "--backend", "native", *argv[1:]]
+        os.execvpe(cmd[0], cmd, dict(os.environ))
+        return
     try:
-        choice, rest = resolve(sys.argv[1:] if argv is None else argv, dict(os.environ), os.path.join(app, "conf"))
+        choice, rest = resolve(argv, dict(os.environ), os.path.join(app, "conf"))
     except DdsConfigError as e:
         sys.exit(f"[quadsim] {e}")
     print(f"[quadsim] DDS: {choice.source} -> {choice.uri or 'Cyclone defaults'} (ROS_DOMAIN_ID={choice.domain_id})",

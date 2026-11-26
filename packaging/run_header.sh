@@ -2,6 +2,7 @@
 # quadsim standalone bundle (@VER@): ROS 2 Humble + MuJoCo + the G23 controller, no Docker, no ROS install.
 #   ./quadsim-@VER@.run [--reinstall] [--dds-config <xml>|none] [sim args...]   the sim (args as scripts/run_sim.sh)
 #   ./quadsim-@VER@.run shell [cmd...]                                         ros2 CLI etc. in the same environment
+#   ./quadsim-@VER@.run tui                                                    menus: run the sim, build scenes, settings
 # The first run unpacks into ${QUADSIM_HOME:-~/.local/share/quadsim}/@VER@ (once; --reinstall redoes it).
 # DDS: --dds-config > CYCLONEDDS_URI > CYCLONEDDS_CONFIG (file under app/conf) > app/conf/cyclonedds.xml;
 # ROS_DOMAIN_ID defaults to 1. Web viewer: http://<host>:8755.

@@ -7,7 +7,8 @@ import pytest
 
 from quadsim import tui_plan as tp
 
-TOPICS = {"cmd_vel": "/robot01/cmd_vel", "imu": "/robot01/livox/imu", "clock": "/clock", "gt_odom": "/sim/gt"}
+TOPICS = {"cmd_vel": "/robot01/cmd_vel", "imu": "/robot01/livox/imu", "clock": "/clock", "gt_odom": "/sim/gt",
+          tp.PATH_TOPIC: "/robot01/planned_path"}
 FRAMES = {"map": "map", "odom": "robot01/odom", "base": "robot01/base_link"}
 
 
@@ -149,7 +150,10 @@ def test_an_empty_or_default_value_drops_the_override_and_a_bad_one_is_refused()
 def test_rename_namespace_moves_the_robot_topics_and_frames_only():
     s = settings()
     tp.rename_namespace(s, TOPICS, FRAMES, "/robot02")
-    assert s["topics"] == {"cmd_vel": "/robot02/cmd_vel", "imu": "/robot02/livox/imu"}
+    assert s["topics"] == {"cmd_vel": "/robot02/cmd_vel", "imu": "/robot02/livox/imu",
+                           tp.PATH_TOPIC: "/robot02/planned_path"}
+    assert tp.name_overrides(s)[:3] == ["ros.topics.cmd_vel=/robot02/cmd_vel", "ros.topics.imu=/robot02/livox/imu",
+                                        "web.path_topic=/robot02/planned_path"]
     assert s["frames"] == {"odom": "robot02/odom", "base": "robot02/base_link"}
     assert tp.namespace(tp.effective(TOPICS, s["topics"])) == "robot02"
     tp.rename_namespace(s, TOPICS, FRAMES, "robot01")                   # back to the defaults: no overrides left
@@ -166,7 +170,21 @@ def test_rename_namespace_refuses_a_bad_name_or_a_topic_without_one():
 def test_ros_defaults_read_the_real_config():
     topics, frames, spawns = tp.ros_defaults(".")
     assert topics["cmd_vel"].endswith("/cmd_vel") and "map" in frames and "gate" in spawns
+    assert topics[tp.PATH_TOPIC].endswith("/planned_path")
     assert tp.ros_defaults("/nowhere") == ({}, {}, [])
+
+
+def test_dds_warnings_flag_a_config_for_another_domain(tmp_path):
+    (tmp_path / "conf").mkdir()
+    (tmp_path / "conf" / "cyclonedds.xml").write_text('<CycloneDDS><Domain Id="1"/></CycloneDDS>')
+    s = settings()
+    assert tp.dds_warnings(s, str(tmp_path)) == ()
+    s["dds"]["domain_id"] = 7
+    assert "Domain Id=1 but ROS_DOMAIN_ID=7" in tp.dds_warnings(s, str(tmp_path))[0]
+    s["dds"]["config"] = "gone.xml"
+    assert "does not exist" in tp.dds_warnings(s, str(tmp_path))[0]
+    s["dds"]["config"] = "none"
+    assert tp.dds_warnings(s, str(tmp_path)) == ()
 
 
 # ---- profiles
@@ -174,7 +192,7 @@ def test_ros_defaults_read_the_real_config():
 def test_a_profile_round_trips(tmp_path):
     s = settings(robot="ideal", features=["rtk"], spawn="gate")
     s["dds"] = {"domain_id": 42, "config": "none"}
-    s["topics"]["cmd_vel"] = "/cmd_vel"
+    s["topics"].update({"cmd_vel": "/cmd_vel", tp.PATH_TOPIC: "/plan"})
     path = tp.save_profile("field", s, str(tmp_path / "p"))
     assert path == str(tmp_path / "p" / "field.json")
     assert tp.load_profile("field", str(tmp_path / "p"), {}) == (s, [])

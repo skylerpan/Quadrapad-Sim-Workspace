@@ -122,3 +122,12 @@ def test_main_shell_falls_back_to_bash(app, monkeypatch):
 def test_main_says_cyclone_defaults_for_none(app, capsys):
     launch.main(["--dds-config", "none"])
     assert "[quadsim] DDS: --dds-config none -> Cyclone defaults (ROS_DOMAIN_ID=1)" in capsys.readouterr().err
+
+
+def test_main_tui_starts_the_menu_on_the_native_backend_without_touching_dds(app, monkeypatch, capsys):
+    _, calls = app
+    monkeypatch.setenv("ROS_DOMAIN_ID", "not-a-number")         # the TUI has its own DDS settings
+    launch.main(["tui", "--profile", "field"])
+    (file, args, env), = calls
+    assert args == [sys.executable, "-m", "quadsim.tui", "--backend", "native", "--profile", "field"]
+    assert "CYCLONEDDS_URI" not in env and capsys.readouterr().err == ""

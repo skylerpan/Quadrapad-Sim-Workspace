@@ -207,7 +207,7 @@ def _merge(settings: dict, raw: dict) -> list[str]:
 
 def _check_setting(section: str, key: str, v) -> str | None:
     if section in ("topics", "frames"):
-        ok = isinstance(v, str) and _ROS_NAME.fullmatch(v) and _NAME.fullmatch(key)
+        ok = isinstance(v, str) and _ROS_NAME.fullmatch(v) and re.fullmatch(r"[A-Za-z0-9_.]+", key)
         return None if ok else "not a ROS name"
     checks = {
         ("dds", "domain_id"): lambda: isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 232,
@@ -227,8 +227,12 @@ def _check_setting(section: str, key: str, v) -> str | None:
 
 # ---- ROS names ------------------------------------------------------------------------------------------------------
 
+PATH_TOPIC = "web.path_topic"       # the planner path the web viewer draws: a topic outside ros.topics
+
+
 def ros_defaults(app_dir: str) -> tuple[dict[str, str], dict[str, str], list[str]]:
-    """(topics, frames, named spawns) of config/sim.yaml; all empty without PyYAML or the file."""
+    """(topics, frames, named spawns) of config/sim.yaml; all empty without PyYAML or the file. Topics are keyed
+    by their ros.topics name, plus the dotted config key of the one topic that lives elsewhere (PATH_TOPIC)."""
     try:
         import yaml
         with open(os.path.join(app_dir, "config", "sim.yaml")) as f:
@@ -237,7 +241,11 @@ def ros_defaults(app_dir: str) -> tuple[dict[str, str], dict[str, str], list[str
         return {}, {}, []
     ros = cfg.get("ros") or {}
     names = lambda d: {str(k): str(v) for k, v in (d or {}).items() if isinstance(v, str)}  # noqa: E731
-    return names(ros.get("topics")), names(ros.get("frames")), sorted(map(str, cfg.get("spawns") or {}))
+    topics = names(ros.get("topics"))
+    path = (cfg.get("web") or {}).get("path_topic")
+    if topics and isinstance(path, str) and path:
+        topics[PATH_TOPIC] = path
+    return topics, names(ros.get("frames")), sorted(map(str, cfg.get("spawns") or {}))
 
 
 def effective(defaults: dict[str, str], changed: dict[str, str]) -> dict[str, str]:
@@ -279,7 +287,7 @@ def rename_namespace(settings: dict, topic_defaults: dict[str, str], frame_defau
 
 
 def name_overrides(settings: dict) -> list[str]:
-    return [*(f"ros.topics.{k}={v}" for k, v in sorted(settings["topics"].items())),
+    return [*(f"{k if '.' in k else 'ros.topics.' + k}={v}" for k, v in sorted(settings["topics"].items())),
             *(f"ros.frames.{k}={v}" for k, v in sorted(settings["frames"].items()))]
 
 
@@ -304,6 +312,18 @@ def detect_backend(env: dict[str, str] | None = None, run=subprocess.run, find_s
 def dds_configs(app_dir: str) -> list[str]:
     conf = os.path.join(app_dir, "conf")
     return sorted(f for f in os.listdir(conf) if f.endswith(".xml")) if os.path.isdir(conf) else []
+
+
+def dds_warnings(settings: dict, app_dir: str) -> tuple[str, ...]:
+    """What the launcher would warn about for the saved DDS choice (a config written for another domain)."""
+    from quadsim.dds_config import _domain_warnings
+    dds = settings["dds"]
+    if dds["config"] == "none":
+        return ()
+    path = os.path.join(app_dir, "conf", dds["config"]) if _in_conf(dds["config"]) else dds["config"]
+    if not os.path.isfile(path):
+        return (f"DDS config {path} does not exist",)
+    return _domain_warnings("file://" + os.path.abspath(path), dds["domain_id"])
 
 
 def _in_conf(config: str) -> bool:
