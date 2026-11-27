@@ -7,8 +7,8 @@
            --profile <name>           the settings profile to start from and keep up to date (default: last)
 
 It looks and works like nmtui: windows with <buttons>, Tab / arrows to move, Enter to select, Space to toggle,
-Esc to go back (quadsim.tui_widgets). Every action shows the command it is about to run; the commands themselves
-are built in quadsim.tui_plan. Standard library only (curses).
+Esc to go back; the mouse works too (quadsim.mininewt). Every action shows the command it is about to run; the
+commands themselves are built in quadsim.tui_plan. Standard library only (curses).
 """
 from __future__ import annotations
 
@@ -21,7 +21,8 @@ import subprocess
 import sys
 
 from quadsim import tui_plan as tp
-from quadsim.tui_widgets import Button, Checkbox, Entry, Form, Label, Screen, Select, Spacer, listbox, message
+from quadsim.mininewt import (Button, Checkbox, Entry, Form, Label, Screen, Select, Spacer, choice_window,
+                              entry_window, message_window)
 
 OTHER = "\0other"           # the "Other file..." row of a <select>
 NO_YAML = "config/sim.yaml could not be read (PyYAML missing?): names cannot be edited"
@@ -51,23 +52,14 @@ class Tui:
     # ---- small dialogs -----------------------------------------------------------------------------------------
 
     def info(self, title: str, *lines) -> None:
-        message(self.ui, title, list(lines))
+        message_window(self.ui, title, list(lines))
 
     def error(self, e: Exception) -> None:
-        message(self.ui, "Cannot do that", [(str(e) or "not a valid value", "warn")])
+        message_window(self.ui, "Cannot do that", [(str(e) or "not a valid value", "warn")])
 
     def ask(self, title: str, label: str, default: str = "", info: list | None = None, check=None):
-        """One value in a small form. Returns check(text) (the text without a check), None on Cancel."""
-        entry = Entry(label, default, width=44)
-        form = Form(self.ui, title, [*(Label(t) for t in info or []), *([Spacer()] if info else []), entry],
-                    [Button("Cancel"), Button("OK")], enter_submits=True)
-        while form.run() == "OK":
-            try:
-                return check(entry.value) if check else entry.value
-            except (tp.PlanError, ValueError) as e:
-                self.error(e)
-                form.current = entry
-        return None
+        """One value in a small window. Returns check(text) (the text without a check), None on Cancel."""
+        return entry_window(self.ui, title, label, default, info, check, (tp.PlanError, ValueError), self.error)
 
     # ---- running commands --------------------------------------------------------------------------------------
 
@@ -95,6 +87,7 @@ class Tui:
             pass
         curses.reset_prog_mode()
         self.scr.refresh()
+        self.ui.resume()
         return rc
 
     def autosave(self) -> None:
@@ -112,9 +105,9 @@ class Tui:
         while True:
             run = self.settings["run"]
             last = f"Run last  ({run['robot']}, {run['scene']})" if run.get("scene") else "Run last  (nothing yet)"
-            i = listbox(self.ui, "quadsim", ["Run simulation", last, "Build scene", "Settings", "Quit"], i or 0,
-                        buttons=("Quit", "OK"))
-            if i in (None, 4):
+            i = choice_window(self.ui, "quadsim", ["Run simulation", last, "Build scene", "Settings"], i,
+                              buttons=("Quit", "OK"))
+            if i is None:
                 return
             try:
                 (self.run_form, self.run_last, self.build_menu, self.settings_form)[i]()
@@ -158,19 +151,20 @@ class Tui:
             scene_changed()
         form = Form(self.ui, "Run simulation", [robot, behavior, scene, spawn, color, Spacer(), *checks.values()],
                     [Button("Cancel"), Button("Start")])
-        while form.run() == "Start":
-            if scene.key is None:
-                self.error(tp.PlanError("no built scene for this robot under scenes/: use Build scene first"))
-                continue
-            self.settings["run"] = {"robot": robot.key, "behavior": behavior.key, "scene": scene.key,
-                                    "spawn": spawn.key, "map_color": color.key,
-                                    "features": [k for k, c in checks.items() if c.checked]}
-            self.autosave()
-            try:
-                if self.run_confirm():
-                    return
-            except tp.PlanError as e:
-                self.error(e)
+        with form:
+            while form.run() == "Start":
+                if scene.key is None:
+                    self.error(tp.PlanError("no built scene for this robot under scenes/: use Build scene first"))
+                    continue
+                self.settings["run"] = {"robot": robot.key, "behavior": behavior.key, "scene": scene.key,
+                                        "spawn": spawn.key, "map_color": color.key,
+                                        "features": [k for k, c in checks.items() if c.checked]}
+                self.autosave()
+                try:
+                    if self.run_confirm():
+                        return
+                except tp.PlanError as e:
+                    self.error(e)
 
     def run_confirm(self) -> bool:
         """Show what will run; True when it ran, False on <Back>."""
@@ -186,7 +180,7 @@ class Tui:
                  "Names     topics and frames as in config/sim.yaml",
                  *((f"WARNING   {w}", "warn") for w in tp.dds_warnings(self.settings, self.app)),
                  "", (f"$ {cmd.shown()}", "dim"), "", "Stop the sim with Ctrl-C."]
-        if message(self.ui, "Run simulation", lines, ("Back", "Run")) != "Run":
+        if message_window(self.ui, "Run simulation", lines, ("Back", "Run")) != "Run":
             return False
         self.execute(cmd)
         return True
@@ -257,54 +251,56 @@ class Tui:
             dds.key = draft["dds"]["config"]
             ns.set(current_ns())
 
-        while True:
-            counts.text = f"{len(draft['topics'])} topic and {len(draft['frames'])} frame name(s) changed"
-            pressed = form.run()
-            if pressed in (None, "Cancel"):
-                return
-            try:
-                collect()
-                if pressed == "OK":
-                    self.settings = draft
-                    self.autosave()
+        with form:
+            while True:
+                counts.text = f"{len(draft['topics'])} topic and {len(draft['frames'])} frame name(s) changed"
+                pressed = form.run()
+                if pressed in (None, "Cancel"):
                     return
-                if pressed == "topics":
-                    self.edit_names("Topics", draft["topics"], self.topic_defaults)
-                elif pressed == "frames":
-                    self.edit_names("Frames", draft["frames"], self.frame_defaults)
-                elif pressed == "profiles":
-                    self.profiles_menu(draft)
-                refresh()
-            except tp.PlanError as e:
-                self.error(e)
+                try:
+                    collect()
+                    if pressed == "OK":
+                        self.settings = draft
+                        self.autosave()
+                        return
+                    if pressed == "topics":
+                        self.edit_names("Topics", draft["topics"], self.topic_defaults)
+                    elif pressed == "frames":
+                        self.edit_names("Frames", draft["frames"], self.frame_defaults)
+                    elif pressed == "profiles":
+                        self.profiles_menu(draft)
+                    refresh()
+                except tp.PlanError as e:
+                    self.error(e)
 
     def edit_names(self, title: str, changed: dict[str, str], defaults: dict[str, str]) -> None:
         """One entry per name; <OK> writes the ones that differ from config/sim.yaml into `changed`."""
         entries = {k: Entry(k, v, width=44) for k, v in tp.effective(defaults, changed).items()}
         form = Form(self.ui, title, [Label("Empty or the config/sim.yaml value = not changed.", "dim"), Spacer(),
                                      *entries.values()], [Button("reset", "Reset all"), Button("Cancel"), Button("OK")])
-        while True:
-            pressed = form.run()
-            if pressed in (None, "Cancel"):
+        with form:
+            while True:
+                pressed = form.run()
+                if pressed in (None, "Cancel"):
+                    return
+                if pressed == "reset":
+                    for k, e in entries.items():
+                        e.set(defaults[k])
+                    continue
+                new = {}
+                try:
+                    for k, e in entries.items():
+                        form.current = e
+                        tp.set_name(new, defaults, k, e.value)
+                except tp.PlanError as e:
+                    self.error(e)
+                    continue
+                changed.clear()
+                changed.update(new)
                 return
-            if pressed == "reset":
-                for k, e in entries.items():
-                    e.set(defaults[k])
-                continue
-            new = {}
-            try:
-                for k, e in entries.items():
-                    form.current = e
-                    tp.set_name(new, defaults, k, e.value)
-            except tp.PlanError as e:
-                self.error(e)
-                continue
-            changed.clear()
-            changed.update(new)
-            return
 
     def profiles_menu(self, draft: dict) -> None:
-        i = listbox(self.ui, "Profiles", ["Save as...", "Load...", "Delete...", "Reset to defaults"],
+        i = choice_window(self.ui, "Profiles", ["Save as...", "Load...", "Delete...", "Reset to defaults"],
                     info=[f"Directory: {short(self.dir)}", f"Current profile: {self.profile}"])
         if i is None:
             return
@@ -319,7 +315,7 @@ class Tui:
             names = [n for n in tp.list_profiles(self.dir) if n != self.profile]
             if not names:
                 raise tp.PlanError("no other saved profile yet: use Save as...")
-            n = listbox(self.ui, "Load profile" if i == 1 else "Delete profile", names)
+            n = choice_window(self.ui, "Load profile" if i == 1 else "Delete profile", names)
             if n is None:
                 return
             if i == 1:
@@ -327,20 +323,21 @@ class Tui:
                 draft.clear()
                 draft.update(loaded)
                 self.info("Profiles", f"Loaded {names[n]}: press <OK> in Settings to keep it.", *notes)
-            elif message(self.ui, "Delete profile", [f"Delete {names[n]}?"], ("No", "Yes")) == "Yes":
+            elif message_window(self.ui, "Delete profile", [f"Delete {names[n]}?"], ("No", "Yes")) == "Yes":
                 tp.delete_profile(names[n], self.dir)
 
     # ---- build -------------------------------------------------------------------------------------------------
 
     def build_menu(self) -> None:
-        i = listbox(self.ui, "Build scene", ["From a map file (.pcd / .bt / .ot)",
+        i = choice_window(self.ui, "Build scene", ["From a map file (.pcd / .bt / .ot)",
                                              "From OpenStreetMap (streets and buildings)", "Synthetic slope",
                                              "Synthetic stairs on an existing scene"],
                     info=[f"New scenes go to {short(os.path.join(self.app, 'scenes'))}"])
         if i is None:
             return
         made = (self.build_map, self.build_osm, self.build_slope, self.build_stairs)[i]()
-        if made and message(self.ui, "Build scene", [f"{made} is ready.", "", "Run it now?"], ("No", "Yes")) == "Yes":
+        ready = [f"{made} is ready.", "", "Run it now?"]
+        if made and message_window(self.ui, "Build scene", ready, ("No", "Yes")) == "Yes":
             self.run_new(made)
 
     def run_new(self, path: str) -> None:
@@ -360,19 +357,19 @@ class Tui:
         """Show the form until plan() gives (command, name, info lines) and the user builds, or cancels.
         Returns the new scene's path when the build succeeded."""
         form = Form(self.ui, title, fields, [Button("Cancel"), Button("Build")])
-        while form.run() == "Build":
-            try:
-                cmd, name, lines = plan()
-                out = tp.scene_out(name)
-            except (tp.PlanError, ValueError) as e:
-                self.error(e)
-                continue
-            full = os.path.join(self.app, out)
-            lines = [*lines, f"Output    {short(full)}",
-                     *([("This scene already exists and will be OVERWRITTEN.", "warn")] if os.path.exists(full) else []),
-                     "", (f"$ {cmd.shown()}", "dim")]
-            if message(self.ui, title, lines, ("Back", "Build")) == "Build":
-                return out if self.execute(cmd) == 0 else None
+        with form:
+            while form.run() == "Build":
+                try:
+                    cmd, name, lines = plan()
+                    out = tp.scene_out(name)
+                except (tp.PlanError, ValueError) as e:
+                    self.error(e)
+                    continue
+                full = os.path.join(self.app, out)
+                exists = [("This scene already exists and will be OVERWRITTEN.", "warn")] if os.path.exists(full) else []
+                lines = [*lines, f"Output    {short(full)}", *exists, "", (f"$ {cmd.shown()}", "dim")]
+                if message_window(self.ui, title, lines, ("Back", "Build")) == "Build":
+                    return out if self.execute(cmd) == 0 else None
         return None
 
     def name_entry(self, default: str = "") -> Entry:
