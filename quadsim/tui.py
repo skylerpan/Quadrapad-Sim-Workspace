@@ -6,7 +6,7 @@
   options: --backend docker|native    how commands are run (default: docker when the quadsim image exists)
            --profile <name>           the settings profile to start from and keep up to date (default: last)
 
-It looks and works like nmtui: windows with <buttons>, Tab / arrows to move, Enter to select, Space to toggle,
+Windows with <buttons>: Tab / arrows to move, Enter to select, Space to toggle,
 Esc to go back; the mouse works too (quadsim.mininewt). Every action shows the command it is about to run; the
 commands themselves are built in quadsim.tui_plan. Standard library only (curses).
 """

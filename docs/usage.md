@@ -45,7 +45,7 @@ DDS 條件：CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）、domain 1�
 
 要在同一台機器上另外起一個不互相干擾的 sim（例如跑測試時），給不同的 domain：`ROS_DOMAIN_ID=77 docker/run.sh ...`。
 
-### 1.1 免 Docker：pixi 環境與單檔 `.run`（PoC）
+### 1.1 免 Docker：pixi 環境與單檔 `.run`
 
 `pixi.toml` 用 RoboStack（prefix.dev 上的 conda-forge 套件）提供 ROS 2 Humble，跟容器是兩條並行的路，docker 流程完全不變。pixi 安裝在使用者目錄，裝法：`curl -fsSL https://pixi.sh/install.sh | sh`，打包還需要 `pixi global install -c https://prefix.dev/conda-forge pixi-pack`。
 
@@ -357,7 +357,7 @@ docker/run.sh "python3 -m quadsim.sim_node --help"
 | `key=value ...` | 任何設定檔欄位的覆寫（見第 9 章） |
 
 ### 3.0 選單介面（`scripts/tui.sh`）
-不想記指令時用選單操作，外觀與操作方式比照 `nmtui`（置中的視窗、`<按鈕>`、紫色配色）。它只用 Python 標準函式庫（`curses`），不加任何相依（畫面元件是 `quadsim/mininewt/`，一個精簡版的 newt，和模擬本身無關）；每個動作在執行前都會顯示實際要跑的指令，所以也可以拿來查指令怎麼寫。
+不想記指令時用選單操作，畫面是置中的視窗、`<按鈕>`、紫色配色。它只用 Python 標準函式庫（`curses`），不加任何相依（畫面元件是 `quadsim/mininewt/`，一個精簡版的 newt，和模擬本身無關）；每個動作在執行前都會顯示實際要跑的指令，所以也可以拿來查指令怎麼寫。
 
 ```bash
 scripts/tui.sh                  # checkout：有 quadsim Docker 映像檔就走 Docker，否則走目前的 Python 環境

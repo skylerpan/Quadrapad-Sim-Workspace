@@ -1,4 +1,4 @@
-"""mininewt: a small newt (the library behind nmtui) on curses. Standard library only; nothing here knows
+"""mininewt: a small newt on curses. Standard library only; nothing here knows
 about the sim, so the package can be lifted out as it is.
 
   Screen(scr, header)       the terminal: colours, header / footer lines, the stack of open windows, keys, mouse

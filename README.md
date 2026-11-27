@@ -1,6 +1,6 @@
 English | [繁體中文](README.zh-TW.md)
 
-# quadsim: quadruped ROS 2 navigation sim MVP (MuJoCo)
+# quadsim: quadruped ROS 2 navigation sim (MuJoCo)
 
 **quadsim** turns a merged LiDAR SLAM point cloud (PCD) into a navigation test environment for quadruped robots.
 - **Scene builder (`pcd2sim`)**: voxelizes the map, merges voxels into collision boxes, and flattens noisy floors into planar slabs. Builds in seconds.
@@ -13,7 +13,7 @@ The map enters MuJoCo as a small pool of proxy boxes moved onto the scene boxes 
 **Usage guide** with every command, flag and environment variable, organised by task: [`docs/usage.md`](docs/usage.md) (Traditional Chinese). Design background: [`docs/pcd-to-sim-architecture.md`](docs/pcd-to-sim-architecture.md) (Traditional Chinese, §12–§13). Navigation goal-loop test record on dp_1008 with the failure analysis: [`docs/archive/nav-goal-loop-test-2026-10-13.md`](docs/archive/nav-goal-loop-test-2026-10-13.md) (Traditional Chinese).
 
 ## Quick start
-Prefer menus to command lines? After step 1 (or inside the pixi env / the `.run` bundle), `scripts/tui.sh` opens a terminal UI that works like `nmtui`: windows with `<buttons>`, Tab and arrows to move, Enter to select, Space to toggle, and mouse clicks. Pick a robot, a scene and features on one form and run; build a scene from a map file, OpenStreetMap, a synthetic slope or synthetic stairs; and keep your DDS and topic settings between sessions. It only assembles the commands below and shows each one before running it ([docs/usage.md](docs/usage.md) section 3.0).
+Prefer menus to command lines? After step 1 (or inside the pixi env / the `.run` bundle), `scripts/tui.sh` opens a terminal UI: windows with `<buttons>`, Tab and arrows to move, Enter to select, Space to toggle, and mouse clicks. Pick a robot, a scene and features on one form and run; build a scene from a map file, OpenStreetMap, a synthetic slope or synthetic stairs; and keep your DDS and topic settings between sessions. It only assembles the commands below and shows each one before running it ([docs/usage.md](docs/usage.md) section 3.0).
 
 <img src="docs/img/tui.gif" width="800" alt="scripts/tui.sh: the Settings form, the Run form, the sim starting, and a Build form">
 
@@ -52,7 +52,7 @@ QUADSIM_GUI=1 docker/run.sh "rviz2 -d rviz/quadsim.rviz --ros-args -p use_sim_ti
 The `viewer:` section of the config sets `shadows` (the map casting shadows on itself costs a second pass over the mesh) and `sync_hz` (the maximum wall-clock rate at which the sim pushes its state to the window; each push takes the render lock). The sim logs `viewer: gl=... map mesh ... faces` at start-up so the path in use is visible. In the MuJoCo viewer, press `3` to show the active collision proxy boxes (red).
 The container uses `--net=host` and the same DDS settings as WebRvizLite: CycloneDDS (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`), `ROS_DOMAIN_ID=1`, and `conf/cyclonedds.xml` (unicast on loopback, multicast off), so the WebRvizLite viewer connects without extra setup. A navigation stack on the host or in another container connects directly as long as it uses the same RMW and domain (override with `ROS_DOMAIN_ID` / `CYCLONEDDS_CONFIG=<file under conf/>` when running `docker/run.sh`). **Every other node must set `use_sim_time:=true`**.
 
-## Standalone bundle (no Docker, PoC)
+## Standalone bundle (no Docker)
 `pixi run bundle` packs everything a run needs into one self-extracting file, `dist/quadsim-<yyyymmdd>-<sha>-linux-<arch>.run`. It contains ROS 2 Humble from [RoboStack](https://robostack.github.io/) (pixi-pack of `pixi.toml`'s default env), MuJoCo, open3d, the livox CustomMsg, the app with `scenes/dp` and `scenes/dp_bt_s16` (`BUNDLE_SCENES` overrides the list), and the G23 controller (SyncAI-Device-MotorControl `robotdog_control` + its models and ONNX Runtime). It needs Linux with glibc >= 2.35 (Ubuntu 22.04+) on the same arch, and nothing else is installed.
 ```bash
 # build (this machine's arch; Docker is used here only to build the controller with docker/build_g23.sh)
@@ -145,7 +145,7 @@ Body roll / pitch standard deviation while walking, before → after ground flat
 - dp2f: 0.8° / 0.7° → 0.04° / 0.22°
 - dpmap: 0.7° / 1.8° → 0°
 
-## Known limitations (MVP)
+## Known limitations
 - **No legs**: no gait dynamics and no foot contacts. Testing gait stability needs your own locomotion policy (mode A in the design doc)
 - **10 cm voxels**: both PCDs are already downsampled to ~5 cm point spacing. 5 cm voxels leave too many holes in surfaces, so 10 cm is the default. Thin objects get thicker, and doorways can lose up to 10 cm of width
 - **Ground flattening trade-offs**:
